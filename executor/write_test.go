@@ -3870,3 +3870,34 @@ func testEqualDatumsAsBinary(c *C, a []interface{}, b []interface{}, same bool) 
 	c.Assert(err, IsNil)
 	c.Assert(res, Equals, same, Commentf("a: %v, b: %v", a, b))
 }
+
+func (s *testSuite) TestWriteGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p")
+	// Test for tag
+	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32));")
+	tk.MustExec("insert into p values (1,'bob'),(2,'jim');")
+	tk.MustExec("insert into p values (3,'jack');")
+	tk.MustQuery("select * from p where vertex_id = 1").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select * from p where vertex_id in (1,2,3)").Check(testkit.Rows("1 bob", "2 jim", "3 jack"))
+	tk.MustExec("delete from p where vertex_id=2;")
+	tk.MustQuery("select * from p where vertex_id = 2").Check(testkit.Rows())
+	tk.MustQuery("select * from p where vertex_id in (1,2,3)").Check(testkit.Rows("1 bob", "3 jack"))
+
+	// Test for edge
+	tk.MustExec("create edge f (`from` bigint, `to` bigint);")
+	tk.MustExec("insert into f values (1,3)")
+	tk.MustQuery("select * from f where `from` = 1 and `to` = 3").Check(testkit.Rows("1 3"))
+
+	tk.MustExec("create edge f2 (`from` bigint, `to` bigint, comment varchar(100));")
+	tk.MustExec("insert into p values (2, 'jim'),(5,'a'),(6,'b');")
+	tk.MustExec("insert into f2 (`from`,`to`)values (1,3),(3,1)")
+	tk.MustExec("insert into f2 values (1,2,'hello')")
+	tk.MustQuery("select * from f2 where `from` = 1 and `to` = 2").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2 where `from` = 3 and `to` = 1").Check(testkit.Rows("3 1 <nil>"))
+	tk.MustQuery("select * from f2 where (`from`, `to`) in ((1,2))").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2 where (`from`, `to`) in ((1,2),(1,3),(5,1))").Check(testkit.Rows("1 2 hello", "1 3 <nil>"))
+	tk.MustExec("delete from f2 where `from` = 1 and `to` = 3")
+	tk.MustQuery("select * from f2 where (`from`, `to`) in ((1,2),(1,3),(5,1))").Check(testkit.Rows("1 2 hello"))
+}
