@@ -37,7 +37,6 @@ type TraverseExecutor struct {
 	conditionChain []condition
 
 	workerChan chan *tempResult
-
 	tablePlan plannercore.PhysicalPlan
 }
 

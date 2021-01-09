@@ -989,6 +989,13 @@ func (b *PlanBuilder) buildSelection(ctx context.Context, p LogicalPlan, where a
 	return selection, nil
 }
 
+func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverseChain *ast.TraverseChain) (LogicalPlan, error) {
+	traverse := LogicalTraverse{}.Init(b.ctx,b.getSelectOffset())
+	traverse.TraverseChain = traverseChain
+	traverse.SetChildren(p)
+	return traverse, nil
+}
+
 // buildProjectionFieldNameFromColumns builds the field name, table name and database name when field expression is a column reference.
 func (b *PlanBuilder) buildProjectionFieldNameFromColumns(origField *ast.SelectField, colNameField *ast.ColumnNameExpr, name *types.FieldName) (colName, origColName, tblName, origTblName, dbName model.CIStr) {
 	origTblName, origColName, dbName = name.OrigTblName, name.OrigColName, name.DBName
@@ -3363,8 +3370,14 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 			return nil, err
 		}
 	}
+	if sel.Traverse != nil {
+		p, err = b.buildTraverse(ctx, p, sel.Traverse)
+		if err != nil {
+			return p, err
+		}
+	}
 	if sel.LockInfo != nil && sel.LockInfo.LockType != ast.SelectLockNone {
-		if sel.LockInfo.LockType == ast.SelectLockInShareMode && !enableNoopFuncs {
+		if sel.LockInfo.LockType == ast.SelectLockForShare && !enableNoopFuncs {
 			err = expression.ErrFunctionsNoopImpl.GenWithStackByArgs("LOCK IN SHARE MODE")
 			return nil, err
 		}
