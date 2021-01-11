@@ -18,9 +18,9 @@ import (
 	"testing"
 
 	. "github.com/pingcap/check"
+	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/infoschema"
-	"github.com/pingcap/parser/model"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
@@ -279,7 +279,7 @@ func (s *testSuite) TestRequestBuilder1(c *C) {
 		},
 	}
 
-	actual, err := (&RequestBuilder{}).SetHandleRanges(nil, 12, false,model.TableTypeIsTable, ranges, nil).
+	actual, err := (&RequestBuilder{}).SetHandleRanges(nil, 12, false, model.TableTypeIsTable, ranges, nil).
 		SetDAGRequest(&tipb.DAGRequest{}).
 		SetDesc(false).
 		SetKeepOrder(false).

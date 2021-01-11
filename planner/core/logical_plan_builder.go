@@ -990,7 +990,7 @@ func (b *PlanBuilder) buildSelection(ctx context.Context, p LogicalPlan, where a
 }
 
 func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverseChain *ast.TraverseChain) (LogicalPlan, error) {
-	traverse := LogicalTraverse{}.Init(b.ctx,b.getSelectOffset())
+	traverse := LogicalTraverse{}.Init(b.ctx, b.getSelectOffset())
 	traverse.TraverseChain = traverseChain
 	traverse.SetChildren(p)
 	return traverse, nil

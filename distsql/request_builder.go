@@ -18,9 +18,9 @@ import (
 	"math"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/ddl/placement"
-	"github.com/pingcap/parser/model"
 	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
@@ -91,15 +91,15 @@ func (builder *RequestBuilder) SetIndexRangesForTables(sc *stmtctx.StatementCont
 
 // SetHandleRanges sets "KeyRanges" for "kv.Request" by converting table handle range
 // "ranges" to "KeyRanges" firstly.
-func (builder *RequestBuilder) SetHandleRanges(sc *stmtctx.StatementContext, tid int64, isCommonHandle bool,tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
-	return builder.SetHandleRangesForTables(sc, []int64{tid}, isCommonHandle,tableTp, ranges, fb)
+func (builder *RequestBuilder) SetHandleRanges(sc *stmtctx.StatementContext, tid int64, isCommonHandle bool, tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
+	return builder.SetHandleRangesForTables(sc, []int64{tid}, isCommonHandle, tableTp, ranges, fb)
 }
 
 // SetHandleRangesForTables sets "KeyRanges" for "kv.Request" by converting table handle range
 // "ranges" to "KeyRanges" firstly for multiple tables.
-func (builder *RequestBuilder) SetHandleRangesForTables(sc *stmtctx.StatementContext, tid []int64, isCommonHandle bool,tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
+func (builder *RequestBuilder) SetHandleRangesForTables(sc *stmtctx.StatementContext, tid []int64, isCommonHandle bool, tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
 	if builder.err == nil {
-		builder.Request.KeyRanges, builder.err = TableHandleRangesToKVRanges(sc, tid, isCommonHandle,tableTp, ranges, fb)
+		builder.Request.KeyRanges, builder.err = TableHandleRangesToKVRanges(sc, tid, isCommonHandle, tableTp, ranges, fb)
 	}
 	return builder
 }
@@ -295,9 +295,9 @@ func (builder *RequestBuilder) verifyTxnScope() error {
 }
 
 // TableHandleRangesToKVRanges convert table handle ranges to "KeyRanges" for multiple tables.
-func TableHandleRangesToKVRanges(sc *stmtctx.StatementContext, tid []int64, isCommonHandle bool,tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) ([]kv.KeyRange, error) {
+func TableHandleRangesToKVRanges(sc *stmtctx.StatementContext, tid []int64, isCommonHandle bool, tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) ([]kv.KeyRange, error) {
 	if !isCommonHandle {
-		return tablesRangesToKVRanges(tid,tableTp, ranges, fb), nil
+		return tablesRangesToKVRanges(tid, tableTp, ranges, fb), nil
 	}
 	return CommonHandleRangesToKVRanges(sc, tid, ranges)
 }
@@ -306,13 +306,13 @@ func TableHandleRangesToKVRanges(sc *stmtctx.StatementContext, tid []int64, isCo
 // Note this function should not be exported, but currently
 // br refers to it, so have to keep it.
 func TableRangesToKVRanges(tid int64, ranges []*ranger.Range, fb *statistics.QueryFeedback) []kv.KeyRange {
-	return tablesRangesToKVRanges([]int64{tid},model.TableTypeIsTable, ranges, fb)
+	return tablesRangesToKVRanges([]int64{tid}, model.TableTypeIsTable, ranges, fb)
 }
 
 // tablesRangesToKVRanges converts table ranges to "KeyRange".
-func tablesRangesToKVRanges(tids []int64,tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) []kv.KeyRange {
+func tablesRangesToKVRanges(tids []int64, tableTp model.TableType, ranges []*ranger.Range, fb *statistics.QueryFeedback) []kv.KeyRange {
 	if fb == nil || fb.Hist == nil {
-		return tableRangesToKVRangesWithoutSplit(tids,tableTp, ranges)
+		return tableRangesToKVRangesWithoutSplit(tids, tableTp, ranges)
 	}
 	krs := make([]kv.KeyRange, 0, len(ranges))
 	feedbackRanges := make([]*ranger.Range, 0, len(ranges))
@@ -333,8 +333,8 @@ func tablesRangesToKVRanges(tids []int64,tableTp model.TableType, ranges []*rang
 			high = kv.Key(high).PrefixNext()
 		}
 		for _, tid := range tids {
-			startKey := tablecodec.EncodeRowKeyByType(tid,tableTp, low)
-			endKey := tablecodec.EncodeRowKeyByType(tid,tableTp, high)
+			startKey := tablecodec.EncodeRowKeyByType(tid, tableTp, low)
+			endKey := tablecodec.EncodeRowKeyByType(tid, tableTp, high)
 			krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
 		}
 	}
@@ -342,13 +342,13 @@ func tablesRangesToKVRanges(tids []int64,tableTp model.TableType, ranges []*rang
 	return krs
 }
 
-func tableRangesToKVRangesWithoutSplit(tids []int64,tableTp model.TableType, ranges []*ranger.Range) []kv.KeyRange {
+func tableRangesToKVRangesWithoutSplit(tids []int64, tableTp model.TableType, ranges []*ranger.Range) []kv.KeyRange {
 	krs := make([]kv.KeyRange, 0, len(ranges)*len(tids))
 	for _, ran := range ranges {
 		low, high := encodeHandleKey(ran)
 		for _, tid := range tids {
-			startKey := tablecodec.EncodeRowKeyByType(tid,tableTp, low)
-			endKey := tablecodec.EncodeRowKeyByType(tid,tableTp, high)
+			startKey := tablecodec.EncodeRowKeyByType(tid, tableTp, low)
+			endKey := tablecodec.EncodeRowKeyByType(tid, tableTp, high)
 			krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
 		}
 	}

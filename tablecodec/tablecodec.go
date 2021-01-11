@@ -53,16 +53,16 @@ var (
 )
 
 const (
-	idLen     = 8
-	prefixLen = 1 + idLen /*tableID*/ + 2
+	idLen          = 8
+	prefixLen      = 1 + idLen /*tableID*/ + 2
 	graphPrefixLen = 1 + 2
 	// RecordRowKeyLen is public for calculating avgerage row size.
-	RecordRowKeyLen       = prefixLen + idLen /*handle*/
-	GraphTagRecordRowKeyLen  = graphPrefixLen + idLen /*handle*/+ idLen /*tag*/
-	GraphEdgeRecordRowKeyLen  = 	graphPrefixLen + idLen /*srcVertexID*/ + 1 /*edgeTP*/ + idLen /*edgeID*/ + idLen /*dstVertexID*/
-	tablePrefixLength     = 1
-	recordPrefixSepLength = 2
-	metaPrefixLength      = 1
+	RecordRowKeyLen          = prefixLen + idLen                                                                /*handle*/
+	GraphTagRecordRowKeyLen  = graphPrefixLen + idLen /*handle*/ + idLen                                        /*tag*/
+	GraphEdgeRecordRowKeyLen = graphPrefixLen + idLen /*srcVertexID*/ + 1 /*edgeTP*/ + idLen /*edgeID*/ + idLen /*dstVertexID*/
+	tablePrefixLength        = 1
+	recordPrefixSepLength    = 2
+	metaPrefixLength         = 1
 	// MaxOldEncodeValueLen is the maximum len of the old encoding of index value.
 	MaxOldEncodeValueLen = 9
 
@@ -83,10 +83,10 @@ func TablePrefix() []byte {
 	return tablePrefix
 }
 
-func EncodeRowKeyByType(tableID int64,tableTp model.TableType, encodedHandle []byte) kv.Key {
+func EncodeRowKeyByType(tableID int64, tableTp model.TableType, encodedHandle []byte) kv.Key {
 	switch tableTp {
 	case model.TableTypeIsTable:
-		return EncodeRowKey(tableID,encodedHandle)
+		return EncodeRowKey(tableID, encodedHandle)
 	case model.TableTypeIsGraphTag:
 		buf := make([]byte, 0, 24)
 		buf = append(buf, graphPrefix...)
@@ -309,13 +309,17 @@ func DecodeTableID(key kv.Key) int64 {
 	return tableID
 }
 
+func IsGraphEdgeKey(key kv.Key) bool {
+	return len(key) == GraphEdgeRecordRowKeyLen && key[0] == graphPrefix[0]
+}
+
 func DecodeRowKeyByType(key kv.Key) (kv.Handle, error) {
 	if len(key) < RecordRowKeyLen {
 		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
 	}
 	if key[0] == tablePrefix[0] {
 		return DecodeRowKey(key)
-	}else if key[0] == graphPrefix[0] {
+	} else if key[0] == graphPrefix[0] {
 		if len(key) == GraphTagRecordRowKeyLen {
 			return DecodeGraphTagRowKey(key)
 		}

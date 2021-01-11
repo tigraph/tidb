@@ -1216,7 +1216,7 @@ func (e *closureExecutor) tableScanProcessCore(key, value []byte) error {
 		e.scanCtx.execDetail.update(begin, incRow)
 	}(time.Now())
 	// temporary ignore edge key
-	if len(key) == tablecodec.GraphEdgeRecordRowKeyLen {
+	if tablecodec.IsGraphEdgeKey(key) {
 		return nil
 	}
 	handle, err := tablecodec.DecodeRowKeyByType(key)
