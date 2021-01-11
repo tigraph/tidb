@@ -55,8 +55,11 @@ var (
 const (
 	idLen     = 8
 	prefixLen = 1 + idLen /*tableID*/ + 2
+	graphPrefixLen = 1 + 2
 	// RecordRowKeyLen is public for calculating avgerage row size.
 	RecordRowKeyLen       = prefixLen + idLen /*handle*/
+	GraphTagRecordRowKeyLen  = graphPrefixLen + idLen /*handle*/+ idLen /*tag*/
+	GraphEdgeRecordRowKeyLen  = 	graphPrefixLen + idLen /*srcVertexID*/ + 1 /*edgeTP*/ + idLen /*edgeID*/ + idLen /*dstVertexID*/
 	tablePrefixLength     = 1
 	recordPrefixSepLength = 2
 	metaPrefixLength      = 1
@@ -78,6 +81,24 @@ const TableSplitKeyLen = 1 + idLen
 // TablePrefix returns table's prefix 't'.
 func TablePrefix() []byte {
 	return tablePrefix
+}
+
+func EncodeRowKeyByType(tableID int64,tableTp model.TableType, encodedHandle []byte) kv.Key {
+	switch tableTp {
+	case model.TableTypeIsTable:
+		return EncodeRowKey(tableID,encodedHandle)
+	case model.TableTypeIsGraphTag:
+		buf := make([]byte, 0, 24)
+		buf = append(buf, graphPrefix...)
+		buf = append(buf, recordPrefixSep...)
+		buf = append(buf, encodedHandle...)
+		buf = codec.EncodeInt(buf, tableID)
+		return buf
+	case model.TableTypeIsGraphEdge:
+		// TODO:
+		//panic("need implement")
+	}
+	panic("should never happen")
 }
 
 // EncodeRowKey encodes the table id and record handle into a kv.Key
@@ -288,6 +309,21 @@ func DecodeTableID(key kv.Key) int64 {
 	return tableID
 }
 
+func DecodeRowKeyByType(key kv.Key) (kv.Handle, error) {
+	if len(key) < RecordRowKeyLen {
+		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
+	}
+	if key[0] == tablePrefix[0] {
+		return DecodeRowKey(key)
+	}else if key[0] == graphPrefix[0] {
+		if len(key) == GraphTagRecordRowKeyLen {
+			return DecodeGraphTagRowKey(key)
+		}
+		// TODO: support decode edge.
+	}
+	return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
+}
+
 // DecodeRowKey decodes the key and gets the handle.
 func DecodeRowKey(key kv.Key) (kv.Handle, error) {
 	if len(key) < RecordRowKeyLen || !hasTablePrefix(key) || !hasRecordPrefixSep(key[prefixLen-2:]) {
@@ -298,6 +334,14 @@ func DecodeRowKey(key kv.Key) (kv.Handle, error) {
 		return kv.IntHandle(codec.DecodeCmpUintToInt(u)), nil
 	}
 	return kv.NewCommonHandle(key[prefixLen:])
+}
+
+func DecodeGraphTagRowKey(key kv.Key) (kv.Handle, error) {
+	if len(key) < GraphTagRecordRowKeyLen || key[0] != graphPrefix[0] {
+		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
+	}
+	u := binary.BigEndian.Uint64(key[graphPrefixLen:])
+	return kv.IntHandle(codec.DecodeCmpUintToInt(u)), nil
 }
 
 // EncodeValue encodes a go value to bytes.

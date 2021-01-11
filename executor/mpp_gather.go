@@ -18,6 +18,7 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/distsql"
+	"github.com/pingcap/parser/model"
 	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/kv"
 	plannercore "github.com/pingcap/tidb/planner/core"
@@ -77,7 +78,7 @@ func (e *MPPGather) constructMPPTasksImpl(ctx context.Context, p *plannercore.Fr
 
 // single physical table means a table without partitions or a single partition in a partition table.
 func (e *MPPGather) constructSinglePhysicalTable(ctx context.Context, tableID int64, isCommonHandle bool, ranges []*ranger.Range) ([]*kv.MPPTask, error) {
-	kvRanges, err := distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{tableID}, isCommonHandle, ranges, nil)
+	kvRanges, err := distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{tableID}, isCommonHandle,model.TableTypeIsTable, ranges, nil)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

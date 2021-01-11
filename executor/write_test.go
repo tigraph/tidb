@@ -3884,6 +3884,11 @@ func (s *testSuite) TestWriteGraph(c *C) {
 	tk.MustExec("delete from p where vertex_id=2;")
 	tk.MustQuery("select * from p where vertex_id = 2").Check(testkit.Rows())
 	tk.MustQuery("select * from p where vertex_id in (1,2,3)").Check(testkit.Rows("1 bob", "3 jack"))
+	// Test for table scan of tag.
+	tk.MustQuery("select * from p").Check(testkit.Rows("1 bob", "3 jack"))
+	tk.MustQuery("select * from p where vertex_id > 1").Check(testkit.Rows("3 jack"))
+	tk.MustQuery("select * from p where name='bob'").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select * from p where name='none'").Check(testkit.Rows())
 
 	// Test for edge
 	tk.MustExec("create edge f (`from` bigint, `to` bigint);")
