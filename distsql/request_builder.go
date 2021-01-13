@@ -106,8 +106,8 @@ func (builder *RequestBuilder) SetHandleRangesForTables(sc *stmtctx.StatementCon
 
 // SetTableHandles sets "KeyRanges" for "kv.Request" by converting table handles
 // "handles" to "KeyRanges" firstly.
-func (builder *RequestBuilder) SetTableHandles(tid int64, handles []kv.Handle) *RequestBuilder {
-	builder.Request.KeyRanges = TableHandlesToKVRanges(tid, handles)
+func (builder *RequestBuilder) SetTableHandles(tid int64, handles []kv.Handle, tableTp model.TableType) *RequestBuilder {
+	builder.Request.KeyRanges = TableHandlesToKVRanges(tid, handles, tableTp)
 	return builder
 }
 
@@ -369,9 +369,10 @@ func encodeHandleKey(ran *ranger.Range) ([]byte, []byte) {
 
 // TableHandlesToKVRanges converts sorted handle to kv ranges.
 // For continuous handles, we should merge them to a single key range.
-func TableHandlesToKVRanges(tid int64, handles []kv.Handle) []kv.KeyRange {
+func TableHandlesToKVRanges(tid int64, handles []kv.Handle, tableTp model.TableType) []kv.KeyRange {
 	krs := make([]kv.KeyRange, 0, len(handles))
 	i := 0
+	var startKey, endKey kv.Key
 	for i < len(handles) {
 		if commonHandle, ok := handles[i].(*kv.CommonHandle); ok {
 			ran := kv.KeyRange{
@@ -389,10 +390,15 @@ func TableHandlesToKVRanges(tid int64, handles []kv.Handle) []kv.KeyRange {
 			}
 		}
 		low := codec.EncodeInt(nil, handles[i].IntValue())
-		high := codec.EncodeInt(nil, handles[j-1].IntValue())
-		high = kv.Key(high).PrefixNext()
-		startKey := tablecodec.EncodeRowKey(tid, low)
-		endKey := tablecodec.EncodeRowKey(tid, high)
+		if tableTp == model.TableTypeIsTable {
+			high := codec.EncodeInt(nil, handles[j-1].IntValue())
+			high = kv.Key(high).PrefixNext()
+			startKey = tablecodec.EncodeRowKey(tid, low)
+			endKey = tablecodec.EncodeRowKey(tid, high)
+		} else {
+			startKey = tablecodec.EncodeRowKeyByType(tid, tableTp, low)
+			endKey = startKey.PrefixNext()
+		}
 		krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
 		i = j
 	}

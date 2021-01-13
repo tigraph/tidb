@@ -3264,10 +3264,10 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 
 	handles, lookUpContents := dedupHandles(lookUpContents)
 	if tbInfo.GetPartitionInfo() == nil {
-		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, handles, tbInfo.Type, canReorderHandles)
 	}
 	if !builder.ctx.GetSessionVars().UseDynamicPartitionPrune() {
-		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, handles, tbInfo.Type, canReorderHandles)
 	}
 
 	tbl, _ := builder.is.TableByID(tbInfo.ID)
@@ -3292,7 +3292,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 			}
 			pid := p.GetPhysicalID()
 			handle := kv.IntHandle(content.keys[0].GetInt64())
-			tmp := distsql.TableHandlesToKVRanges(pid, []kv.Handle{handle})
+			tmp := distsql.TableHandlesToKVRanges(pid, []kv.Handle{handle}, tbInfo.Type)
 			kvRanges = append(kvRanges, tmp...)
 		}
 	} else {
@@ -3303,7 +3303,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 		}
 		for _, p := range partitions {
 			pid := p.GetPhysicalID()
-			tmp := distsql.TableHandlesToKVRanges(pid, handles)
+			tmp := distsql.TableHandlesToKVRanges(pid, handles, tbInfo.Type)
 			kvRanges = append(kvRanges, tmp...)
 		}
 	}
@@ -3384,7 +3384,7 @@ func (builder *dataReaderBuilder) buildTableReaderBase(ctx context.Context, e *T
 	return e, nil
 }
 
-func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, handles []kv.Handle, canReorderHandles bool) (*TableReaderExecutor, error) {
+func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, handles []kv.Handle, tableTp model.TableType, canReorderHandles bool) (*TableReaderExecutor, error) {
 	if canReorderHandles {
 		sort.Slice(handles, func(i, j int) bool {
 			return handles[i].Compare(handles[j]) < 0
@@ -3395,7 +3395,7 @@ func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Contex
 		if _, ok := handles[0].(kv.PartitionHandle); ok {
 			b.SetPartitionsAndHandles(handles)
 		} else {
-			b.SetTableHandles(getPhysicalTableID(e.table), handles)
+			b.SetTableHandles(getPhysicalTableID(e.table), handles, tableTp)
 		}
 	}
 	return builder.buildTableReaderBase(ctx, e, b)
