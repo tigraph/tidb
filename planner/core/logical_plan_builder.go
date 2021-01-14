@@ -991,8 +991,22 @@ func (b *PlanBuilder) buildSelection(ctx context.Context, p LogicalPlan, where a
 
 func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverseChain *ast.TraverseChain) (LogicalPlan, error) {
 	traverse := LogicalTraverse{}.Init(b.ctx, b.getSelectOffset())
+
+	outputTag := traverseChain.Verbs[len(traverseChain.Verbs)-1]
+	if outputTag.Action != ast.TraverseActionTags {
+		return nil, errors.New("Wrong traverse definition")
+	}
+	tag := outputTag.Names[0]
+
+	cols, _, err := expression.ColumnInfos2ColumnsAndNames(b.ctx, tag.Schema, tag.Name, tag.TableInfo.Columns, tag.TableInfo)
+	if err != nil {
+		return nil, err
+	}
+
+	schema := expression.NewSchema(cols...)
 	traverse.TraverseChain = traverseChain
 	traverse.SetChildren(p)
+	traverse.SetSchema(schema)
 	return traverse, nil
 }
 

@@ -695,10 +695,16 @@ func (b *executorBuilder) buildShow(v *plannercore.PhysicalShow) Executor {
 }
 
 func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executor {
-	return &TraverseExecutor{
+	t := &TraverseExecutor{
 		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID()),
 		tablePlan:    v,
 	}
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		return nil
+	}
+	t.startTS = startTS
+	return t
 }
 
 func (b *executorBuilder) buildSimple(v *plannercore.Simple) Executor {
