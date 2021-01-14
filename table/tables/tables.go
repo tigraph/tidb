@@ -338,6 +338,13 @@ func (t *TableCommon) RecordKey(h kv.Handle) kv.Key {
 	return tablecodec.EncodeRecordKey(t.recordPrefix, h)
 }
 
+func (t *TableCommon) RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error) {
+	if t.Meta().Type == model.TableTypeIsTable {
+		return t.RecordKey(h), nil
+	}
+	return RecordKeyFromHandle(h, physicalID, t.Meta().Type)
+}
+
 // FirstKey implements table.Table interface.
 func (t *TableCommon) FirstKey() kv.Key {
 	return t.RecordKey(kv.IntHandle(math.MinInt64))
@@ -428,14 +435,9 @@ func (t *TableCommon) UpdateRecord(ctx context.Context, sctx sessionctx.Context,
 		}
 	}
 
-	var key kv.Key
-	if t.meta.Type == model.TableTypeIsTable {
-		key = t.RecordKey(h)
-	} else {
-		key, err = RecordKeyFromHandle(h, t.tableID, t.meta.Type)
-		if err != nil {
-			return err
-		}
+	key, err := t.RecordKey2(h, t.tableID)
+	if err != nil {
+		return err
 	}
 
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
@@ -1135,14 +1137,9 @@ func (t *TableCommon) removeRowData(ctx sessionctx.Context, h kv.Handle) error {
 		return err
 	}
 
-	var key kv.Key
-	if t.meta.Type == model.TableTypeIsTable {
-		key = t.RecordKey(h)
-	} else {
-		key, err = RecordKeyFromHandle(h, t.tableID, t.meta.Type)
-		if err != nil {
-			return err
-		}
+	key, err := t.RecordKey2(h, t.tableID)
+	if err != nil {
+		return err
 	}
 	return txn.Delete(key)
 }
@@ -1763,6 +1760,8 @@ func BuildTableScanFromInfos(tableInfo *model.TableInfo, columnInfos []*model.Co
 
 func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, error) {
 	switch tp {
+	case model.TableTypeIsTable:
+		return tablecodec.EncodeRowKeyWithHandle(tid, h), nil
 	case model.TableTypeIsGraphTag:
 		return tablecodec.EncodeGraphTag(h.IntValue(), tid), nil
 	case model.TableTypeIsGraphEdge:

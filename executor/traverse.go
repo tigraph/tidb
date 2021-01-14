@@ -2,9 +2,10 @@ package executor
 
 import (
 	"context"
+	"sync"
+
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/util/chunk"
-	"sync"
 )
 
 var _ Executor = &TraverseExecutor{}
