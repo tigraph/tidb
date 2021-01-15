@@ -1016,6 +1016,7 @@ func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverse
 	traverse.ResultTagID = tblInfo.Meta().ID
 	traverse.SetChildren(p)
 	traverse.SetSchema(schema)
+	b.optFlag &^= flagPrunColumns
 	return traverse, nil
 }
 
