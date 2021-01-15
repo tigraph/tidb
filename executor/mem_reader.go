@@ -207,6 +207,10 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 	mutableRow := chunk.MutRowFromTypes(m.retFieldTypes)
 	err := iterTxnMemBuffer(m.ctx, m.kvRanges, func(key, value []byte) error {
+		// temporary ignore edge key
+		if tablecodec.IsGraphEdgeKey(key) {
+			return nil
+		}
 		row, err := m.decodeRecordKeyValue(key, value)
 		if err != nil {
 			return err
@@ -232,7 +236,7 @@ func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 }
 
 func (m *memTableReader) decodeRecordKeyValue(key, value []byte) ([]types.Datum, error) {
-	handle, err := tablecodec.DecodeRowKey(key)
+	handle, err := tablecodec.DecodeRowKeyByType(key)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
