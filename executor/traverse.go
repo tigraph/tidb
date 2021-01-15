@@ -189,6 +189,12 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 			atomic.AddInt64(&e.restRow, 1)
 
 			if finish {
+				select {
+				case <- e.closeCh:
+					return nil
+				default:
+					e.traverseResultVIDCh <- resultID
+				}
 				e.traverseResultVIDCh <- resultID
 			} else {
 				newTask.vertexIds = append(newTask.vertexIds, resultID)

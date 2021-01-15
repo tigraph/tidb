@@ -175,6 +175,7 @@ func (p *LogicalTraverse) findBestTask(prop *property.PhysicalProperty, planCoun
 	if err != nil {
 		return nil, 0, err
 	}
+	cp = finishCopTask(p.ctx, cp)
 	pShow := PhysicalTraverse{TraverseChain: p.TraverseChain, ResultTagID: p.ResultTagID}.Init(p.ctx, p.stats, p.blockOffset)
 	pShow.SetSchema(p.schema)
 	pShow.SetChildren(cp.plan())
