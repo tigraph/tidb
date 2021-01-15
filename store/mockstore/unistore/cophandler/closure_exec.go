@@ -282,11 +282,12 @@ func newClosureExecutor(dagCtx *dagContext, outputOffsets []uint32, scanExec *ti
 	seCtx := mockpkg.NewContext()
 	seCtx.GetSessionVars().StmtCtx = e.sc
 	e.seCtx = seCtx
+	var tblScan *tipb.TableScan
 	switch scanExec.Tp {
 	case tipb.ExecType_TypeTableScan:
 		dagCtx.setColumnInfo(scanExec.TblScan.Columns)
 		dagCtx.primaryCols = scanExec.TblScan.PrimaryColumnIds
-		tblScan := scanExec.TblScan
+		tblScan = scanExec.TblScan
 		e.unique = true
 		e.scanCtx.desc = tblScan.Desc
 		e.scanType = TableScan
@@ -322,6 +323,12 @@ func newClosureExecutor(dagCtx *dagContext, outputOffsets []uint32, scanExec *ti
 		e.counts = make([]int64, len(ranges))
 	}
 	e.kvRanges = ranges
+	if tblScan != nil && len(ranges) > 0 {
+		if tablecodec.IsGraphKey(ranges[0].StartKey) {
+			// currently only support scan tag.
+			e.rowFilter = tablecodec.BuildRecordKeyFilter(tblScan.TableId, model.TableTypeIsGraphTag)
+		}
+	}
 	e.scanCtx.chk = chunk.NewChunkWithCapacity(e.fieldTps, 32)
 	if e.scanType == TableScan {
 		e.scanCtx.decoder, err = e.evalContext.newRowDecoder()
@@ -602,7 +609,8 @@ type closureExecutor struct {
 	oldRowBuf []byte
 	processor closureProcessor
 
-	counts []int64
+	counts    []int64
+	rowFilter func(key kv.Key) bool
 }
 
 func pbChunkToChunk(pbChk tipb.Chunk, chk *chunk.Chunk, fieldTypes []*types.FieldType) error {
@@ -1215,8 +1223,7 @@ func (e *closureExecutor) tableScanProcessCore(key, value []byte) error {
 	defer func(begin time.Time) {
 		e.scanCtx.execDetail.update(begin, incRow)
 	}(time.Now())
-	// temporary ignore edge key
-	if tablecodec.IsGraphEdgeKey(key) {
+	if e.rowFilter != nil && !e.rowFilter(key) {
 		return nil
 	}
 	handle, err := tablecodec.DecodeRowKeyByType(key)

@@ -359,6 +359,21 @@ func DecodeKeyHead(key kv.Key) (tableID int64, indexID int64, isRecordKey bool, 
 	return
 }
 
+func BuildRecordKeyFilter(tid int64, tableTp model.TableType) func(kv.Key) bool {
+	if tableTp != model.TableTypeIsGraphTag {
+		return nil
+	}
+
+	tidBuf := codec.EncodeInt(nil, tid)
+	return func(key kv.Key) bool {
+		if len(key) != GraphTagRecordRowKeyLen {
+			return false
+		}
+		// check tid
+		return bytes.Equal(tidBuf, key[len(key)-8:])
+	}
+}
+
 // DecodeTableID decodes the table ID of the key, if the key is not table key, returns 0.
 func DecodeTableID(key kv.Key) int64 {
 	if !key.HasPrefix(tablePrefix) {
@@ -371,8 +386,8 @@ func DecodeTableID(key kv.Key) int64 {
 	return tableID
 }
 
-func IsGraphEdgeKey(key kv.Key) bool {
-	return len(key) == GraphEdgeRecordRowKeyLen && key[0] == graphPrefix[0]
+func IsGraphKey(key kv.Key) bool {
+	return key.HasPrefix(graphPrefix)
 }
 
 func DecodeRowKeyByType(key kv.Key) (kv.Handle, error) {

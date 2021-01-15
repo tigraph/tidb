@@ -3968,7 +3968,7 @@ func (s *testSuite) TestWriteGraphWithUniqueIndex(c *C) {
 func (s *testSuite) TestWriteGraphInTxn(c *C) {
 	tk := testkit.NewTestKit(c, s.store)
 	tk.MustExec("use test")
-	tk.MustExec("drop table if exists p")
+	tk.MustExec("drop table if exists p,f")
 	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, unique index idx(name));")
 
 	tk.MustExec("begin")

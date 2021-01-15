@@ -157,6 +157,7 @@ type memTableReader struct {
 	colIDs        map[int64]int
 	buffer        allocBuf
 	pkColIDs      []int64
+	rowFilter     func(key kv.Key) bool
 }
 
 type allocBuf struct {
@@ -199,7 +200,8 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 			handleBytes: make([]byte, 0, 16),
 			rd:          rd,
 		},
-		pkColIDs: pkColIDs,
+		pkColIDs:  pkColIDs,
+		rowFilter: tablecodec.BuildRecordKeyFilter(getPhysicalTableID(us.table), us.table.Meta().Type),
 	}
 }
 
@@ -207,8 +209,7 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 	mutableRow := chunk.MutRowFromTypes(m.retFieldTypes)
 	err := iterTxnMemBuffer(m.ctx, m.kvRanges, func(key, value []byte) error {
-		// temporary ignore edge key
-		if tablecodec.IsGraphEdgeKey(key) {
+		if m.rowFilter != nil && !m.rowFilter(key) {
 			return nil
 		}
 		row, err := m.decodeRecordKeyValue(key, value)
@@ -454,6 +455,7 @@ func (m *memIndexLookUpReader) getMemRows() ([][]types.Datum, error) {
 			handleBytes: make([]byte, 0, 16),
 			rd:          rd,
 		},
+		rowFilter: tablecodec.BuildRecordKeyFilter(getPhysicalTableID(m.table), m.table.Meta().Type),
 	}
 
 	return memTblReader.getMemRows()
