@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	. "github.com/pingcap/check"
@@ -4054,4 +4055,38 @@ func (s *testSuite) TestTraverseGraph(c *C) {
 	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2000).tag(p);").Check(testkit.Rows("3 jack 23"))
 	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2010).tag(p);").Check(testkit.Rows())
 	tk.MustQuery("select * from p traverse out(f where time>=2015).tag(p);").Check(testkit.Rows("2 jim 22"))
+}
+
+func (s *testSuite) TestTraverseGraphWithMultiRelation(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	cases := []struct {
+		sql    string
+		result string
+	}{
+		{sql: "use test"},
+		{sql: "drop table if exists student,teacher,love,hate;"},
+		{sql: "create tag student (vertex_id bigint, name varchar(32), age int, unique index idx(name));"},
+		{sql: "create tag teacher (vertex_id bigint, name varchar(32), age int, unique index idx(name))"},
+		{sql: "insert into student values (1,'bob', 11),(2,'jim',12), (3, 'jack', 13);"},
+		{sql: "insert into teacher values (4,'BOB', 21),(5,'JIM',22), (6, 'JACK', 23);"},
+		{sql: "create edge love (`from` bigint, `to` bigint, time year);"},
+		{sql: "create edge hate (`from` bigint, `to` bigint, time year);"},
+		{sql: "insert into love values (1,2,2000),(2,3,2010),(1,5,2015);"},
+		{sql: "insert into hate values (2,4,2011),(3,1,2020);"},
+		{
+			sql:    "select * from student where name='bob' traverse out(love).tag(teacher);",
+			result: "5 JIM 22",
+		},
+		{
+			sql:    "select * from student where name='bob' traverse out(love).out(hate).tag(teacher);",
+			result: "4 BOB 21",
+		},
+	}
+	for _, ca := range cases {
+		if strings.HasPrefix(ca.sql, "select") {
+			tk.MustQuery(ca.sql).Check(testkit.Rows(strings.Split(ca.result, "|")...))
+		} else {
+			tk.MustExec(ca.sql)
+		}
+	}
 }

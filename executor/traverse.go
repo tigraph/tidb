@@ -284,6 +284,9 @@ func (e *TraverseExecutor) ConstructResultRow(ctx context.Context, vid int64, re
 	key := tablecodec.EncodeGraphTag(vid, e.resultTagID)
 	value, err := e.snapshot.Get(ctx, key)
 	if err != nil {
+		if kv.ErrNotExist.Equal(err) {
+			return nil
+		}
 		return err
 	}
 
