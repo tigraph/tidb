@@ -3,14 +3,14 @@ package executor
 import (
 	"context"
 	"github.com/pingcap/parser/mysql"
-	"sync"
-	"sync/atomic"
-
 	"github.com/pingcap/tidb/kv"
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/rowcodec"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 var _ Executor = &TraverseExecutor{}
@@ -50,6 +50,7 @@ type TraverseExecutor struct {
 	*rowcodec.ChunkDecoder
 	vertexIdOffsetInChild int64
 	prepared              bool
+	done                  bool
 
 	mu struct {
 		sync.Mutex
@@ -190,7 +191,7 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 
 			if finish {
 				select {
-				case <- e.closeCh:
+				case <-e.closeCh:
 					return nil
 				default:
 					e.traverseResultVIDCh <- resultID
@@ -211,12 +212,9 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 		atomic.AddInt64(&e.restRow, -1)
 		if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
 			e.mu.Unlock()
-			close(e.workerChan)
-			close(e.traverseResultVIDCh)
 			return nil
 		}
 		e.mu.Unlock()
-
 	}
 	return nil
 }
@@ -270,6 +268,9 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 	}
 
 	req.Reset()
+	if e.done {
+		return nil
+	}
 
 	for {
 		select {
@@ -290,8 +291,7 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 			atomic.AddInt64(&e.restRow, -1)
 			if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
 				e.mu.Unlock()
-				close(e.workerChan)
-				close(e.traverseResultVIDCh)
+				e.done = true
 				return nil
 			}
 			e.mu.Unlock()
@@ -301,6 +301,15 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 
 func (e *TraverseExecutor) Close() error {
 	close(e.closeCh)
+	close(e.workerChan)
+	go func() {
+		for range e.traverseResultVIDCh {
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	close(e.traverseResultVIDCh)
 	e.workerWg.Wait()
 	return nil
 }

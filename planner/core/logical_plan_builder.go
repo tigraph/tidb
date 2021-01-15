@@ -1002,7 +1002,11 @@ func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverse
 	if err != nil {
 		return nil, err
 	}
-	cols, _, err := expression.ColumnInfos2ColumnsAndNames(b.ctx, tag.Schema, tag.Name, tblInfo.Meta().Columns, tblInfo.Meta())
+	dbName := tag.Schema
+	if dbName.L == "" {
+		dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+	}
+	cols, _, err := expression.ColumnInfos2ColumnsAndNames(b.ctx, dbName, tag.Name, tblInfo.Meta().Columns, tblInfo.Meta())
 	if err != nil {
 		return nil, err
 	}
@@ -3393,6 +3397,17 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 		p, err = b.buildTraverse(ctx, p, sel.Traverse)
 		if err != nil {
 			return p, err
+		}
+		if len(gbyCols) > 0 {
+			for _, colExpr := range gbyCols {
+				if col, ok := colExpr.(*expression.Column); ok {
+					for _, traverseCol := range p.Schema().Columns {
+						if col.OrigName == traverseCol.OrigName {
+							col.UniqueID = traverseCol.UniqueID
+						}
+					}
+				}
+			}
 		}
 	}
 	if sel.LockInfo != nil && sel.LockInfo.LockType != ast.SelectLockNone {
