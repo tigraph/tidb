@@ -700,15 +700,15 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		return nil
 	}
 	t := &TraverseExecutor{
-		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
-		tablePlan:    v,
-		workerWg:      new(sync.WaitGroup),
-		conditionChain: make([]condition, 0),
-		workerChan: make(chan *tempResult),
-		fetchFromChildErr: make(chan error),
+		baseExecutor:        newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		tablePlan:           v,
+		workerWg:            new(sync.WaitGroup),
+		conditionChain:      make([]condition, 0),
+		workerChan:          make(chan *tempResult),
+		fetchFromChildErr:   make(chan error),
 		traverseResultVIDCh: make(chan int64),
-		closeCh: make(chan struct{}),
-		resultTagID: v.ResultTagID,
+		closeCh:             make(chan struct{}),
+		resultTagID:         v.ResultTagID,
 	}
 	for _, c := range v.TraverseChain.Verbs {
 		var dir DirType

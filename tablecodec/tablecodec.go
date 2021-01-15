@@ -172,7 +172,7 @@ func encodeGraphEdge(srcVertexID, dstVertexID, edgeID int64, tp byte) kv.Key {
 
 func DecodeGraphEdge(key kv.Key) (srcVertexID, dstVertexID, edgeID int64, isOut bool, err error) {
 	if len(key) != 28 {
-		return 0, 0, 0, false, errors.New( fmt.Sprintf("Wrong key, len: %d", len(key)))
+		return 0, 0, 0, false, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
 	}
 	if key[0] != graphPrefix[0] {
 		return 0, 0, 0, false, errors.New("Wrong prefix for graph")
@@ -180,7 +180,7 @@ func DecodeGraphEdge(key kv.Key) (srcVertexID, dstVertexID, edgeID int64, isOut 
 	dir := key[11]
 	if dir == graphEdgeOut {
 		isOut = true
-	} else if dir == graphEdgeIn  {
+	} else if dir == graphEdgeIn {
 		isOut = false
 	} else {
 		return 0, 0, 0, false, errors.New("Wrong direction for graph")
@@ -208,7 +208,7 @@ func DecodeGraphEdge(key kv.Key) (srcVertexID, dstVertexID, edgeID int64, isOut 
 
 func DecodeLastIDOfGraphEdge(key kv.Key) (id int64, err error) {
 	if len(key) != 28 {
-		return 0, errors.New( fmt.Sprintf("Wrong key, len: %d", len(key)))
+		return 0, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
 	}
 	if key[0] != graphPrefix[0] {
 		return 0, errors.New("Wrong prefix for graph")
