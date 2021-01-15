@@ -425,6 +425,19 @@ func DecodeGraphTagRowKey(key kv.Key) (kv.Handle, error) {
 	return kv.IntHandle(codec.DecodeCmpUintToInt(u)), nil
 }
 
+func DecodeGraphEdgeRowKey(key kv.Key) (kv.Handle, error) {
+	if len(key) != GraphEdgeRecordRowKeyLen || key[0] != graphPrefix[0] {
+		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
+	}
+	src := codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[graphPrefixLen:]))
+	dst := codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[graphPrefixLen+idLen+1+idLen:]))
+	handleBytes, err := codec.EncodeKey(nil, nil, types.NewIntDatum(src), types.NewIntDatum(dst))
+	if err != nil {
+		return nil, err
+	}
+	return kv.NewCommonHandle(handleBytes)
+}
+
 // EncodeValue encodes a go value to bytes.
 func EncodeValue(sc *stmtctx.StatementContext, b []byte, raw types.Datum) ([]byte, error) {
 	var v types.Datum

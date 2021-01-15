@@ -729,12 +729,38 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		}
 		edgeSchema, err := b.is.TableByName(edgeName.Schema, edgeName.Name)
 		if err != nil {
+			b.err = err
 			return nil
 		}
-		t.conditionChain = append(t.conditionChain, condition{edgeID: edgeSchema.Meta().ID, direction: dir})
+
+		// build condition for edge.
+		var expr expression.Expression
+		var rowDecoder *rowcodec.ChunkDecoder
+		var chk *chunk.Chunk
+		if c.Targets[0].Where != nil {
+			schema, names, err := expression.TableInfo2SchemaAndNames(b.ctx, edgeName.Schema, edgeSchema.Meta())
+			if err != nil {
+				b.err = err
+				return nil
+			}
+
+			expr, err = expression.RewriteSimpleExprWithNames(b.ctx, c.Targets[0].Where, schema, names)
+			if err != nil {
+				b.err = err
+				return nil
+			}
+			rowDecoder = NewRowDecoder(b.ctx, schema, edgeSchema.Meta())
+			retFieldTypes := make([]*types.FieldType, len(schema.Columns))
+			for i := range schema.Columns {
+				retFieldTypes[i] = schema.Columns[i].RetType
+			}
+			chk = chunk.New(retFieldTypes, 1, 1)
+		}
+		t.conditionChain = append(t.conditionChain, condition{edgeID: edgeSchema.Meta().ID, direction: dir, cond: expr, rowDecoder: rowDecoder, chk: chk})
 	}
 	startTS, err := b.getSnapshotTS()
 	if err != nil {
+		b.err = err
 		return nil
 	}
 	t.startTS = startTS

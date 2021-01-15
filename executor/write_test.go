@@ -4039,3 +4039,19 @@ func (s *testSuite) TestWriteGraphInTxn(c *C) {
 	tk.MustQuery("select * from f where `from`=1 and `to` = 3").Check(testkit.Rows("1 3"))
 	tk.MustExec("rollback")
 }
+
+func (s *testSuite) TestTraverseGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, unique index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22), (3, 'jack', 23);")
+
+	tk.MustExec("create edge f (`from` bigint, `to` bigint, time year);")
+	tk.MustExec("insert into f values (1,3, 2000),(1,2,2001), (2,3,2010), (3,2,2020)")
+
+	tk.MustQuery("select * from p where name='bob' traverse out(f).tag(p);").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2000).tag(p);").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2010).tag(p);").Check(testkit.Rows())
+	tk.MustQuery("select * from p traverse out(f where time>=2015).tag(p);").Check(testkit.Rows("2 jim 22"))
+}

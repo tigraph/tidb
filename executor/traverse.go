@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"github.com/pingcap/parser/mysql"
+	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/kv"
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/tablecodec"
@@ -31,8 +32,11 @@ const (
 )
 
 type condition struct {
-	edgeID    int64
-	direction DirType
+	edgeID     int64
+	direction  DirType
+	cond       expression.Expression
+	rowDecoder *rowcodec.ChunkDecoder
+	chk        *chunk.Chunk
 }
 
 type TraverseExecutor struct {
@@ -172,6 +176,7 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID+1)
 			// TODO: cross validate
 		}
+		cond := e.conditionChain[level]
 		iter, err := e.snapshot.Iter(kvRange.StartKey, kvRange.EndKey)
 		if err != nil {
 			return err
@@ -183,22 +188,44 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 		}
 		for iter.Valid() {
 			k := iter.Key()
-			resultID, err := tablecodec.DecodeLastIDOfGraphEdge(k)
-			if err != nil {
-				return err
-			}
-
-			atomic.AddInt64(&e.restRow, 1)
-
-			if finish {
-				select {
-				case <-e.closeCh:
-					return nil
-				default:
-					e.traverseResultVIDCh <- resultID
+			used := true
+			if cond.cond != nil {
+				v := iter.Value()
+				handle, err := tablecodec.DecodeGraphEdgeRowKey(k)
+				if err != nil {
+					return err
 				}
-			} else {
-				newTask.vertexIds = append(newTask.vertexIds, resultID)
+				cond.chk.Reset()
+				err = cond.rowDecoder.DecodeToChunk(v, handle, cond.chk)
+				if err != nil {
+					return err
+				}
+				val, isNull, err := cond.cond.EvalInt(e.ctx, cond.chk.GetRow(0))
+				if err != nil {
+					return err
+				}
+				if val <= 0 || isNull {
+					used = false
+				}
+			}
+			if used {
+				resultID, err := tablecodec.DecodeLastIDOfGraphEdge(k)
+				if err != nil {
+					return err
+				}
+
+				atomic.AddInt64(&e.restRow, 1)
+
+				if finish {
+					select {
+					case <-e.closeCh:
+						return nil
+					default:
+						e.traverseResultVIDCh <- resultID
+					}
+				} else {
+					newTask.vertexIds = append(newTask.vertexIds, resultID)
+				}
 			}
 
 			err = iter.Next()
