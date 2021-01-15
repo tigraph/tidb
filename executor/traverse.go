@@ -195,7 +195,6 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 				default:
 					e.traverseResultVIDCh <- resultID
 				}
-				e.traverseResultVIDCh <- resultID
 			} else {
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
 			}
