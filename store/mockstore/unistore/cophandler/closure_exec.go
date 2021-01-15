@@ -1108,6 +1108,9 @@ func (e *tableScanProcessor) Process(key, value []byte) error {
 	if e.rowCount == e.limit {
 		return dbreader.ScanBreak
 	}
+	if e.rowFilter != nil && !e.rowFilter(key) {
+		return nil
+	}
 	e.rowCount++
 	err := e.tableScanProcessCore(key, value)
 	if e.scanCtx.chk.NumRows() == chunkMaxRows {
@@ -1223,9 +1226,6 @@ func (e *closureExecutor) tableScanProcessCore(key, value []byte) error {
 	defer func(begin time.Time) {
 		e.scanCtx.execDetail.update(begin, incRow)
 	}(time.Now())
-	if e.rowFilter != nil && !e.rowFilter(key) {
-		return nil
-	}
 	handle, err := tablecodec.DecodeRowKeyByType(key)
 	if err != nil {
 		return errors.Trace(err)
@@ -1332,6 +1332,9 @@ func (e *selectionProcessor) Process(key, value []byte) error {
 	if e.rowCount == e.limit {
 		return dbreader.ScanBreak
 	}
+	if e.rowFilter != nil && !e.rowFilter(key) {
+		return nil
+	}
 	err := e.processCore(key, value)
 	if err != nil {
 		return errors.Trace(err)
@@ -1363,6 +1366,9 @@ func (e *topNProcessor) Process(key, value []byte) (err error) {
 	defer func(begin time.Time) {
 		e.topNCtx.execDetail.update(begin, gotRow)
 	}(time.Now())
+	if e.rowFilter != nil && !e.rowFilter(key) {
+		return nil
+	}
 	if err = e.processCore(key, value); err != nil {
 		return err
 	}
@@ -1407,6 +1413,9 @@ func (e *topNProcessor) Finish() error {
 	sort.Sort(&ctx.heap.topNSorter)
 	chk := e.scanCtx.chk
 	for _, row := range ctx.heap.rows {
+		if e.rowFilter != nil && !e.rowFilter(row.data[0]) {
+			return nil
+		}
 		err := e.processCore(row.data[0], row.data[1])
 		if err != nil {
 			return err
@@ -1436,6 +1445,9 @@ func (e *hashAggProcessor) Process(key, value []byte) (err error) {
 	defer func(begin time.Time) {
 		e.aggCtx.execDetail.update(begin, incRow)
 	}(time.Now())
+	if e.rowFilter != nil && !e.rowFilter(key) {
+		return nil
+	}
 	err = e.processCore(key, value)
 	if err != nil {
 		return err

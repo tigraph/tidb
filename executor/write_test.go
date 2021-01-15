@@ -3915,6 +3915,10 @@ func (s *testSuite) TestWriteGraphWithIndex(c *C) {
 	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, index idx(name));")
 	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
 	tk.MustExec("insert into p values (3,'jack', 23);")
+	// Add some edge to skip when scan tag data.
+	tk.MustExec("create edge f (`from` bigint, `to` bigint);")
+	tk.MustExec("insert into f values (1,3),(1,2),(2,1),(3,2)")
+
 	// Test for index look up
 	tk.MustQuery("select * from p use index (idx) where name='jim'").Check(testkit.Rows("2 jim 22"))
 	tk.MustQuery("select * from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
@@ -3926,6 +3930,18 @@ func (s *testSuite) TestWriteGraphWithIndex(c *C) {
 	tk.MustQuery("select vertex_id, name from p use index (idx) where name > 'bob'").Check(testkit.Rows("3 jack"))
 	tk.MustQuery("select vertex_id, name from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob"))
 	tk.MustQuery("select vertex_id, name from p use index (idx) where name='none'").Check(testkit.Rows())
+
+	// test selection push down.
+	tk.MustQuery("select * from p where age < 100").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select * from p where age < 100 limit 2").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select * from p where age < 100 limit 1").Check(testkit.Rows("1 bob 21"))
+	// test agg push down.
+	tk.MustQuery("select count(*) from p where age < 100").Check(testkit.Rows("2"))
+	tk.MustQuery("select count(*) from p where age < 23").Check(testkit.Rows("1"))
+	// test TopN push down.
+	tk.MustQuery("select * from p where age < 100 order by age desc limit 2").Check(testkit.Rows("3 jack 23", "1 bob 21"))
+	tk.MustQuery("select * from p where age < 100 order by age desc limit 1").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select * from p where age < 23 order by age desc limit 2").Check(testkit.Rows("1 bob 21"))
 }
 
 func (s *testSuite) TestWriteGraphWithUniqueIndex(c *C) {
