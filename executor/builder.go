@@ -708,6 +708,7 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		fetchFromChildErr:   make(chan error),
 		traverseResultVIDCh: make(chan int64),
 		closeCh:             make(chan struct{}),
+		closeNext:           make(chan struct{}),
 		resultTagID:         v.ResultTagID,
 	}
 	for _, c := range v.TraverseChain.Verbs {

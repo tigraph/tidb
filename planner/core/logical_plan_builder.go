@@ -3398,17 +3398,6 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 		if err != nil {
 			return p, err
 		}
-		if len(gbyCols) > 0 {
-			for _, colExpr := range gbyCols {
-				if col, ok := colExpr.(*expression.Column); ok {
-					for _, traverseCol := range p.Schema().Columns {
-						if col.OrigName == traverseCol.OrigName {
-							col.UniqueID = traverseCol.UniqueID
-						}
-					}
-				}
-			}
-		}
 	}
 	if sel.LockInfo != nil && sel.LockInfo.LockType != ast.SelectLockNone {
 		if sel.LockInfo.LockType == ast.SelectLockForShare && !enableNoopFuncs {

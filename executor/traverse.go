@@ -62,6 +62,7 @@ type TraverseExecutor struct {
 	fetchFromChildErr   chan error
 	traverseResultVIDCh chan int64
 	closeCh             chan struct{}
+	closeNext           chan struct{}
 
 	tablePlan plannercore.PhysicalPlan
 }
@@ -211,6 +212,8 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 		e.mu.Lock()
 		atomic.AddInt64(&e.restRow, -1)
 		if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
+			e.done = true
+			close(e.closeNext)
 			e.mu.Unlock()
 			return nil
 		}
@@ -276,6 +279,8 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		select {
 		case err := <-e.fetchFromChildErr:
 			return err
+		case <-e.closeNext:
+			return nil
 		case vid, ok := <-e.traverseResultVIDCh:
 			if !ok {
 				return nil
