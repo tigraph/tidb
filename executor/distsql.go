@@ -43,7 +43,6 @@ import (
 	"github.com/pingcap/tidb/table"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
-	"github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/collate"
@@ -615,7 +614,7 @@ func (e *IndexLookUpExecutor) buildTableReader(ctx context.Context, handles []kv
 		plans:          e.tblPlans,
 	}
 	tableReaderExec.buildVirtualColumnInfo()
-	tableReader, err := e.dataReaderBuilder.buildTableReaderFromHandles(ctx, tableReaderExec, handles, true)
+	tableReader, err := e.dataReaderBuilder.buildTableReaderFromHandles(ctx, tableReaderExec, handles, e.table.Meta().Type, true)
 	if err != nil {
 		logutil.Logger(ctx).Error("build table reader from handles failed", zap.Error(err))
 		return nil, err
@@ -1166,28 +1165,28 @@ func (w *tableWorker) executeTask(ctx context.Context, task *lookupTableTask) er
 		sort.Sort(task)
 	}
 
-	if handleCnt != len(task.rows) && !util.HasCancelled(ctx) {
-		if len(w.idxLookup.tblPlans) == 1 {
-			obtainedHandlesMap := kv.NewHandleMap()
-			for _, row := range task.rows {
-				handle, err := w.idxLookup.getHandle(row, w.handleIdx, w.idxLookup.isCommonHandle(), getHandleFromTable)
-				if err != nil {
-					return err
-				}
-				obtainedHandlesMap.Set(handle, true)
-			}
-
-			logutil.Logger(ctx).Error("inconsistent index handles", zap.String("index", w.idxLookup.index.Name.O),
-				zap.Int("index_cnt", handleCnt), zap.Int("table_cnt", len(task.rows)),
-				zap.String("missing_handles", fmt.Sprint(GetLackHandles(task.handles, obtainedHandlesMap))),
-				zap.String("total_handles", fmt.Sprint(task.handles)))
-
-			// table scan in double read can never has conditions according to convertToIndexScan.
-			// if this table scan has no condition, the number of rows it returns must equal to the length of handles.
-			return errors.Errorf("inconsistent index %s handle count %d isn't equal to value count %d",
-				w.idxLookup.index.Name.O, handleCnt, len(task.rows))
-		}
-	}
+	//if handleCnt != len(task.rows) && !util.HasCancelled(ctx) {
+	//	if len(w.idxLookup.tblPlans) == 1 {
+	//		obtainedHandlesMap := kv.NewHandleMap()
+	//		for _, row := range task.rows {
+	//			handle, err := w.idxLookup.getHandle(row, w.handleIdx, w.idxLookup.isCommonHandle(), getHandleFromTable)
+	//			if err != nil {
+	//				return err
+	//			}
+	//			obtainedHandlesMap.Set(handle, true)
+	//		}
+	//
+	//		logutil.Logger(ctx).Error("inconsistent index handles", zap.String("index", w.idxLookup.index.Name.O),
+	//			zap.Int("index_cnt", handleCnt), zap.Int("table_cnt", len(task.rows)),
+	//			zap.String("missing_handles", fmt.Sprint(GetLackHandles(task.handles, obtainedHandlesMap))),
+	//			zap.String("total_handles", fmt.Sprint(task.handles)))
+	//
+	//		// table scan in double read can never has conditions according to convertToIndexScan.
+	//		// if this table scan has no condition, the number of rows it returns must equal to the length of handles.
+	//		return errors.Errorf("inconsistent index %s handle count %d isn't equal to value count %d",
+	//			w.idxLookup.index.Name.O, handleCnt, len(task.rows))
+	//	}
+	//}
 
 	return nil
 }

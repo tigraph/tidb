@@ -171,8 +171,13 @@ func (p *LogicalTraverse) findBestTask(prop *property.PhysicalProperty, planCoun
 	if !prop.IsEmpty() || planCounter.Empty() {
 		return invalidTask, 0, nil
 	}
-	pShow := PhysicalTraverse{TraverseChain: p.TraverseChain}.Init(p.ctx, p.stats, p.blockOffset)
+	cp, _, err := p.children[0].findBestTask(prop, planCounter)
+	if err != nil {
+		return nil, 0, err
+	}
+	pShow := PhysicalTraverse{TraverseChain: p.TraverseChain, ResultTagID: p.ResultTagID}.Init(p.ctx, p.stats, p.blockOffset)
 	pShow.SetSchema(p.schema)
+	pShow.SetChildren(cp.plan())
 	planCounter.Dec(1)
 	return &rootTask{p: pShow}, 1, nil
 }

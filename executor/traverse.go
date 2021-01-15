@@ -2,12 +2,13 @@ package executor
 
 import (
 	"context"
+	"sync"
+
 	"github.com/pingcap/tidb/kv"
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/rowcodec"
-	"sync"
 )
 
 var _ Executor = &TraverseExecutor{}
@@ -35,25 +36,25 @@ type condition struct {
 type TraverseExecutor struct {
 	baseExecutor
 
-	startTS      uint64
-	txn          kv.Transaction
-	snapshot     kv.Snapshot
-	workerWg *sync.WaitGroup
-	doneErr  error
+	startTS     uint64
+	txn         kv.Transaction
+	snapshot    kv.Snapshot
+	workerWg    *sync.WaitGroup
+	doneErr     error
 	resultTagID int64
 
 	conditionChain []condition
 
 	*rowcodec.ChunkDecoder
 	vertexIdOffsetInChild int64
-	prepared    bool
+	prepared              bool
 
-	workerChan chan *tempResult
-	fetchFromChildErr chan error
+	workerChan          chan *tempResult
+	fetchFromChildErr   chan error
 	traverseResultVIDCh chan int64
-	closeCh chan struct{}
+	closeCh             chan struct{}
 
-	tablePlan           plannercore.PhysicalPlan
+	tablePlan plannercore.PhysicalPlan
 }
 
 func (e *TraverseExecutor) Init(p *plannercore.PointGetPlan, startTs uint64) {
@@ -143,12 +144,12 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 	level := task.chainLevel
 	finish := false
 	var newTask tempResult
-	if level == int64(len(e.conditionChain)) {
+	if level+1 == int64(len(e.conditionChain)) {
 		finish = true
 	}
 	for _, vertexId := range task.vertexIds {
 		var kvRange kv.KeyRange
-		switch  e.conditionChain[level].direction {
+		switch e.conditionChain[level].direction {
 		case OUT:
 			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID)
 			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID+1)
@@ -167,7 +168,7 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 		if !finish {
 			newTask = tempResult{}
 			newTask.vertexIds = make([]int64, 0, 100)
-			newTask.chainLevel= level+1
+			newTask.chainLevel = level + 1
 		}
 		for iter.Valid() {
 			k := iter.Key()
@@ -194,7 +195,7 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 	return nil
 }
 
-func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context)  {
+func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) {
 	defer func() {
 		e.workerWg.Done()
 	}()
@@ -242,9 +243,9 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 
 	for {
 		select {
-		case err := <- e.fetchFromChildErr:
+		case err := <-e.fetchFromChildErr:
 			return err
-		case vid, ok := <- e.traverseResultVIDCh:
+		case vid, ok := <-e.traverseResultVIDCh:
 			if !ok {
 				return nil
 			}

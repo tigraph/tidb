@@ -1800,6 +1800,10 @@ func (it *infoschemaTable) RecordKey(h kv.Handle) kv.Key {
 	return nil
 }
 
+func (it *infoschemaTable) RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error) {
+	return nil, nil
+}
+
 // AddRecord implements table.Table AddRecord interface.
 func (it *infoschemaTable) AddRecord(ctx sessionctx.Context, r []types.Datum, opts ...table.AddRecordOption) (recordID kv.Handle, err error) {
 	return nil, table.ErrUnsupportedOp
@@ -1925,6 +1929,10 @@ func (vt *VirtualTable) FirstKey() kv.Key {
 // RecordKey implements table.Table RecordKey interface.
 func (vt *VirtualTable) RecordKey(h kv.Handle) kv.Key {
 	return nil
+}
+
+func (vt *VirtualTable) RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error) {
+	return nil, nil
 }
 
 // AddRecord implements table.Table AddRecord interface.

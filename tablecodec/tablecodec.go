@@ -213,7 +213,7 @@ func DecodeLastIDOfGraphEdge(key kv.Key) (id int64, err error) {
 	if key[0] != graphPrefix[0] {
 		return 0, errors.New("Wrong prefix for graph")
 	}
-	_, id, err = codec.DecodeInt(key[19:27])
+	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[20:28]))
 	return id, errors.Trace(err)
 }
 

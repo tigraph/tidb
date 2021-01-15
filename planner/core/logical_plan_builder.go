@@ -998,13 +998,18 @@ func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverse
 	}
 	tag := outputTag.Names[0]
 
-	cols, _, err := expression.ColumnInfos2ColumnsAndNames(b.ctx, tag.Schema, tag.Name, tag.TableInfo.Columns, tag.TableInfo)
+	tblInfo, err := b.is.TableByName(model.NewCIStr(b.ctx.GetSessionVars().CurrentDB), tag.Name)
+	if err != nil {
+		return nil, err
+	}
+	cols, _, err := expression.ColumnInfos2ColumnsAndNames(b.ctx, tag.Schema, tag.Name, tblInfo.Meta().Columns, tblInfo.Meta())
 	if err != nil {
 		return nil, err
 	}
 
 	schema := expression.NewSchema(cols...)
 	traverse.TraverseChain = traverseChain
+	traverse.ResultTagID = tblInfo.Meta().ID
 	traverse.SetChildren(p)
 	traverse.SetSchema(schema)
 	return traverse, nil

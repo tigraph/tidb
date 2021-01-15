@@ -185,6 +185,8 @@ type Table interface {
 	// RecordKey returns the key in KV storage for the row.
 	RecordKey(h kv.Handle) kv.Key
 
+	RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error)
+
 	// AddRecord inserts a row which should contain only public columns
 	AddRecord(ctx sessionctx.Context, r []types.Datum, opts ...AddRecordOption) (recordID kv.Handle, err error)
 
