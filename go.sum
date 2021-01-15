@@ -864,6 +864,8 @@ github.com/tidwall/match v1.0.1/go.mod h1:LujAq0jyVjBy028G1WhWfIzbpQfMO8bBZ6Tyb0
 github.com/tidwall/pretty v1.0.0/go.mod h1:XNkn88O1ChpSDQmQeStsy+sBenx6DDtFZJxhVysOjyk=
 github.com/tigraph/parser v0.0.0-20210109101955-4a1d9058ef89 h1:/kewtvQBiRm/mYXNlQGE2yNJ/xd/U4ssQEK9/RU1rJY=
 github.com/tigraph/parser v0.0.0-20210109101955-4a1d9058ef89/go.mod h1:GbEr2PgY72/4XqPZzmzstlOU/+il/wrjeTNFs6ihsSE=
+github.com/tigraph/parser v0.0.0-20210115081433-df7fd1bbd6d4 h1:sJ52Nir+Go+S4UbpK0Iia+rTk5Q+LjiNM1lZ6KnGT1M=
+github.com/tigraph/parser v0.0.0-20210115081433-df7fd1bbd6d4/go.mod h1:GbEr2PgY72/4XqPZzmzstlOU/+il/wrjeTNFs6ihsSE=
 github.com/tikv/client-go v0.0.0-20190421092910-44b82dcc9f4a h1:T5KtAsfCLJDwgdJjHp9xzJUYb/s6tPoSMiAHw8SFd3o=
 github.com/tikv/client-go v0.0.0-20190421092910-44b82dcc9f4a/go.mod h1:K0NcdVNrXDq92YPLytsrAwRMyuXi7GZCO6dXNH7OzQc=
 github.com/tikv/pd v1.1.0-beta.0.20200824114021-f8c45ae287fd/go.mod h1:quwjWtCmawAvS+YdxtSKG08sEexLzkhQgAno59wW+lI=

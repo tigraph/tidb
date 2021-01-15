@@ -722,7 +722,7 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		case ast.TraverseActionTags:
 			continue
 		}
-		edgeName := c.Names[0]
+		edgeName := c.Targets[0].Name
 		if edgeName.Schema.L == "" {
 			edgeName.Schema = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
 		}

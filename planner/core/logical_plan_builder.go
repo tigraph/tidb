@@ -996,7 +996,7 @@ func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverse
 	if outputTag.Action != ast.TraverseActionTags {
 		return nil, errors.New("Wrong traverse definition")
 	}
-	tag := outputTag.Names[0]
+	tag := outputTag.Targets[0].Name
 
 	tblInfo, err := b.is.TableByName(model.NewCIStr(b.ctx.GetSessionVars().CurrentDB), tag.Name)
 	if err != nil {
