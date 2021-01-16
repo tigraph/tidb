@@ -54,6 +54,8 @@ github.com/Masterminds/semver v1.5.0/go.mod h1:MB6lktGJrhw8PrUyiEoblNEGEQ+RzHPF0
 github.com/MichaelS11/go-cql-driver v0.0.0-20190914174813-cf3b3196aa43/go.mod h1:nW8K1gl1mu8o29Ns1Sv/EvYe9BBrh1T/GqucnYcO9PI=
 github.com/OneOfOne/xxhash v1.2.2 h1:KMrpdQIwFcEqXDklaen+P1axHaj9BSKzvpUUfnHldSE=
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
+github.com/Pallinder/go-randomdata v1.2.0 h1:DZ41wBchNRb/0GfsePLiSwb0PHZmT67XY00lCDlaYPg=
+github.com/Pallinder/go-randomdata v1.2.0/go.mod h1:yHmJgulpD2Nfrm0cR9tI/+oAgRqCQQixsA8HyRZfV9Y=
 github.com/PuerkitoBio/purell v1.1.0/go.mod h1:c11w/QuzBsJSee3cPx9rAFu61PvFxuPbtSwDGJws/X0=
 github.com/PuerkitoBio/purell v1.1.1/go.mod h1:c11w/QuzBsJSee3cPx9rAFu61PvFxuPbtSwDGJws/X0=
 github.com/PuerkitoBio/urlesc v0.0.0-20170810143723-de5bf2ad4578/go.mod h1:uGdkoq3SwY9Y+13GIhn11/XLaGBb4BfwItxLd5jeuXE=
@@ -862,10 +864,8 @@ github.com/tiancaiamao/appdash v0.0.0-20181126055449-889f96f722a2/go.mod h1:2PfK
 github.com/tidwall/gjson v1.3.5/go.mod h1:P256ACg0Mn+j1RXIDXoss50DeIABTYK1PULOJHhxOls=
 github.com/tidwall/match v1.0.1/go.mod h1:LujAq0jyVjBy028G1WhWfIzbpQfMO8bBZ6Tyb0+pL9E=
 github.com/tidwall/pretty v1.0.0/go.mod h1:XNkn88O1ChpSDQmQeStsy+sBenx6DDtFZJxhVysOjyk=
-github.com/tigraph/parser v0.0.0-20210109101955-4a1d9058ef89 h1:/kewtvQBiRm/mYXNlQGE2yNJ/xd/U4ssQEK9/RU1rJY=
-github.com/tigraph/parser v0.0.0-20210109101955-4a1d9058ef89/go.mod h1:GbEr2PgY72/4XqPZzmzstlOU/+il/wrjeTNFs6ihsSE=
-github.com/tigraph/parser v0.0.0-20210115081433-df7fd1bbd6d4 h1:sJ52Nir+Go+S4UbpK0Iia+rTk5Q+LjiNM1lZ6KnGT1M=
-github.com/tigraph/parser v0.0.0-20210115081433-df7fd1bbd6d4/go.mod h1:GbEr2PgY72/4XqPZzmzstlOU/+il/wrjeTNFs6ihsSE=
+github.com/tigraph/parser v0.0.0-20210116110552-c3196a642930 h1:Y4dbmBkFEn/H9FejtssNjPDi7bbCSfckLl905QcRjdE=
+github.com/tigraph/parser v0.0.0-20210116110552-c3196a642930/go.mod h1:GbEr2PgY72/4XqPZzmzstlOU/+il/wrjeTNFs6ihsSE=
 github.com/tikv/client-go v0.0.0-20190421092910-44b82dcc9f4a h1:T5KtAsfCLJDwgdJjHp9xzJUYb/s6tPoSMiAHw8SFd3o=
 github.com/tikv/client-go v0.0.0-20190421092910-44b82dcc9f4a/go.mod h1:K0NcdVNrXDq92YPLytsrAwRMyuXi7GZCO6dXNH7OzQc=
 github.com/tikv/pd v1.1.0-beta.0.20200824114021-f8c45ae287fd/go.mod h1:quwjWtCmawAvS+YdxtSKG08sEexLzkhQgAno59wW+lI=

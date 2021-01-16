@@ -1756,8 +1756,8 @@ func checkGraphInfo(tbInfo *model.TableInfo) error {
 
 func checkGraphTagInfo(tbInfo *model.TableInfo) error {
 	if tbInfo.Type == model.TableTypeIsGraphTag {
-		if tbInfo.Columns[0].Name.L != "vertex_id" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
-			return errors.Errorf("the first column of graph tag should be 'vertex_id bigint'")
+		if tbInfo.Columns[0].Name.L != "id" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
+			return errors.Errorf("the first column of graph tag should be 'id bigint'")
 		}
 	}
 	return nil
@@ -1766,13 +1766,13 @@ func checkGraphTagInfo(tbInfo *model.TableInfo) error {
 func checkGraphEdgeInfo(tbInfo *model.TableInfo) error {
 	if tbInfo.Type == model.TableTypeIsGraphEdge {
 		if len(tbInfo.Columns) < 2 {
-			return errors.Errorf("graph edge should at lease contain 2 columns: `from` bigint, `to` bigint")
+			return errors.Errorf("graph edge should at lease contain 2 columns: `src` bigint, `dst` bigint")
 		}
-		if tbInfo.Columns[0].Name.L != "from" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
-			return errors.Errorf("the first column of graph edge should be '`from` bigint'")
+		if tbInfo.Columns[0].Name.L != "src" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
+			return errors.Errorf("the first column of graph edge should be '`src` bigint'")
 		}
-		if tbInfo.Columns[1].Name.L != "to" || tbInfo.Columns[1].Tp != mysql.TypeLonglong {
-			return errors.Errorf("the second column of graph edge should be '`to` bigint'")
+		if tbInfo.Columns[1].Name.L != "dst" || tbInfo.Columns[1].Tp != mysql.TypeLonglong {
+			return errors.Errorf("the second column of graph edge should be '`dst` bigint'")
 		}
 	}
 	return nil
