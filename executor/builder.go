@@ -700,15 +700,15 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		return nil
 	}
 	t := &TraverseExecutor{
-		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
-		tablePlan:    v,
-		workerWg:     new(sync.WaitGroup),
-		conditions:   make([]condition, 0),
-		workerCh:     make(chan *traverseTask),
-		childErr:     make(chan error),
-		results:      make(chan []int64),
-		die:          make(chan struct{}),
-		resultTagID:  v.ResultTagID,
+		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		tablePlan:      v,
+		workerWg:       new(sync.WaitGroup),
+		traverseLevels: make([]traverseLevel, 0),
+		workerCh:       make(chan *traverseTask),
+		childErr:       make(chan error),
+		results:        make(chan []int64),
+		die:            make(chan struct{}),
+		resultTagID:    v.ResultTagID,
 	}
 	for _, c := range v.TraverseChain.Verbs {
 		var dir DirType
@@ -755,7 +755,7 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 			}
 			chk = chunk.New(retFieldTypes, 1, 1)
 		}
-		t.conditions = append(t.conditions, condition{edgeID: edgeSchema.Meta().ID, direction: dir, cond: expr, rowDecoder: rowDecoder, chk: chk})
+		t.traverseLevels = append(t.traverseLevels, traverseLevel{edgeID: edgeSchema.Meta().ID, direction: dir, cond: expr, rowDecoder: rowDecoder, chk: chk})
 	}
 	startTS, err := b.getSnapshotTS()
 	if err != nil {

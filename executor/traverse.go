@@ -30,7 +30,7 @@ const (
 	BOTH
 )
 
-type condition struct {
+type traverseLevel struct {
 	edgeID     int64
 	direction  DirType
 	cond       expression.Expression
@@ -51,7 +51,7 @@ type TraverseExecutor struct {
 	doneErr     error
 	resultTagID int64
 
-	conditions []condition
+	traverseLevels []traverseLevel
 
 	codec     *rowcodec.ChunkDecoder
 	vidOffset int64
@@ -116,8 +116,8 @@ func (e *TraverseExecutor) Open(ctx context.Context) error {
 		return err
 	}
 
-	for i := range e.conditions {
-		e.conditions[i].dedup = &sync.Map{}
+	for i := range e.traverseLevels {
+		e.traverseLevels[i].dedup = &sync.Map{}
 	}
 
 	e.startWorkers(ctx)
@@ -157,21 +157,21 @@ func (e *TraverseExecutor) startWorkers(ctx context.Context) {
 
 func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) error {
 	level := task.chainLevel
-	final := level+1 == int64(len(e.conditions))
-	cond := e.conditions[level]
+	final := level+1 == int64(len(e.traverseLevels))
+	cond := e.traverseLevels[level]
 
 	for _, vid := range task.vertexIds {
 		var kvRange kv.KeyRange
-		switch e.conditions[level].direction {
+		switch e.traverseLevels[level].direction {
 		case OUT:
-			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID)
-			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID+1)
+			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.traverseLevels[level].edgeID)
+			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.traverseLevels[level].edgeID+1)
 		case IN:
-			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, false, e.conditions[level].edgeID)
-			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, false, e.conditions[level].edgeID+1)
+			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, false, e.traverseLevels[level].edgeID)
+			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, false, e.traverseLevels[level].edgeID+1)
 		case BOTH:
-			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID)
-			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID+1)
+			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.traverseLevels[level].edgeID)
+			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.traverseLevels[level].edgeID+1)
 			// TODO: cross validate
 		}
 
