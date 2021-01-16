@@ -16,6 +16,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -699,14 +700,16 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 	if b.err != nil {
 		return nil
 	}
+	concurrency := runtime.NumCPU()
 	t := &TraverseExecutor{
 		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		concurrency:    concurrency,
 		tablePlan:      v,
 		workerWg:       new(sync.WaitGroup),
 		traverseLevels: make([]*traverseLevel, 0),
-		workerCh:       make(chan *traverseTask),
+		workerCh:       make(chan *traverseTask, concurrency*1000),
 		childErr:       make(chan error),
-		results:        make(chan []int64),
+		results:        make(chan *chunk.Chunk, concurrency*10),
 		die:            make(chan struct{}),
 		resultTagID:    v.ResultTagID,
 	}

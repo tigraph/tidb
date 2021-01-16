@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"runtime"
 	"sync"
 
 	"github.com/pingcap/parser/mysql"
@@ -44,8 +43,9 @@ type traverseLevel struct {
 
 type TraverseExecutor struct {
 	baseExecutor
-	prepared bool
-	done     bool
+	concurrency int
+	prepared    bool
+	done        bool
 
 	startTS     uint64
 	txn         kv.Transaction
@@ -64,12 +64,10 @@ type TraverseExecutor struct {
 
 	workerCh chan *traverseTask
 	childErr chan error
-	results  chan []int64
+	results  chan *chunk.Chunk
 	die      chan struct{}
 
 	tablePlan plannercore.PhysicalPlan
-
-	cacheKeys []kv.Key
 }
 
 func (e *TraverseExecutor) Init(p *plannercore.PointGetPlan, startTs uint64) {
@@ -150,10 +148,8 @@ func (e *TraverseExecutor) runWorker(ctx context.Context) {
 }
 
 func (e *TraverseExecutor) startWorkers(ctx context.Context) {
-	concurrency := runtime.NumCPU()
-	e.workerCh = make(chan *traverseTask, concurrency*1000)
-	e.workerWg.Add(concurrency)
-	for i := 0; i < concurrency; i++ {
+	e.workerWg.Add(e.concurrency)
+	for i := 0; i < e.concurrency; i++ {
 		go e.runWorker(ctx)
 	}
 }
@@ -233,7 +229,13 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 			if final {
 				vids = append(vids, resultID)
 				if len(vids) == batchSize {
-					e.results <- vids
+					chk, err := e.batchGetVertex(ctx, vids)
+					if err != nil {
+						return err
+					}
+					if chk.NumRows() > 0 {
+						e.results <- chk
+					}
 					vids = make([]int64, 0, batchSize)
 				}
 			} else {
@@ -241,7 +243,13 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 			}
 		}
 		if final && len(vids) > 0 {
-			e.results <- vids
+			chk, err := e.batchGetVertex(ctx, vids)
+			if err != nil {
+				return err
+			}
+			if chk.NumRows() > 0 {
+				e.results <- chk
+			}
 		}
 		if newTask != nil {
 			e.pushTask(newTask)
@@ -298,35 +306,35 @@ func (e *TraverseExecutor) pushTask(task *traverseTask) {
 	e.pendingTasks.Add(1)
 }
 
-func (e *TraverseExecutor) appendResult(ctx context.Context, vids []int64, req *chunk.Chunk) error {
-	if cap(e.cacheKeys) < len(vids) {
-		e.cacheKeys = make([]kv.Key, 0, len(vids))
-	}
-	e.cacheKeys = e.cacheKeys[:0]
+func (e *TraverseExecutor) batchGetVertex(ctx context.Context, vids []int64) (*chunk.Chunk, error) {
+	base := e.base()
+	chk := chunk.New(base.retFieldTypes, len(vids), len(vids))
+
+	cacheKeys := make([]kv.Key, 0, len(vids))
 	for _, vid := range vids {
 		key := tablecodec.EncodeGraphTag(vid, e.resultTagID)
-		e.cacheKeys = append(e.cacheKeys, key)
+		cacheKeys = append(cacheKeys, key)
 	}
-	values, err := e.snapshot.BatchGet(ctx, e.cacheKeys)
+	values, err := e.snapshot.BatchGet(ctx, cacheKeys)
 	if err != nil {
 		if kv.ErrNotExist.Equal(err) {
-			return nil
+			return chk, nil
 		}
-		return err
+		return chk, err
 	}
 	// keep order
-	for idx, key := range e.cacheKeys {
+	for idx, key := range cacheKeys {
 		value, ok := values[string(key)]
 		if !ok {
 			continue
 		}
-		err = e.codec.DecodeToChunk(value, kv.IntHandle(vids[idx]), req)
+		err = e.codec.DecodeToChunk(value, kv.IntHandle(vids[idx]), chk)
 		if err != nil {
-			return err
+			return chk, err
 		}
 	}
 
-	return nil
+	return chk, nil
 }
 
 func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
@@ -345,18 +353,13 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		select {
 		case err := <-e.childErr:
 			return err
-		case vids, ok := <-e.results:
+		case chk, ok := <-e.results:
 			if !ok {
 				e.done = true
 				return nil
 			}
-			err := e.appendResult(ctx, vids, req)
-			if err != nil {
-				return err
-			}
-			if req.IsFull() {
-				return nil
-			}
+			req.SwapColumns(chk)
+			return nil
 		}
 	}
 }
