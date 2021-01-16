@@ -190,7 +190,10 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 		}
 		batchSize := 128
 		vids := make([]int64, 0, batchSize)
-		for iter.Valid() {
+		for err = nil; iter.Valid(); err = iter.Next() {
+			if err != nil {
+				return err
+			}
 			key := iter.Key()
 			if cond.cond != nil {
 				v := iter.Value()
@@ -213,11 +216,6 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 			}
 
 			resultID, err := tablecodec.DecodeLastIDOfGraphEdge(key)
-			if err != nil {
-				return err
-			}
-
-			err = iter.Next()
 			if err != nil {
 				return err
 			}
