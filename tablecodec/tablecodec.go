@@ -16,6 +16,7 @@ package tablecodec
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"time"
 	"unicode/utf8"
@@ -144,6 +145,20 @@ func EncodeGraphInEdge(srcVertexID, dstVertexID, edgeID int64) kv.Key {
 	return encodeGraphEdge(srcVertexID, dstVertexID, edgeID, graphEdgeIn)
 }
 
+func ConstructKeyForGraphTraverse(srcOrDstVertexID int64, isOut bool, edgeID int64) kv.Key {
+	buf := make([]byte, 0, 32)
+	buf = append(buf, graphPrefix...)
+	buf = append(buf, recordPrefixSep...)
+	buf = codec.EncodeInt(buf, srcOrDstVertexID)
+	if isOut {
+		buf = append(buf, graphEdgeOut)
+	} else {
+		buf = append(buf, graphEdgeIn)
+	}
+	buf = codec.EncodeInt(buf, edgeID)
+	return buf
+}
+
 func encodeGraphEdge(srcVertexID, dstVertexID, edgeID int64, tp byte) kv.Key {
 	buf := make([]byte, 0, 32)
 	buf = append(buf, graphPrefix...)
@@ -153,6 +168,53 @@ func encodeGraphEdge(srcVertexID, dstVertexID, edgeID int64, tp byte) kv.Key {
 	buf = codec.EncodeInt(buf, edgeID)
 	buf = codec.EncodeInt(buf, dstVertexID)
 	return buf
+}
+
+func DecodeGraphEdge(key kv.Key) (srcVertexID, dstVertexID, edgeID int64, isOut bool, err error) {
+	if len(key) != 28 {
+		return 0, 0, 0, false, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
+	}
+	if key[0] != graphPrefix[0] {
+		return 0, 0, 0, false, errors.New("Wrong prefix for graph")
+	}
+	dir := key[11]
+	if dir == graphEdgeOut {
+		isOut = true
+	} else if dir == graphEdgeIn {
+		isOut = false
+	} else {
+		return 0, 0, 0, false, errors.New("Wrong direction for graph")
+	}
+
+	_, firstVID, err := codec.DecodeInt(key[3:11])
+	if err != nil {
+		return 0, 0, 0, false, errors.Trace(err)
+	}
+	_, secondVID, err := codec.DecodeInt(key[19:27])
+	if err != nil {
+		return 0, 0, 0, false, errors.Trace(err)
+	}
+
+	if isOut {
+		srcVertexID = firstVID
+		dstVertexID = secondVID
+	} else {
+		srcVertexID = secondVID
+		dstVertexID = firstVID
+	}
+	_, edgeID, err = codec.DecodeInt(key[11:19])
+	return srcVertexID, dstVertexID, edgeID, isOut, errors.Trace(err)
+}
+
+func DecodeLastIDOfGraphEdge(key kv.Key) (id int64, err error) {
+	if len(key) != 28 {
+		return 0, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
+	}
+	if key[0] != graphPrefix[0] {
+		return 0, errors.New("Wrong prefix for graph")
+	}
+	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[20:28]))
+	return id, errors.Trace(err)
 }
 
 func hasTablePrefix(key kv.Key) bool {
@@ -297,6 +359,21 @@ func DecodeKeyHead(key kv.Key) (tableID int64, indexID int64, isRecordKey bool, 
 	return
 }
 
+func BuildRecordKeyFilter(tid int64, tableTp model.TableType) func(kv.Key) bool {
+	if tableTp != model.TableTypeIsGraphTag {
+		return nil
+	}
+
+	tidBuf := codec.EncodeInt(nil, tid)
+	return func(key kv.Key) bool {
+		if len(key) != GraphTagRecordRowKeyLen {
+			return false
+		}
+		// check tid
+		return bytes.Equal(tidBuf, key[len(key)-8:])
+	}
+}
+
 // DecodeTableID decodes the table ID of the key, if the key is not table key, returns 0.
 func DecodeTableID(key kv.Key) int64 {
 	if !key.HasPrefix(tablePrefix) {
@@ -309,8 +386,8 @@ func DecodeTableID(key kv.Key) int64 {
 	return tableID
 }
 
-func IsGraphEdgeKey(key kv.Key) bool {
-	return len(key) == GraphEdgeRecordRowKeyLen && key[0] == graphPrefix[0]
+func IsGraphKey(key kv.Key) bool {
+	return key.HasPrefix(graphPrefix)
 }
 
 func DecodeRowKeyByType(key kv.Key) (kv.Handle, error) {

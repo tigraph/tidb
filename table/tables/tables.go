@@ -345,6 +345,13 @@ func (t *TableCommon) RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error) 
 	return RecordKeyFromHandle(h, physicalID, t.Meta().Type)
 }
 
+func (t *TableCommon) RecordKeys2(h kv.Handle, physicalID int64) ([]kv.Key, error) {
+	if t.Meta().Type == model.TableTypeIsTable {
+		return []kv.Key{t.RecordKey(h)}, nil
+	}
+	return RecordKeysFromHandle(h, physicalID, t.Meta().Type)
+}
+
 // FirstKey implements table.Table interface.
 func (t *TableCommon) FirstKey() kv.Key {
 	return t.RecordKey(kv.IntHandle(math.MinInt64))
@@ -435,7 +442,7 @@ func (t *TableCommon) UpdateRecord(ctx context.Context, sctx sessionctx.Context,
 		}
 	}
 
-	key, err := t.RecordKey2(h, t.tableID)
+	keys, err := t.RecordKeys2(h, t.tableID)
 	if err != nil {
 		return err
 	}
@@ -445,8 +452,10 @@ func (t *TableCommon) UpdateRecord(ctx context.Context, sctx sessionctx.Context,
 	if err != nil {
 		return err
 	}
-	if err = memBuffer.Set(key, value); err != nil {
-		return err
+	for _, key := range keys {
+		if err = memBuffer.Set(key, value); err != nil {
+			return err
+		}
 	}
 	memBuffer.Release(sh)
 	if shouldWriteBinlog(sctx) {
@@ -746,14 +755,14 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 
 	writeBufs := sessVars.GetWriteStmtBufs()
 	adjustRowValuesBuf(writeBufs, len(row))
-	var key kv.Key
+	var keys []kv.Key
 	if t.meta.Type == model.TableTypeIsTable {
-		key = t.RecordKey(recordID)
+		keys = []kv.Key{t.RecordKey(recordID)}
 	} else {
-		key = t.graphRecordKey(r)
+		keys = t.graphRecordKey(r)
 	}
 	logutil.BgLogger().Debug("addRecord",
-		zap.Stringer("key", key))
+		zap.Stringer("key", keys[0]))
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
 	writeBufs.RowValBuf, err = tablecodec.EncodeRow(sc, row, colIDs, writeBufs.RowValBuf, writeBufs.AddRowValues, rd)
 	if err != nil {
@@ -766,7 +775,7 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 	if (t.meta.IsCommonHandle || t.meta.PKIsHandle) && !skipCheck && !opt.SkipHandleCheck {
 		if sctx.GetSessionVars().LazyCheckKeyNotExists() {
 			var v []byte
-			v, err = txn.GetMemBuffer().Get(ctx, key)
+			v, err = txn.GetMemBuffer().Get(ctx, keys[0])
 			if err != nil {
 				setPresume = true
 			}
@@ -774,7 +783,7 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 				err = kv.ErrNotExist
 			}
 		} else {
-			_, err = txn.Get(ctx, key)
+			_, err = txn.Get(ctx, keys[0])
 		}
 		if err == nil {
 			handleStr := getDuplicateErrorHandleString(t, recordID, r)
@@ -784,13 +793,15 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 		}
 	}
 
-	if setPresume {
-		err = memBuffer.SetWithFlags(key, value, kv.SetPresumeKeyNotExists)
-	} else {
-		err = memBuffer.Set(key, value)
-	}
-	if err != nil {
-		return nil, err
+	for _, key := range keys {
+		if setPresume {
+			err = memBuffer.SetWithFlags(key, value, kv.SetPresumeKeyNotExists)
+		} else {
+			err = memBuffer.Set(key, value)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var createIdxOpts []table.CreateIdxOptFunc
@@ -1137,11 +1148,17 @@ func (t *TableCommon) removeRowData(ctx sessionctx.Context, h kv.Handle) error {
 		return err
 	}
 
-	key, err := t.RecordKey2(h, t.tableID)
+	keys, err := t.RecordKeys2(h, t.tableID)
 	if err != nil {
 		return err
 	}
-	return txn.Delete(key)
+	for _, key := range keys {
+		err = txn.Delete(key)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // removeRowIndices removes all the indices of a row.
@@ -1783,15 +1800,44 @@ func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, er
 	panic("should never hapen")
 }
 
-func (t *TableCommon) graphRecordKey(r []types.Datum) kv.Key {
+func RecordKeysFromHandle(h kv.Handle, tid int64, tp model.TableType) ([]kv.Key, error) {
+	switch tp {
+	case model.TableTypeIsTable:
+		return []kv.Key{tablecodec.EncodeRowKeyWithHandle(tid, h)}, nil
+	case model.TableTypeIsGraphTag:
+		return []kv.Key{tablecodec.EncodeGraphTag(h.IntValue(), tid)}, nil
+	case model.TableTypeIsGraphEdge:
+		if h.NumCols() != 2 {
+			return nil, nil
+		}
+		_, src, err := codec.DecodeOne(h.EncodedCol(0))
+		if err != nil {
+			return nil, err
+		}
+		_, dst, err := codec.DecodeOne(h.EncodedCol(1))
+		if err != nil {
+			return nil, err
+		}
+		srcVertexID := src.GetInt64()
+		dstVertexID := dst.GetInt64()
+		return []kv.Key{
+			tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, tid),
+			tablecodec.EncodeGraphInEdge(dstVertexID, srcVertexID, tid)}, nil
+	}
+	panic("should never hapen")
+}
+
+func (t *TableCommon) graphRecordKey(r []types.Datum) []kv.Key {
 	switch t.meta.Type {
 	case model.TableTypeIsGraphTag:
 		vertexID := r[0].GetInt64()
-		return tablecodec.EncodeGraphTag(vertexID, t.tableID)
+		return []kv.Key{tablecodec.EncodeGraphTag(vertexID, t.tableID)}
 	case model.TableTypeIsGraphEdge:
 		srcVertexID := r[0].GetInt64()
 		dstVertexID := r[1].GetInt64()
-		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID)
+		return []kv.Key{
+			tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID),
+			tablecodec.EncodeGraphInEdge(dstVertexID, srcVertexID, t.tableID)}
 	}
 	panic("should never hapen")
 }

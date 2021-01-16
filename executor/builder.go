@@ -695,10 +695,50 @@ func (b *executorBuilder) buildShow(v *plannercore.PhysicalShow) Executor {
 }
 
 func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executor {
-	return &TraverseExecutor{
-		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID()),
-		tablePlan:    v,
+	childExec := b.build(v.Children()[0])
+	if b.err != nil {
+		return nil
 	}
+	t := &TraverseExecutor{
+		baseExecutor:        newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		tablePlan:           v,
+		workerWg:            new(sync.WaitGroup),
+		conditionChain:      make([]condition, 0),
+		workerChan:          make(chan *tempResult),
+		fetchFromChildErr:   make(chan error),
+		traverseResultVIDCh: make(chan int64),
+		closeCh:             make(chan struct{}),
+		closeNext:           make(chan struct{}),
+		resultTagID:         v.ResultTagID,
+	}
+	for _, c := range v.TraverseChain.Verbs {
+		var dir DirType
+		switch c.Action {
+		case ast.TraverseActionIn:
+			dir = IN
+		case ast.TraverseActionOut:
+			dir = OUT
+		case ast.TraverseActionBoth:
+			dir = BOTH
+		case ast.TraverseActionTags:
+			continue
+		}
+		edgeName := c.Targets[0].Name
+		if edgeName.Schema.L == "" {
+			edgeName.Schema = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		edgeSchema, err := b.is.TableByName(edgeName.Schema, edgeName.Name)
+		if err != nil {
+			return nil
+		}
+		t.conditionChain = append(t.conditionChain, condition{edgeID: edgeSchema.Meta().ID, direction: dir})
+	}
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		return nil
+	}
+	t.startTS = startTS
+	return t
 }
 
 func (b *executorBuilder) buildSimple(v *plannercore.Simple) Executor {

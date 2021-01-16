@@ -3915,6 +3915,10 @@ func (s *testSuite) TestWriteGraphWithIndex(c *C) {
 	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, index idx(name));")
 	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
 	tk.MustExec("insert into p values (3,'jack', 23);")
+	// Add some edge to skip when scan tag data.
+	tk.MustExec("create edge f (`from` bigint, `to` bigint);")
+	tk.MustExec("insert into f values (1,3),(1,2),(2,1),(3,2)")
+
 	// Test for index look up
 	tk.MustQuery("select * from p use index (idx) where name='jim'").Check(testkit.Rows("2 jim 22"))
 	tk.MustQuery("select * from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
@@ -3926,6 +3930,18 @@ func (s *testSuite) TestWriteGraphWithIndex(c *C) {
 	tk.MustQuery("select vertex_id, name from p use index (idx) where name > 'bob'").Check(testkit.Rows("3 jack"))
 	tk.MustQuery("select vertex_id, name from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob"))
 	tk.MustQuery("select vertex_id, name from p use index (idx) where name='none'").Check(testkit.Rows())
+
+	// test selection push down.
+	tk.MustQuery("select * from p where age < 100").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select * from p where age < 100 limit 2").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select * from p where age < 100 limit 1").Check(testkit.Rows("1 bob 21"))
+	// test agg push down.
+	tk.MustQuery("select count(*) from p where age < 100").Check(testkit.Rows("2"))
+	tk.MustQuery("select count(*) from p where age < 23").Check(testkit.Rows("1"))
+	// test TopN push down.
+	tk.MustQuery("select * from p where age < 100 order by age desc limit 2").Check(testkit.Rows("3 jack 23", "1 bob 21"))
+	tk.MustQuery("select * from p where age < 100 order by age desc limit 1").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select * from p where age < 23 order by age desc limit 2").Check(testkit.Rows("1 bob 21"))
 }
 
 func (s *testSuite) TestWriteGraphWithUniqueIndex(c *C) {
@@ -3963,4 +3979,63 @@ func (s *testSuite) TestWriteGraphWithUniqueIndex(c *C) {
 	// Test for insert ignore
 	tk.MustExec("insert ignore into p values (4,'jack', 25)")
 	tk.MustQuery("select * from p use index (idx) where name='jack'").Check(testkit.Rows("3 jack 24"))
+}
+
+func (s *testSuite) TestWriteGraphInTxn(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, unique index idx(name));")
+
+	tk.MustExec("begin")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	tk.MustQuery("select * from p order by vertex_id").Check(testkit.Rows("1 bob 21", "2 jim 22"))
+	// test for mem-point-get
+	tk.MustQuery("select * from p where vertex_id=1").Check(testkit.Rows("1 bob 21"))
+	// test for mem table scan
+	tk.MustQuery("select * from p where vertex_id < 3").Check(testkit.Rows("1 bob 21", "2 jim 22"))
+	// Test for mem index look up
+	tk.MustQuery("select * from p use index(idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	// Test for mem index reader
+	tk.MustQuery("select vertex_id from p use index(idx) where name='bob'").Check(testkit.Rows("1"))
+	tk.MustExec("rollback")
+
+	tk.MustQuery("select * from p order by vertex_id").Check(testkit.Rows())
+
+	tk.MustExec("insert into p values (3,'jack', 23);")
+	tk.MustExec("begin")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	// Test for union scan
+	tk.MustQuery("select * from p order by vertex_id").Check(testkit.Rows("1 bob 21", "2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where vertex_id>1 order by vertex_id").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where vertex_id in (2,3) order by vertex_id").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	// Test for mem index look up
+	tk.MustQuery("select * from p use index(idx) where name in ('bob', 'jack')").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	// Test for mem index reader
+	tk.MustQuery("select vertex_id from p use index(idx) where name in ('bob', 'jack')").Check(testkit.Rows("1", "3"))
+	tk.MustExec("commit")
+	tk.MustQuery("select * from p order by vertex_id").Check(testkit.Rows("1 bob 21", "2 jim 22", "3 jack 23"))
+
+	//
+	tk.MustExec("delete from p")
+	tk.MustExec("create edge f (`from` bigint, `to` bigint);")
+	tk.MustExec("begin")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	tk.MustExec("insert into p values (3,'jack', 23);")
+	tk.MustExec("insert into f values (1,3),(2,3)")
+	tk.MustExec("insert into f values (3,1),(2,1)")
+
+	tk.MustQuery("select * from p order by vertex_id").Check(testkit.Rows("1 bob 21", "2 jim 22", "3 jack 23"))
+	// test for mem-point-get
+	tk.MustQuery("select * from p where vertex_id=1").Check(testkit.Rows("1 bob 21"))
+	// test for mem table scan
+	tk.MustQuery("select * from p where vertex_id < 3").Check(testkit.Rows("1 bob 21", "2 jim 22"))
+	// Test for mem index look up
+	tk.MustQuery("select * from p use index(idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	// Test for mem index reader
+	tk.MustQuery("select vertex_id from p use index(idx) where name='bob'").Check(testkit.Rows("1"))
+
+	// test for point-get in edge
+	tk.MustQuery("select * from f where `from`=1 and `to` = 3").Check(testkit.Rows("1 3"))
+	tk.MustExec("rollback")
 }

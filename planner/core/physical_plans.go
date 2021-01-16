@@ -1318,6 +1318,7 @@ type PhysicalTraverse struct {
 	physicalSchemaProducer
 
 	TraverseChain *ast.TraverseChain
+	ResultTagID   int64
 }
 
 // BuildMergeJoinPlan builds a PhysicalMergeJoin from the given fields. Currently, it is only used for test purpose.

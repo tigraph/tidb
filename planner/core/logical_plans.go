@@ -1173,4 +1173,5 @@ type LogicalShowDDLJobs struct {
 type LogicalTraverse struct {
 	logicalSchemaProducer
 	TraverseChain *ast.TraverseChain
+	ResultTagID   int64
 }

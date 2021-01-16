@@ -90,4 +90,4 @@ require (
 
 go 1.13
 
-replace github.com/pingcap/parser => github.com/tigraph/parser v0.0.0-20210109101955-4a1d9058ef89
+replace github.com/pingcap/parser => github.com/tigraph/parser v0.0.0-20210115081433-df7fd1bbd6d4
