@@ -55,8 +55,8 @@ type TraverseExecutor struct {
 	codec     *rowcodec.ChunkDecoder
 	vidOffset int64
 
-	childExhausted  atomic.Bool
-	pendingTraverse atomic.Int64
+	childExhausted atomic.Bool
+	pendingTasks   atomic.Int64
 
 	workerCh chan *traverseTask
 	childErr chan error
@@ -172,9 +172,9 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 		if err != nil {
 			return err
 		}
-		var newTask traverseTask
+		var newTask *traverseTask
 		if !final {
-			newTask = traverseTask{}
+			newTask = &traverseTask{}
 			newTask.vertexIds = make([]int64, 0, 100)
 			newTask.chainLevel = level + 1
 		}
@@ -209,7 +209,6 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 				e.results <- resultID
 			} else {
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
-				e.pendingTraverse.Add(1)
 			}
 
 			err = iter.Next()
@@ -217,22 +216,23 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 				return err
 			}
 		}
-		if !final {
-			e.workerCh <- &newTask
+		if newTask != nil {
+			e.pushTask(newTask)
 		}
-		e.pendingTraverse.Sub(1)
+	}
 
-		// All workers should be closed if the child exhausted and all pending traverse tasks finished.
-		if e.childExhausted.Load() && e.pendingTraverse.Load() == 0 {
-			close(e.results)
-			close(e.workerCh)
-		}
+	e.pendingTasks.Sub(1)
+
+	// All workers should be closed if the child exhausted and all pending traverse tasks finished.
+	if e.childExhausted.Load() && e.pendingTasks.Load() == 0 {
+		close(e.results)
+		close(e.workerCh)
 	}
 
 	return nil
 }
 
-func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) {
+func (e *TraverseExecutor) fetchFromChild(ctx context.Context) {
 	defer func() {
 		e.workerWg.Done()
 		e.childExhausted.Store(true)
@@ -261,10 +261,14 @@ func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) 
 				vid := chk.GetRow(i).GetInt64(int(e.vidOffset))
 				task.vertexIds = append(task.vertexIds, vid)
 			}
-			e.pendingTraverse.Add(int64(chk.NumRows()))
-			e.workerCh <- task
+			e.pushTask(task)
 		}
 	}
+}
+
+func (e *TraverseExecutor) pushTask(task *traverseTask) {
+	e.workerCh <- task
+	e.pendingTasks.Add(1)
 }
 
 func (e *TraverseExecutor) appendResult(ctx context.Context, vid int64, req *chunk.Chunk) error {
@@ -283,7 +287,7 @@ func (e *TraverseExecutor) appendResult(ctx context.Context, vid int64, req *chu
 func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 	if !e.prepared {
 		e.workerWg.Add(1)
-		go e.fetchFromChildAndBuildFirstTask(ctx)
+		go e.fetchFromChild(ctx)
 		e.prepared = true
 	}
 
