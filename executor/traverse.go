@@ -140,8 +140,8 @@ func (e *TraverseExecutor) runWorker(ctx context.Context) {
 }
 
 func (e *TraverseExecutor) startWorkers(ctx context.Context) {
-	concurrency := runtime.NumCPU()
-	e.workerCh = make(chan *traverseTask, concurrency)
+	concurrency := runtime.NumCPU() * 5
+	e.workerCh = make(chan *traverseTask, concurrency*1000)
 	e.workerWg.Add(concurrency)
 	for i := 0; i < concurrency; i++ {
 		go e.runWorker(ctx)
