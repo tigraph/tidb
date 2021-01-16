@@ -142,6 +142,9 @@ func TableFromMeta(allocs autoid.Allocators, tblInfo *model.TableInfo) (table.Ta
 		if err := initTableIndices(&t); err != nil {
 			return nil, err
 		}
+		if tblInfo.Type == model.TableTypeIsGraphTag || tblInfo.Type == model.TableTypeIsGraphEdge {
+			return &GraphCommon{t}, nil
+		}
 		return &t, nil
 	}
 

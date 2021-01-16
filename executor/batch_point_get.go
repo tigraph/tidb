@@ -16,6 +16,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/table/tables"
 	"sort"
 	"sync/atomic"
 
@@ -321,7 +322,15 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 				tID = getPhysID(e.tblInfo, d.GetInt64())
 			}
 		}
-		key := tablecodec.EncodeRowKeyWithHandle(tID, handle)
+		var key kv.Key
+		if e.tblInfo.Type == model.TableTypeIsTable {
+			key = tablecodec.EncodeRowKeyWithHandle(tID, handle)
+		} else {
+			key, err = tables.RecordKeyFromHandle(handle, tID, e.tblInfo.Type)
+			if err != nil {
+				return err
+			}
+		}
 		keys[i] = key
 	}
 
