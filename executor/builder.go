@@ -161,6 +161,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildShowSlow(v)
 	case *plannercore.PhysicalShow:
 		return b.buildShow(v)
+	case *plannercore.PhysicalTraverse:
+		return b.buildTraverse(v)
 	case *plannercore.Simple:
 		return b.buildSimple(v)
 	case *plannercore.PhysicalSimpleWrapper:
@@ -690,6 +692,13 @@ func (b *executorBuilder) buildShow(v *plannercore.PhysicalShow) Executor {
 		}
 	}
 	return e
+}
+
+func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executor {
+	return &TraverseExecutor{
+		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID()),
+		tablePlan:    v,
+	}
 }
 
 func (b *executorBuilder) buildSimple(v *plannercore.Simple) Executor {
