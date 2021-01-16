@@ -706,7 +706,7 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		conditions:   make([]condition, 0),
 		workerCh:     make(chan *traverseTask),
 		childErr:     make(chan error),
-		results:      make(chan int64),
+		results:      make(chan []int64),
 		die:          make(chan struct{}),
 		resultTagID:  v.ResultTagID,
 	}

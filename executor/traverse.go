@@ -60,10 +60,12 @@ type TraverseExecutor struct {
 
 	workerCh chan *traverseTask
 	childErr chan error
-	results  chan int64
+	results  chan []int64
 	die      chan struct{}
 
 	tablePlan plannercore.PhysicalPlan
+
+	cacheKeys []kv.Key
 }
 
 func (e *TraverseExecutor) Init(p *plannercore.PointGetPlan, startTs uint64) {
@@ -178,6 +180,8 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 			newTask.vertexIds = make([]int64, 0, 100)
 			newTask.chainLevel = level + 1
 		}
+		batchSize := 128
+		vids := make([]int64, 0, batchSize)
 		for iter.Valid() {
 			key := iter.Key()
 			if cond.cond != nil {
@@ -206,15 +210,26 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 			}
 
 			if final {
-				e.results <- resultID
+				vids = append(vids, resultID)
+				if len(vids) == batchSize {
+					e.results <- vids
+					vids = make([]int64, 0, batchSize)
+				}
 			} else {
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
 			}
 
 			err = iter.Next()
 			if err != nil {
+				// redundant?
+				if final && len(vids) > 0 {
+					e.results <- vids
+				}
 				return err
 			}
+		}
+		if final && len(vids) > 0 {
+			e.results <- vids
 		}
 		if newTask != nil {
 			e.pushTask(newTask)
@@ -271,17 +286,35 @@ func (e *TraverseExecutor) pushTask(task *traverseTask) {
 	e.pendingTasks.Add(1)
 }
 
-func (e *TraverseExecutor) appendResult(ctx context.Context, vid int64, req *chunk.Chunk) error {
-	key := tablecodec.EncodeGraphTag(vid, e.resultTagID)
-	value, err := e.snapshot.Get(ctx, key)
+func (e *TraverseExecutor) appendResult(ctx context.Context, vids []int64, req *chunk.Chunk) error {
+	if cap(e.cacheKeys) < len(vids) {
+		e.cacheKeys = make([]kv.Key, 0, len(vids))
+	}
+	e.cacheKeys = e.cacheKeys[:0]
+	for _, vid := range vids {
+		key := tablecodec.EncodeGraphTag(vid, e.resultTagID)
+		e.cacheKeys = append(e.cacheKeys, key)
+	}
+	values, err := e.snapshot.BatchGet(ctx, e.cacheKeys)
 	if err != nil {
 		if kv.ErrNotExist.Equal(err) {
 			return nil
 		}
 		return err
 	}
+	// keep order
+	for idx, key := range e.cacheKeys {
+		value, ok := values[string(key)]
+		if !ok {
+			continue
+		}
+		err = e.codec.DecodeToChunk(value, kv.IntHandle(vids[idx]), req)
+		if err != nil {
+			return err
+		}
+	}
 
-	return e.codec.DecodeToChunk(value, kv.IntHandle(vid), req)
+	return nil
 }
 
 func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
@@ -300,12 +333,12 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		select {
 		case err := <-e.childErr:
 			return err
-		case vid, ok := <-e.results:
+		case vids, ok := <-e.results:
 			if !ok {
 				e.done = true
 				return nil
 			}
-			err := e.appendResult(ctx, vid, req)
+			err := e.appendResult(ctx, vids, req)
 			if err != nil {
 				return err
 			}
