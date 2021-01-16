@@ -2,9 +2,10 @@ package executor
 
 import (
 	"context"
+	"sync"
+
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/util/chunk"
-	"sync"
 )
 
 var _ Executor = &TraverseExecutor{}
@@ -12,11 +13,12 @@ var _ Executor = &TraverseExecutor{}
 const workerConcurrency = 5
 
 type tempResult struct {
-	vertexIds []int64
+	vertexIds  []int64
 	chainLevel int64
 }
 
 type DirType uint8
+
 const (
 	IN DirType = iota
 	OUT
@@ -24,20 +26,20 @@ const (
 )
 
 type condition struct {
-	edgeName string
+	edgeName  string
 	direction DirType
 }
 
 type TraverseExecutor struct {
 	baseExecutor
 
-	workerWg   *sync.WaitGroup
-	doneErr error
+	workerWg *sync.WaitGroup
+	doneErr  error
 
 	conditionChain []condition
 
 	workerChan chan *tempResult
-	tablePlan plannercore.PhysicalPlan
+	tablePlan  plannercore.PhysicalPlan
 }
 
 // Open initializes necessary variables for using this executor.

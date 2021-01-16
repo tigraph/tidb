@@ -16,7 +16,6 @@ package executor
 import (
 	"context"
 	"fmt"
-	"github.com/pingcap/tidb/table/tables"
 	"sort"
 	"sync/atomic"
 
@@ -27,6 +26,7 @@ import (
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/store/tikv"
+	"github.com/pingcap/tidb/table/tables"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
@@ -322,14 +322,9 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 				tID = getPhysID(e.tblInfo, d.GetInt64())
 			}
 		}
-		var key kv.Key
-		if e.tblInfo.Type == model.TableTypeIsTable {
-			key = tablecodec.EncodeRowKeyWithHandle(tID, handle)
-		} else {
-			key, err = tables.RecordKeyFromHandle(handle, tID, e.tblInfo.Type)
-			if err != nil {
-				return err
-			}
+		key, err := tables.RecordKeyFromHandle(handle, tID, e.tblInfo.Type)
+		if err != nil {
+			return err
 		}
 		keys[i] = key
 	}

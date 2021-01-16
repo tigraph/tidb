@@ -159,7 +159,7 @@ func (p *PhysicalTableScan) ToPB(ctx sessionctx.Context, storeType kv.StoreType)
 	executorID := ""
 	if storeType == kv.TiFlash && p.IsGlobalRead {
 		tsExec.NextReadEngine = tipb.EngineType_TiFlash
-		ranges, err := distsql.TableHandleRangesToKVRanges(ctx.GetSessionVars().StmtCtx, []int64{tsExec.TableId}, p.Table.IsCommonHandle, p.Ranges, nil)
+		ranges, err := distsql.TableHandleRangesToKVRanges(ctx.GetSessionVars().StmtCtx, []int64{tsExec.TableId}, p.Table.IsCommonHandle, p.Table.Type, p.Ranges, nil)
 		if err != nil {
 			return nil, err
 		}

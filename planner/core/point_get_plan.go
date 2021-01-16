@@ -118,7 +118,14 @@ func (p *PointGetPlan) ExplainNormalizedInfo() string {
 func (p *PointGetPlan) AccessObject(normalized bool) string {
 	buffer := bytes.NewBufferString("")
 	tblName := p.TblInfo.Name.O
-	fmt.Fprintf(buffer, "table:%s", tblName)
+	tableTp := "table"
+	switch p.TblInfo.Type {
+	case model.TableTypeIsGraphTag:
+		tableTp = "tag"
+	case model.TableTypeIsGraphEdge:
+		tableTp = "edge"
+	}
+	fmt.Fprintf(buffer, "%s:%s", tableTp, tblName)
 	if p.PartitionInfo != nil {
 		if normalized {
 			fmt.Fprintf(buffer, ", partition:?")
@@ -295,7 +302,14 @@ func (p *BatchPointGetPlan) ExplainNormalizedInfo() string {
 func (p *BatchPointGetPlan) AccessObject(_ bool) string {
 	buffer := bytes.NewBufferString("")
 	tblName := p.TblInfo.Name.O
-	fmt.Fprintf(buffer, "table:%s", tblName)
+	tableTp := "table"
+	switch p.TblInfo.Type {
+	case model.TableTypeIsGraphTag:
+		tableTp = "tag"
+	case model.TableTypeIsGraphEdge:
+		tableTp = "edge"
+	}
+	fmt.Fprintf(buffer, "%s:%s", tableTp, tblName)
 	if p.IndexInfo != nil {
 		if p.IndexInfo.Primary && p.TblInfo.IsCommonHandle {
 			buffer.WriteString(", clustered index:" + p.IndexInfo.Name.O + "(")

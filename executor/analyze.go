@@ -280,7 +280,7 @@ func (e *AnalyzeIndexExec) fetchAnalyzeResult(ranges []*ranger.Range, isNullRang
 	var builder distsql.RequestBuilder
 	var kvReqBuilder *distsql.RequestBuilder
 	if e.isCommonHandle && e.idxInfo.Primary {
-		kvReqBuilder = builder.SetHandleRangesForTables(e.ctx.GetSessionVars().StmtCtx, e.tableID.CollectIDs, true, ranges, nil)
+		kvReqBuilder = builder.SetHandleRangesForTables(e.ctx.GetSessionVars().StmtCtx, e.tableID.CollectIDs, true, model.TableTypeIsTable, ranges, nil)
 	} else {
 		kvReqBuilder = builder.SetIndexRangesForTables(e.ctx.GetSessionVars().StmtCtx, e.tableID.CollectIDs, e.idxInfo.ID, ranges)
 	}
@@ -495,7 +495,7 @@ func (e *AnalyzeColumnsExec) open(ranges []*ranger.Range) error {
 
 func (e *AnalyzeColumnsExec) buildResp(ranges []*ranger.Range) (distsql.SelectResult, error) {
 	var builder distsql.RequestBuilder
-	reqBuilder := builder.SetHandleRangesForTables(e.ctx.GetSessionVars().StmtCtx, e.tableID.CollectIDs, e.handleCols != nil && !e.handleCols.IsInt(), ranges, nil)
+	reqBuilder := builder.SetHandleRangesForTables(e.ctx.GetSessionVars().StmtCtx, e.tableID.CollectIDs, e.handleCols != nil && !e.handleCols.IsInt(), model.TableTypeIsTable, ranges, nil)
 	// Always set KeepOrder of the request to be true, in order to compute
 	// correct `correlation` of columns.
 	kvReq, err := reqBuilder.

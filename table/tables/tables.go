@@ -142,9 +142,9 @@ func TableFromMeta(allocs autoid.Allocators, tblInfo *model.TableInfo) (table.Ta
 		if err := initTableIndices(&t); err != nil {
 			return nil, err
 		}
-		if tblInfo.Type == model.TableTypeIsGraphTag || tblInfo.Type == model.TableTypeIsGraphEdge {
-			return &GraphCommon{t}, nil
-		}
+		//if tblInfo.Type == model.TableTypeIsGraphTag || tblInfo.Type == model.TableTypeIsGraphEdge {
+		//	return &GraphCommon{t}, nil
+		//}
 		return &t, nil
 	}
 
@@ -164,8 +164,15 @@ func initTableCommon(t *TableCommon, tblInfo *model.TableInfo, physicalTableID i
 	t.WritableColumns = t.WritableCols()
 	t.FullHiddenColsAndVisibleColumns = t.FullHiddenColsAndVisibleCols()
 	t.writableIndices = t.WritableIndices()
-	t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
-	t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	switch t.meta.Type {
+	case model.TableTypeIsTable:
+		t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
+		t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	case model.TableTypeIsGraphTag, model.TableTypeIsGraphEdge:
+		// TODO: use graph prefix
+		t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
+		t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	}
 	if tblInfo.IsSequence() {
 		t.sequence = &sequenceCommon{meta: tblInfo.Sequence}
 	}
@@ -331,6 +338,13 @@ func (t *TableCommon) RecordKey(h kv.Handle) kv.Key {
 	return tablecodec.EncodeRecordKey(t.recordPrefix, h)
 }
 
+func (t *TableCommon) RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error) {
+	if t.Meta().Type == model.TableTypeIsTable {
+		return t.RecordKey(h), nil
+	}
+	return RecordKeyFromHandle(h, physicalID, t.Meta().Type)
+}
+
 // FirstKey implements table.Table interface.
 func (t *TableCommon) FirstKey() kv.Key {
 	return t.RecordKey(kv.IntHandle(math.MinInt64))
@@ -421,7 +435,11 @@ func (t *TableCommon) UpdateRecord(ctx context.Context, sctx sessionctx.Context,
 		}
 	}
 
-	key := t.RecordKey(h)
+	key, err := t.RecordKey2(h, t.tableID)
+	if err != nil {
+		return err
+	}
+
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
 	value, err := tablecodec.EncodeRow(sc, row, colIDs, nil, nil, rd)
 	if err != nil {
@@ -728,7 +746,12 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 
 	writeBufs := sessVars.GetWriteStmtBufs()
 	adjustRowValuesBuf(writeBufs, len(row))
-	key := t.RecordKey(recordID)
+	var key kv.Key
+	if t.meta.Type == model.TableTypeIsTable {
+		key = t.RecordKey(recordID)
+	} else {
+		key = t.graphRecordKey(r)
+	}
 	logutil.BgLogger().Debug("addRecord",
 		zap.Stringer("key", key))
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
@@ -1114,7 +1137,10 @@ func (t *TableCommon) removeRowData(ctx sessionctx.Context, h kv.Handle) error {
 		return err
 	}
 
-	key := t.RecordKey(h)
+	key, err := t.RecordKey2(h, t.tableID)
+	if err != nil {
+		return err
+	}
 	return txn.Delete(key)
 }
 
@@ -1730,4 +1756,42 @@ func BuildTableScanFromInfos(tableInfo *model.TableInfo, columnInfos []*model.Co
 		PrimaryColumnIds: pkColIds,
 	}
 	return tsExec
+}
+
+func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, error) {
+	switch tp {
+	case model.TableTypeIsTable:
+		return tablecodec.EncodeRowKeyWithHandle(tid, h), nil
+	case model.TableTypeIsGraphTag:
+		return tablecodec.EncodeGraphTag(h.IntValue(), tid), nil
+	case model.TableTypeIsGraphEdge:
+		if h.NumCols() != 2 {
+			return nil, nil
+		}
+		_, src, err := codec.DecodeOne(h.EncodedCol(0))
+		if err != nil {
+			return nil, err
+		}
+		_, dst, err := codec.DecodeOne(h.EncodedCol(1))
+		if err != nil {
+			return nil, err
+		}
+		srcVertexID := src.GetInt64()
+		dstVertexID := dst.GetInt64()
+		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, tid), nil
+	}
+	panic("should never hapen")
+}
+
+func (t *TableCommon) graphRecordKey(r []types.Datum) kv.Key {
+	switch t.meta.Type {
+	case model.TableTypeIsGraphTag:
+		vertexID := r[0].GetInt64()
+		return tablecodec.EncodeGraphTag(vertexID, t.tableID)
+	case model.TableTypeIsGraphEdge:
+		srcVertexID := r[0].GetInt64()
+		dstVertexID := r[1].GetInt64()
+		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID)
+	}
+	panic("should never hapen")
 }

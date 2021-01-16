@@ -743,7 +743,14 @@ func ConstructResultOfShowCreateTable(ctx sessionctx.Context, tableInfo *model.T
 	}
 
 	sqlMode := ctx.GetSessionVars().SQLMode
-	fmt.Fprintf(buf, "CREATE TABLE %s (\n", stringutil.Escape(tableInfo.Name.O, sqlMode))
+	tableTp := "TABLE"
+	switch tableInfo.Type {
+	case model.TableTypeIsGraphTag:
+		tableTp = "TAG"
+	case model.TableTypeIsGraphEdge:
+		tableTp = "EDGE"
+	}
+	fmt.Fprintf(buf, "CREATE %s %s (\n", tableTp, stringutil.Escape(tableInfo.Name.O, sqlMode))
 	var pkCol *model.ColumnInfo
 	var hasAutoIncID bool
 	needAddComma := false

@@ -415,7 +415,7 @@ func (m *memIndexLookUpReader) getMemRows() ([][]types.Datum, error) {
 		return nil, err
 	}
 
-	tblKVRanges := distsql.TableHandlesToKVRanges(getPhysicalTableID(m.table), handles)
+	tblKVRanges := distsql.TableHandlesToKVRanges(getPhysicalTableID(m.table), handles, m.table.Meta().Type)
 	colIDs := make(map[int64]int, len(m.columns))
 	for i, col := range m.columns {
 		colIDs[col.ID] = i
