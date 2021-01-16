@@ -7,10 +7,10 @@ import (
 	"github.com/Pallinder/go-randomdata"
 )
 
-const RowCount = 100000
-const friendsMin = 5
-const friendsMax = 30
-const step = 10
+const RowCount = 1000000
+const friendsMin = 10
+const friendsMax = 50
+const step = 10000
 
 func buildVertex(f *os.File) error {
 	var name string
@@ -24,7 +24,7 @@ func buildVertex(f *os.File) error {
 		}
 		sql += fmt.Sprintf(" (%d, '%s'),", i+1, name)
 
-		if i % step == 0 {
+		if (i+1) % step == 0 {
 			sql = sql[:len(sql)-1]
 			sql += ";\n"
 			_, err := f.WriteString(sql)
@@ -39,19 +39,32 @@ func buildVertex(f *os.File) error {
 }
 
 func buildEdge(f *os.File) error {
+	cnt := 0
+	sql := fmt.Sprintf("insert ignore into friends values ")
 	for i := 0; i < RowCount; i++ {
 		friendsCnt := randomdata.Number(friendsMin, friendsMax+1)
-		sql := fmt.Sprintf("insert ignore into friends values")
 		for j := 0 ; j < friendsCnt; j++ {
+			cnt++
 			to := randomdata.Number(1, RowCount+1)
 			if to == i {
 				continue
 			}
-			if j != 0 {
-				sql += ", "
+			sql = sql + fmt.Sprintf(" (%d, %d),", i+1, to)
+
+			if (cnt+1) % step == 0 {
+				sql = sql[:len(sql)-1]
+				sql += ";\n"
+				_, err := f.WriteString(sql)
+				if err != nil {
+					return err
+				}
+				sql = "insert ignore into friends values "
 			}
-			sql = sql + fmt.Sprintf(" (%d, %d)", i+1, to)
 		}
+	}
+
+	if (cnt+1) % step != 0 {
+		sql = sql[:len(sql)-1]
 		sql += ";\n"
 		_, err := f.WriteString(sql)
 		if err != nil {
