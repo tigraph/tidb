@@ -4143,3 +4143,16 @@ func (s *testSuite) TestMultiGraph(c *C) {
 		}
 	}
 }
+
+func (s *testSuite) TestMultiGraph2(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, unique index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22), (3, 'jack', 23);")
+
+	tk.MustExec("create edge f (`from` bigint, `to` bigint, time year);")
+	tk.MustExec("insert into f values (1,2, 2000),(2,3,2001)")
+
+	tk.MustQuery("select * from p where name='bob' traverse out(f).out(f).tag(p);").Check(testkit.Rows("3 jack 23"))
+}
