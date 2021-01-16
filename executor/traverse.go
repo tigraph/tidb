@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"github.com/pingcap/log"
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/kv"
@@ -10,10 +9,7 @@ import (
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/rowcodec"
-	"go.uber.org/zap"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
 var _ Executor = &TraverseExecutor{}
@@ -61,14 +57,13 @@ type TraverseExecutor struct {
 	mu struct {
 		sync.Mutex
 		childFinish bool
+		taskNum     int
 	}
-	restRow int64
 
 	workerChan          chan *tempResult
 	fetchFromChildErr   chan error
 	traverseResultVIDCh chan int64
 	closeCh             chan struct{}
-	closeNext           chan struct{}
 
 	tablePlan plannercore.PhysicalPlan
 }
@@ -137,6 +132,11 @@ func (e *TraverseExecutor) runNewWorker(ctx context.Context) {
 				return
 			}
 			err := e.handleTraverseTask(ctx, task)
+			if e.checkFinishAfterHandleTask() {
+				e.done = true
+				close(e.traverseResultVIDCh)
+				return
+			}
 			if err != nil {
 				e.doneErr = err
 			}
@@ -155,6 +155,15 @@ func (e *TraverseExecutor) startWorkers(ctx context.Context) {
 		e.workerWg.Add(1)
 		go e.runNewWorker(ctx)
 	}
+}
+
+func (e *TraverseExecutor) checkFinishAfterHandleTask() bool {
+	finish := false
+	e.mu.Lock()
+	e.mu.taskNum--
+	finish = e.mu.childFinish && e.mu.taskNum == 0
+	e.mu.Unlock()
+	return finish
 }
 
 func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempResult) error {
@@ -223,9 +232,6 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 			if finish {
 				e.traverseResultVIDCh <- resultID
 			} else {
-				e.mu.Lock()
-				atomic.AddInt64(&e.restRow, 1)
-				e.mu.Unlock()
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
 			}
 
@@ -235,21 +241,17 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 			}
 		}
 		if !finish {
-			e.workerChan <- &newTask
+			e.sendTaskToWorker(&newTask)
 		}
-		e.mu.Lock()
-		atomic.AddInt64(&e.restRow, -1)
-		log.Warn("%d", zap.Int64("row", e.restRow))
-		if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
-			e.done = true
-			close(e.closeNext)
-			close(e.traverseResultVIDCh)
-			e.mu.Unlock()
-			return nil
-		}
-		e.mu.Unlock()
 	}
 	return nil
+}
+
+func (e *TraverseExecutor) sendTaskToWorker(task *tempResult) {
+	e.mu.Lock()
+	e.mu.taskNum += 1
+	e.mu.Unlock()
+	e.workerChan <- task
 }
 
 func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) {
@@ -282,10 +284,7 @@ func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) 
 				vid := chk.GetRow(i).GetInt64(int(e.vertexIdOffsetInChild))
 				newTask.vertexIds = append(newTask.vertexIds, vid)
 			}
-			e.mu.Lock()
-			atomic.AddInt64(&e.restRow, int64(chk.NumRows()))
-			e.mu.Unlock()
-			e.workerChan <- &newTask
+			e.sendTaskToWorker(&newTask)
 		}
 	}
 }
@@ -319,8 +318,6 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		select {
 		case err := <-e.fetchFromChildErr:
 			return err
-		case <-e.closeNext:
-			return nil
 		case vid, ok := <-e.traverseResultVIDCh:
 			if !ok {
 				return nil
@@ -339,12 +336,6 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 func (e *TraverseExecutor) Close() error {
 	close(e.closeCh)
 	close(e.workerChan)
-
-	for range e.traverseResultVIDCh {
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
 	e.workerWg.Wait()
 	return nil
 }
