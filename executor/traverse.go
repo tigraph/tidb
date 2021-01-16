@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"github.com/pingcap/log"
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/kv"
@@ -9,6 +10,7 @@ import (
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/rowcodec"
+	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -208,24 +210,23 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 					used = false
 				}
 			}
-			if used {
-				resultID, err := tablecodec.DecodeLastIDOfGraphEdge(k)
-				if err != nil {
-					return err
-				}
 
+			if !used {
+				continue
+			}
+
+			resultID, err := tablecodec.DecodeLastIDOfGraphEdge(k)
+			if err != nil {
+				return err
+			}
+
+			if finish {
+				e.traverseResultVIDCh <- resultID
+			} else {
+				e.mu.Lock()
 				atomic.AddInt64(&e.restRow, 1)
-
-				if finish {
-					select {
-					case <-e.closeCh:
-						return nil
-					default:
-						e.traverseResultVIDCh <- resultID
-					}
-				} else {
-					newTask.vertexIds = append(newTask.vertexIds, resultID)
-				}
+				e.mu.Unlock()
+				newTask.vertexIds = append(newTask.vertexIds, resultID)
 			}
 
 			err = iter.Next()
@@ -238,9 +239,11 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 		}
 		e.mu.Lock()
 		atomic.AddInt64(&e.restRow, -1)
+		log.Warn("%d", zap.Int64("row", e.restRow))
 		if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
 			e.done = true
 			close(e.closeNext)
+			close(e.traverseResultVIDCh)
 			e.mu.Unlock()
 			return nil
 		}
@@ -260,23 +263,30 @@ func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) 
 	chk := newFirstChunk(e.children[0])
 
 	for {
-		newTask := tempResult{}
-		newTask.chainLevel = 0
-		newTask.vertexIds = make([]int64, 0, 100)
-		chk.Reset()
-		if err := Next(ctx, e.children[0], chk); err != nil {
-			e.fetchFromChildErr <- err
+		select {
+		case <-e.closeCh:
 			return
+		default:
+			newTask := tempResult{}
+			newTask.chainLevel = 0
+			newTask.vertexIds = make([]int64, 0, 100)
+			chk.Reset()
+			if err := Next(ctx, e.children[0], chk); err != nil {
+				e.fetchFromChildErr <- err
+				return
+			}
+			if chk.NumRows() == 0 {
+				return
+			}
+			for i := 0; i < chk.NumRows(); i++ {
+				vid := chk.GetRow(i).GetInt64(int(e.vertexIdOffsetInChild))
+				newTask.vertexIds = append(newTask.vertexIds, vid)
+			}
+			e.mu.Lock()
+			atomic.AddInt64(&e.restRow, int64(chk.NumRows()))
+			e.mu.Unlock()
+			e.workerChan <- &newTask
 		}
-		if chk.NumRows() == 0 {
-			return
-		}
-		for i := 0; i < chk.NumRows(); i++ {
-			vid := chk.GetRow(i).GetInt64(int(e.vertexIdOffsetInChild))
-			newTask.vertexIds = append(newTask.vertexIds, vid)
-		}
-		atomic.AddInt64(&e.restRow, int64(chk.NumRows()))
-		e.workerChan <- &newTask
 	}
 }
 
@@ -322,14 +332,6 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 			if req.IsFull() {
 				return nil
 			}
-			e.mu.Lock()
-			atomic.AddInt64(&e.restRow, -1)
-			if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
-				e.mu.Unlock()
-				e.done = true
-				return nil
-			}
-			e.mu.Unlock()
 		}
 	}
 }
@@ -337,14 +339,12 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 func (e *TraverseExecutor) Close() error {
 	close(e.closeCh)
 	close(e.workerChan)
-	go func() {
-		for range e.traverseResultVIDCh {
-		}
-	}()
+
+	for range e.traverseResultVIDCh {
+	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	close(e.traverseResultVIDCh)
 	e.workerWg.Wait()
 	return nil
 }
