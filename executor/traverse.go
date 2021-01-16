@@ -2,7 +2,9 @@ package executor
 
 import (
 	"context"
-	"github.com/pingcap/log"
+	"runtime"
+	"sync"
+
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/kv"
@@ -10,17 +12,12 @@ import (
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/rowcodec"
-	"go.uber.org/zap"
-	"sync"
-	"sync/atomic"
-	"time"
+	"go.uber.org/atomic"
 )
 
 var _ Executor = &TraverseExecutor{}
 
-const workerConcurrency = 5
-
-type tempResult struct {
+type traverseTask struct {
 	vertexIds  []int64
 	chainLevel int64
 }
@@ -43,6 +40,8 @@ type condition struct {
 
 type TraverseExecutor struct {
 	baseExecutor
+	prepared bool
+	done     bool
 
 	startTS     uint64
 	txn         kv.Transaction
@@ -51,24 +50,18 @@ type TraverseExecutor struct {
 	doneErr     error
 	resultTagID int64
 
-	conditionChain []condition
+	conditions []condition
 
-	*rowcodec.ChunkDecoder
-	vertexIdOffsetInChild int64
-	prepared              bool
-	done                  bool
+	codec     *rowcodec.ChunkDecoder
+	vidOffset int64
 
-	mu struct {
-		sync.Mutex
-		childFinish bool
-	}
-	restRow int64
+	childExhausted  atomic.Bool
+	pendingTraverse atomic.Int64
 
-	workerChan          chan *tempResult
-	fetchFromChildErr   chan error
-	traverseResultVIDCh chan int64
-	closeCh             chan struct{}
-	closeNext           chan struct{}
+	workerCh chan *traverseTask
+	childErr chan error
+	results  chan int64
+	die      chan struct{}
 
 	tablePlan plannercore.PhysicalPlan
 }
@@ -103,7 +96,7 @@ func (e *TraverseExecutor) Open(ctx context.Context) error {
 		chk.AppendNull(i)
 		return nil
 	}
-	e.ChunkDecoder = rowcodec.NewChunkDecoder(cols, pkCols, def, nil)
+	e.codec = rowcodec.NewChunkDecoder(cols, pkCols, def, nil)
 
 	e.txn, err = e.ctx.Txn(false)
 	if err != nil {
@@ -124,76 +117,72 @@ func (e *TraverseExecutor) Open(ctx context.Context) error {
 	return nil
 }
 
-func (e *TraverseExecutor) runNewWorker(ctx context.Context) {
-	defer func() {
-		e.workerWg.Done()
-	}()
+func (e *TraverseExecutor) runWorker(ctx context.Context) {
+	defer e.workerWg.Done()
 
-	var task *tempResult
-	for ok := true; ok; {
+	for {
 		select {
-		case task, ok = <-e.workerChan:
+		case task, ok := <-e.workerCh:
 			if !ok {
 				return
 			}
-			err := e.handleTraverseTask(ctx, task)
+			err := e.handleTask(ctx, task)
 			if err != nil {
 				e.doneErr = err
+				return
 			}
 		case <-ctx.Done():
 			return
-		case <-e.closeCh:
+		case <-e.die:
 			return
 		}
 	}
 }
 
 func (e *TraverseExecutor) startWorkers(ctx context.Context) {
-	e.workerChan = make(chan *tempResult, workerConcurrency)
-
-	for i := 0; i < workerConcurrency; i++ {
-		e.workerWg.Add(1)
-		go e.runNewWorker(ctx)
+	concurrency := runtime.NumCPU()
+	e.workerCh = make(chan *traverseTask, concurrency)
+	e.workerWg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go e.runWorker(ctx)
 	}
 }
 
-func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempResult) error {
+func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) error {
 	level := task.chainLevel
-	finish := false
-	var newTask tempResult
-	if level+1 == int64(len(e.conditionChain)) {
-		finish = true
-	}
-	for _, vertexId := range task.vertexIds {
+	final := level+1 == int64(len(e.conditions))
+	cond := e.conditions[level]
+
+	for _, vid := range task.vertexIds {
 		var kvRange kv.KeyRange
-		switch e.conditionChain[level].direction {
+		switch e.conditions[level].direction {
 		case OUT:
-			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID)
-			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID+1)
+			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID)
+			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID+1)
 		case IN:
-			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, false, e.conditionChain[level].edgeID)
-			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, false, e.conditionChain[level].edgeID+1)
+			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, false, e.conditions[level].edgeID)
+			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, false, e.conditions[level].edgeID+1)
 		case BOTH:
-			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID)
-			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vertexId, true, e.conditionChain[level].edgeID+1)
+			kvRange.StartKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID)
+			kvRange.EndKey = tablecodec.ConstructKeyForGraphTraverse(vid, true, e.conditions[level].edgeID+1)
 			// TODO: cross validate
 		}
-		cond := e.conditionChain[level]
+
 		iter, err := e.snapshot.Iter(kvRange.StartKey, kvRange.EndKey)
 		if err != nil {
 			return err
 		}
-		if !finish {
-			newTask = tempResult{}
+		var newTask traverseTask
+		if !final {
+			newTask = traverseTask{}
 			newTask.vertexIds = make([]int64, 0, 100)
 			newTask.chainLevel = level + 1
 		}
 		for iter.Valid() {
-			k := iter.Key()
-			used := true
+			key := iter.Key()
 			if cond.cond != nil {
 				v := iter.Value()
-				handle, err := tablecodec.DecodeGraphEdgeRowKey(k)
+				handle, err := tablecodec.DecodeGraphEdgeRowKey(key)
 				if err != nil {
 					return err
 				}
@@ -207,26 +196,20 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 					return err
 				}
 				if val <= 0 || isNull {
-					used = false
+					continue
 				}
 			}
 
-			if !used {
-				continue
-			}
-
-			resultID, err := tablecodec.DecodeLastIDOfGraphEdge(k)
+			resultID, err := tablecodec.DecodeLastIDOfGraphEdge(key)
 			if err != nil {
 				return err
 			}
 
-			if finish {
-				e.traverseResultVIDCh <- resultID
+			if final {
+				e.results <- resultID
 			} else {
-				e.mu.Lock()
-				atomic.AddInt64(&e.restRow, 1)
-				e.mu.Unlock()
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
+				e.pendingTraverse.Add(1)
 			}
 
 			err = iter.Next()
@@ -234,63 +217,57 @@ func (e *TraverseExecutor) handleTraverseTask(ctx context.Context, task *tempRes
 				return err
 			}
 		}
-		if !finish {
-			e.workerChan <- &newTask
+		if !final {
+			e.workerCh <- &newTask
 		}
-		e.mu.Lock()
-		atomic.AddInt64(&e.restRow, -1)
-		log.Warn("%d", zap.Int64("row", e.restRow))
-		if e.mu.childFinish && atomic.LoadInt64(&e.restRow) == 0 {
-			e.done = true
-			close(e.closeNext)
-			close(e.traverseResultVIDCh)
-			e.mu.Unlock()
-			return nil
+		e.pendingTraverse.Sub(1)
+
+		// All workers should be closed if the child exhausted and all pending traverse tasks finished.
+		if e.childExhausted.Load() && e.pendingTraverse.Load() == 0 {
+			close(e.results)
+			close(e.workerCh)
 		}
-		e.mu.Unlock()
 	}
+
 	return nil
 }
 
 func (e *TraverseExecutor) fetchFromChildAndBuildFirstTask(ctx context.Context) {
 	defer func() {
 		e.workerWg.Done()
-		e.mu.Lock()
-		e.mu.childFinish = true
-		e.mu.Unlock()
+		e.childExhausted.Store(true)
 	}()
 
 	chk := newFirstChunk(e.children[0])
 
 	for {
 		select {
-		case <-e.closeCh:
+		case <-e.die:
 			return
 		default:
-			newTask := tempResult{}
-			newTask.chainLevel = 0
-			newTask.vertexIds = make([]int64, 0, 100)
 			chk.Reset()
 			if err := Next(ctx, e.children[0], chk); err != nil {
-				e.fetchFromChildErr <- err
+				e.childErr <- err
 				return
 			}
 			if chk.NumRows() == 0 {
 				return
 			}
-			for i := 0; i < chk.NumRows(); i++ {
-				vid := chk.GetRow(i).GetInt64(int(e.vertexIdOffsetInChild))
-				newTask.vertexIds = append(newTask.vertexIds, vid)
+
+			task := &traverseTask{
+				vertexIds: make([]int64, 0, chk.NumRows()),
 			}
-			e.mu.Lock()
-			atomic.AddInt64(&e.restRow, int64(chk.NumRows()))
-			e.mu.Unlock()
-			e.workerChan <- &newTask
+			for i := 0; i < chk.NumRows(); i++ {
+				vid := chk.GetRow(i).GetInt64(int(e.vidOffset))
+				task.vertexIds = append(task.vertexIds, vid)
+			}
+			e.pendingTraverse.Add(int64(chk.NumRows()))
+			e.workerCh <- task
 		}
 	}
 }
 
-func (e *TraverseExecutor) ConstructResultRow(ctx context.Context, vid int64, req *chunk.Chunk) error {
+func (e *TraverseExecutor) appendResult(ctx context.Context, vid int64, req *chunk.Chunk) error {
 	key := tablecodec.EncodeGraphTag(vid, e.resultTagID)
 	value, err := e.snapshot.Get(ctx, key)
 	if err != nil {
@@ -300,7 +277,7 @@ func (e *TraverseExecutor) ConstructResultRow(ctx context.Context, vid int64, re
 		return err
 	}
 
-	return e.ChunkDecoder.DecodeToChunk(value, kv.IntHandle(vid), req)
+	return e.codec.DecodeToChunk(value, kv.IntHandle(vid), req)
 }
 
 func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
@@ -317,15 +294,14 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 
 	for {
 		select {
-		case err := <-e.fetchFromChildErr:
+		case err := <-e.childErr:
 			return err
-		case <-e.closeNext:
-			return nil
-		case vid, ok := <-e.traverseResultVIDCh:
+		case vid, ok := <-e.results:
 			if !ok {
+				e.done = true
 				return nil
 			}
-			err := e.ConstructResultRow(ctx, vid, req)
+			err := e.appendResult(ctx, vid, req)
 			if err != nil {
 				return err
 			}
@@ -337,13 +313,10 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 }
 
 func (e *TraverseExecutor) Close() error {
-	close(e.closeCh)
-	close(e.workerChan)
+	close(e.die)
 
-	for range e.traverseResultVIDCh {
+	for range e.results {
 	}
-
-	time.Sleep(100 * time.Millisecond)
 
 	e.workerWg.Wait()
 	return nil
