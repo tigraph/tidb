@@ -2,7 +2,10 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	goatomic "sync/atomic"
+	"time"
 
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/expression"
@@ -41,6 +44,28 @@ type traverseLevel struct {
 	}
 }
 
+type TraverseExecutorStats struct {
+	concurrency   int
+	taskNum       int64
+	edgeScanRows  int64
+	totalTaskTime int64
+	maxTaskTime   int64
+	pushTaskTime  int64
+	fetchRootTime int64
+
+	batchGet            int64
+	batchGetTotalKey    int64
+	batchGetTotalResult int64
+	batchGetExecCount   int64
+}
+
+func (s *TraverseExecutorStats) String() string {
+	return fmt.Sprintf("concur: %v, fetch_root: %v, task:{num: %v, time: %v,avg: %v, max: %v, push_wait: %v, batch_get: %v, edge_scan_rows: %v, batch_get:{total_key: %v,total_result: %v, exec_count: %v, avg_get_keys: %v}}", s.concurrency,
+		time.Duration(s.fetchRootTime), s.taskNum, time.Duration(s.totalTaskTime), time.Duration(float64(s.totalTaskTime)/float64(s.taskNum)),
+		time.Duration(s.maxTaskTime), time.Duration(s.pushTaskTime), time.Duration(float64(s.batchGet)/float64(s.batchGetExecCount)), s.edgeScanRows,
+		s.batchGetTotalKey, s.batchGetTotalResult, s.batchGetExecCount, s.batchGetTotalKey/s.batchGetExecCount)
+}
+
 type TraverseExecutor struct {
 	baseExecutor
 	concurrency int
@@ -68,6 +93,8 @@ type TraverseExecutor struct {
 	die      chan struct{}
 
 	tablePlan plannercore.PhysicalPlan
+
+	stats TraverseExecutorStats
 }
 
 func (e *TraverseExecutor) Init(p *plannercore.PointGetPlan, startTs uint64) {
@@ -148,6 +175,7 @@ func (e *TraverseExecutor) runWorker(ctx context.Context) {
 }
 
 func (e *TraverseExecutor) startWorkers(ctx context.Context) {
+	e.stats.concurrency = e.concurrency
 	e.workerWg.Add(e.concurrency)
 	for i := 0; i < e.concurrency; i++ {
 		go e.runWorker(ctx)
@@ -159,6 +187,20 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 	final := level+1 == int64(len(e.traverseLevels))
 	cond := e.traverseLevels[level]
 
+	startTime := time.Now()
+	edgeScanRows := 0
+	defer func() {
+		cost := time.Since(startTime)
+		goatomic.AddInt64(&e.stats.totalTaskTime, int64(cost))
+		goatomic.AddInt64(&e.stats.edgeScanRows, int64(edgeScanRows))
+		if goatomic.LoadInt64(&e.stats.maxTaskTime) < int64(cost) {
+			goatomic.StoreInt64(&e.stats.maxTaskTime, int64(cost))
+		}
+	}()
+	goatomic.AddInt64(&e.stats.taskNum, 1)
+
+	batchSize := 1024
+	vids := make([]int64, 0, batchSize)
 	for _, vid := range task.vertexIds {
 		var kvRange kv.KeyRange
 		switch e.traverseLevels[level].direction {
@@ -184,9 +226,8 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 			newTask.vertexIds = make([]int64, 0, 100)
 			newTask.chainLevel = level + 1
 		}
-		batchSize := 128
-		vids := make([]int64, 0, batchSize)
 		for err = nil; iter.Valid(); err = iter.Next() {
+			edgeScanRows++
 			if err != nil {
 				return err
 			}
@@ -242,17 +283,17 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
 			}
 		}
-		if final && len(vids) > 0 {
-			chk, err := e.batchGetVertex(ctx, vids)
-			if err != nil {
-				return err
-			}
-			if chk.NumRows() > 0 {
-				e.results <- chk
-			}
-		}
 		if newTask != nil {
 			e.pushTask(newTask)
+		}
+	}
+	if final && len(vids) > 0 {
+		chk, err := e.batchGetVertex(ctx, vids)
+		if err != nil {
+			return err
+		}
+		if chk.NumRows() > 0 {
+			e.results <- chk
 		}
 	}
 
@@ -268,9 +309,11 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 }
 
 func (e *TraverseExecutor) fetchFromChild(ctx context.Context) {
+	start := time.Now()
 	defer func() {
 		e.workerWg.Done()
 		e.childExhausted.Store(true)
+		goatomic.AddInt64(&e.stats.fetchRootTime, int64(time.Since(start)))
 	}()
 
 	chk := newFirstChunk(e.children[0])
@@ -302,8 +345,10 @@ func (e *TraverseExecutor) fetchFromChild(ctx context.Context) {
 }
 
 func (e *TraverseExecutor) pushTask(task *traverseTask) {
+	start := time.Now()
 	e.workerCh <- task
 	e.pendingTasks.Add(1)
+	goatomic.AddInt64(&e.stats.pushTaskTime, int64(time.Since(start)))
 }
 
 func (e *TraverseExecutor) batchGetVertex(ctx context.Context, vids []int64) (*chunk.Chunk, error) {
@@ -315,7 +360,12 @@ func (e *TraverseExecutor) batchGetVertex(ctx context.Context, vids []int64) (*c
 		key := tablecodec.EncodeGraphTag(vid, e.resultTagID)
 		cacheKeys = append(cacheKeys, key)
 	}
+	start := time.Now()
 	values, err := e.snapshot.BatchGet(ctx, cacheKeys)
+	goatomic.AddInt64(&e.stats.batchGet, int64(time.Since(start)))
+	goatomic.AddInt64(&e.stats.batchGetExecCount, 1)
+	goatomic.AddInt64(&e.stats.batchGetTotalKey, int64(len(cacheKeys)))
+	goatomic.AddInt64(&e.stats.batchGetTotalResult, int64(len(values)))
 	if err != nil {
 		if kv.ErrNotExist.Equal(err) {
 			return chk, nil
@@ -365,11 +415,14 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 }
 
 func (e *TraverseExecutor) Close() error {
+	//start := time.Now()
 	close(e.die)
 
 	for range e.results {
 	}
 
 	e.workerWg.Wait()
+	//closeWait := time.Since(start)
+	//fmt.Printf("traverse stats: %v, close_wait: %v \n------\n", e.stats.String(), closeWait.String())
 	return nil
 }

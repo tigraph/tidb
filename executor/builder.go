@@ -700,7 +700,7 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 	if b.err != nil {
 		return nil
 	}
-	concurrency := runtime.NumCPU()
+	concurrency := runtime.NumCPU() * 60
 	t := &TraverseExecutor{
 		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
 		concurrency:    concurrency,
