@@ -36,6 +36,7 @@ type condition struct {
 	cond       expression.Expression
 	rowDecoder *rowcodec.ChunkDecoder
 	chk        *chunk.Chunk
+	dedup      *sync.Map
 }
 
 type TraverseExecutor struct {
@@ -113,6 +114,10 @@ func (e *TraverseExecutor) Open(ctx context.Context) error {
 	err = e.children[0].Open(ctx)
 	if err != nil {
 		return err
+	}
+
+	for i := range e.conditions {
+		e.conditions[i].dedup = &sync.Map{}
 	}
 
 	e.startWorkers(ctx)
@@ -209,6 +214,16 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 				return err
 			}
 
+			err = iter.Next()
+			if err != nil {
+				return err
+			}
+
+			if _, found := cond.dedup.Load(resultID); found {
+				continue
+			}
+			cond.dedup.Store(resultID, struct{}{})
+
 			if final {
 				vids = append(vids, resultID)
 				if len(vids) == batchSize {
@@ -217,15 +232,6 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 				}
 			} else {
 				newTask.vertexIds = append(newTask.vertexIds, resultID)
-			}
-
-			err = iter.Next()
-			if err != nil {
-				// redundant?
-				if final && len(vids) > 0 {
-					e.results <- vids
-				}
-				return err
 			}
 		}
 		if final && len(vids) > 0 {
@@ -326,7 +332,7 @@ func (e *TraverseExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 
 	req.Reset()
 	if e.done {
-		return nil
+		return e.doneErr
 	}
 
 	for {
