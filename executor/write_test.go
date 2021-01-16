@@ -4090,3 +4090,56 @@ func (s *testSuite) TestTraverseGraphWithMultiRelation(c *C) {
 		}
 	}
 }
+
+func (s *testSuite) TestMultiGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	for i := 0; i < 10; i++ {
+		sqls := []string{
+			"create tag p%v (vertex_id bigint, name varchar(32), age int, unique index idx(name))",
+			"insert into p%v values (1,'bob', 11),(2,'jim',12), (3, 'jack', 13), (4,'BOB', 21),(5,'JIM',22), (6, 'JACK', 23)",
+			"create edge f%v (`from` bigint, `to` bigint, time year)",
+			"insert into f%v values (1,2,2000),(2,3,2010),(1,5,2015),(2,4,2011),(3,1,2020)",
+		}
+		for _, sql := range sqls {
+			sql = fmt.Sprintf(sql, i)
+			tk.MustExec(sql)
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		cases := []struct {
+			sql    string
+			result string
+		}{
+			{
+				sql:    "select count(*) from p%v;",
+				result: "6",
+			},
+			{
+				sql:    "select max(age) from p%v;",
+				result: "23",
+			},
+			{
+				sql:    "select * from p%[1]v where name='bob' traverse out(f%[1]v).tag(p%[1]v);",
+				result: "2 jim 12|5 JIM 22",
+			},
+			{
+				sql:    "select * from p%[1]v where age in (11,12,13) traverse out(f%[1]v).tag(p%[1]v);",
+				result: "2 jim 12|5 JIM 22|3 jack 13|4 BOB 21|1 bob 11",
+			},
+			{
+				sql:    "select * from p%[1]v where age in (11,12,13) traverse out(f%[1]v where time > 2010).tag(p%[1]v);",
+				result: "5 JIM 22|4 BOB 21|1 bob 11",
+			},
+		}
+		for _, ca := range cases {
+			ca.sql = fmt.Sprintf(ca.sql, i)
+			if strings.HasPrefix(ca.sql, "select") {
+				tk.MustQuery(ca.sql).Check(testkit.Rows(strings.Split(ca.result, "|")...))
+			} else {
+				tk.MustExec(ca.sql)
+			}
+		}
+	}
+}
