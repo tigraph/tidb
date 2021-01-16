@@ -703,7 +703,7 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
 		tablePlan:      v,
 		workerWg:       new(sync.WaitGroup),
-		traverseLevels: make([]traverseLevel, 0),
+		traverseLevels: make([]*traverseLevel, 0),
 		workerCh:       make(chan *traverseTask),
 		childErr:       make(chan error),
 		results:        make(chan []int64),
@@ -755,7 +755,12 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 			}
 			chk = chunk.New(retFieldTypes, 1, 1)
 		}
-		t.traverseLevels = append(t.traverseLevels, traverseLevel{edgeID: edgeSchema.Meta().ID, direction: dir, cond: expr, rowDecoder: rowDecoder, chk: chk})
+		t.traverseLevels = append(t.traverseLevels, &traverseLevel{
+			edgeID:     edgeSchema.Meta().ID,
+			direction:  dir,
+			cond:       expr,
+			rowDecoder: rowDecoder, chk: chk,
+		})
 	}
 	startTS, err := b.getSnapshotTS()
 	if err != nil {

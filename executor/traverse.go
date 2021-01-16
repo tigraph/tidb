@@ -36,7 +36,10 @@ type traverseLevel struct {
 	cond       expression.Expression
 	rowDecoder *rowcodec.ChunkDecoder
 	chk        *chunk.Chunk
-	dedup      *sync.Map
+	dedup      struct {
+		mu   sync.Mutex
+		data map[int64]struct{}
+	}
 }
 
 type TraverseExecutor struct {
@@ -51,7 +54,7 @@ type TraverseExecutor struct {
 	doneErr     error
 	resultTagID int64
 
-	traverseLevels []traverseLevel
+	traverseLevels []*traverseLevel
 
 	codec     *rowcodec.ChunkDecoder
 	vidOffset int64
@@ -117,7 +120,7 @@ func (e *TraverseExecutor) Open(ctx context.Context) error {
 	}
 
 	for i := range e.traverseLevels {
-		e.traverseLevels[i].dedup = &sync.Map{}
+		e.traverseLevels[i].dedup.data = make(map[int64]struct{})
 	}
 
 	e.startWorkers(ctx)
@@ -219,10 +222,15 @@ func (e *TraverseExecutor) handleTask(ctx context.Context, task *traverseTask) e
 				return err
 			}
 
-			if _, found := cond.dedup.Load(resultID); found {
+			cond.dedup.mu.Lock()
+			_, found := cond.dedup.data[resultID]
+			if !found {
+				cond.dedup.data[resultID] = struct{}{}
+			}
+			cond.dedup.mu.Unlock()
+			if found {
 				continue
 			}
-			cond.dedup.Store(resultID, struct{}{})
 
 			if final {
 				vids = append(vids, resultID)
