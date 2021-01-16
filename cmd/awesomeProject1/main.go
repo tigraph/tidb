@@ -74,7 +74,7 @@ func buildGraph() {
 	if err != nil {
 		os.Exit(1)
 	}
-	_, err = file.WriteString("create tag people (vertex_id bigint, name varchar(32));\n")
+	_, err = file.WriteString("create tag people (id bigint, name varchar(32));\n")
 	if err != nil {
 		os.Exit(1)
 	}
@@ -82,7 +82,7 @@ func buildGraph() {
 	if err != nil {
 		os.Exit(1)
 	}
-	_, err = file.WriteString("create edge friends (`from` bigint, `to` bigint);\n")
+	_, err = file.WriteString("create edge friends (src bigint, dst bigint);\n")
 	if err != nil {
 		os.Exit(1)
 	}
