@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	. "github.com/pingcap/check"
@@ -4038,4 +4039,107 @@ func (s *testSuite) TestWriteGraphInTxn(c *C) {
 	// test for point-get in edge
 	tk.MustQuery("select * from f where `from`=1 and `to` = 3").Check(testkit.Rows("1 3"))
 	tk.MustExec("rollback")
+}
+
+func (s *testSuite) TestTraverseGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (vertex_id bigint, name varchar(32), age int, unique index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22), (3, 'jack', 23);")
+
+	tk.MustExec("create edge f (`from` bigint, `to` bigint, time year);")
+	tk.MustExec("insert into f values (1,3, 2000),(1,2,2001), (2,3,2010), (3,2,2020)")
+
+	tk.MustQuery("select * from p where name='bob' traverse out(f).tag(p);").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2000).tag(p);").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2010).tag(p);").Check(testkit.Rows())
+	tk.MustQuery("select * from p traverse out(f where time>=2015).tag(p);").Check(testkit.Rows("2 jim 22"))
+}
+
+func (s *testSuite) TestTraverseGraphWithMultiRelation(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	cases := []struct {
+		sql    string
+		result string
+	}{
+		{sql: "use test"},
+		{sql: "drop table if exists student,teacher,love,hate;"},
+		{sql: "create tag student (vertex_id bigint, name varchar(32), age int, unique index idx(name));"},
+		{sql: "create tag teacher (vertex_id bigint, name varchar(32), age int, unique index idx(name))"},
+		{sql: "insert into student values (1,'bob', 11),(2,'jim',12), (3, 'jack', 13);"},
+		{sql: "insert into teacher values (4,'BOB', 21),(5,'JIM',22), (6, 'JACK', 23);"},
+		{sql: "create edge love (`from` bigint, `to` bigint, time year);"},
+		{sql: "create edge hate (`from` bigint, `to` bigint, time year);"},
+		{sql: "insert into love values (1,2,2000),(2,3,2010),(1,5,2015);"},
+		{sql: "insert into hate values (2,4,2011),(3,1,2020);"},
+		{
+			sql:    "select * from student where name='bob' traverse out(love).tag(teacher);",
+			result: "5 JIM 22",
+		},
+		{
+			sql:    "select * from student where name='bob' traverse out(love).out(hate).tag(teacher);",
+			result: "4 BOB 21",
+		},
+	}
+	for _, ca := range cases {
+		if strings.HasPrefix(ca.sql, "select") {
+			tk.MustQuery(ca.sql).Check(testkit.Rows(strings.Split(ca.result, "|")...))
+		} else {
+			tk.MustExec(ca.sql)
+		}
+	}
+}
+
+func (s *testSuite) TestMultiGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	for i := 0; i < 10; i++ {
+		sqls := []string{
+			"create tag p%v (vertex_id bigint, name varchar(32), age int, unique index idx(name))",
+			"insert into p%v values (1,'bob', 11),(2,'jim',12), (3, 'jack', 13), (4,'BOB', 21),(5,'JIM',22), (6, 'JACK', 23)",
+			"create edge f%v (`from` bigint, `to` bigint, time year)",
+			"insert into f%v values (1,2,2000),(2,3,2010),(1,5,2015),(2,4,2011),(3,1,2020)",
+		}
+		for _, sql := range sqls {
+			sql = fmt.Sprintf(sql, i)
+			tk.MustExec(sql)
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		cases := []struct {
+			sql    string
+			result string
+		}{
+			{
+				sql:    "select count(*) from p%v;",
+				result: "6",
+			},
+			{
+				sql:    "select max(age) from p%v;",
+				result: "23",
+			},
+			{
+				sql:    "select * from p%[1]v where name='bob' traverse out(f%[1]v).tag(p%[1]v);",
+				result: "2 jim 12|5 JIM 22",
+			},
+			{
+				sql:    "select * from p%[1]v where age in (11,12,13) traverse out(f%[1]v).tag(p%[1]v);",
+				result: "2 jim 12|5 JIM 22|3 jack 13|4 BOB 21|1 bob 11",
+			},
+			{
+				sql:    "select * from p%[1]v where age in (11,12,13) traverse out(f%[1]v where time > 2010).tag(p%[1]v);",
+				result: "5 JIM 22|4 BOB 21|1 bob 11",
+			},
+		}
+		for _, ca := range cases {
+			ca.sql = fmt.Sprintf(ca.sql, i)
+			if strings.HasPrefix(ca.sql, "select") {
+				tk.MustQuery(ca.sql).Check(testkit.Rows(strings.Split(ca.result, "|")...))
+			} else {
+				tk.MustExec(ca.sql)
+			}
+		}
+	}
 }

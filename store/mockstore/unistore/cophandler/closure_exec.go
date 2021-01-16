@@ -1018,6 +1018,10 @@ func (e *countStarProcessor) Process(key, value []byte) error {
 		}
 		e.aggCtx.execDetail.update(begin, false)
 	}(time.Now())
+	if e.rowFilter != nil && !e.rowFilter(key) {
+		return nil
+	}
+
 	e.rowCount++
 	return nil
 }
@@ -1075,6 +1079,9 @@ func (e *countColumnProcessor) Process(key, value []byte) error {
 			gotRow = true
 		}
 	} else {
+		if e.rowFilter != nil && !e.rowFilter(key) {
+			return nil
+		}
 		// Since the handle value doesn't affect the count result, we don't need to decode the handle.
 		isNull, err := e.scanCtx.decoder.ColumnIsNull(value, e.aggCtx.col.ColumnId, e.aggCtx.col.DefaultVal)
 		if err != nil {

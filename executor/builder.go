@@ -700,16 +700,15 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		return nil
 	}
 	t := &TraverseExecutor{
-		baseExecutor:        newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
-		tablePlan:           v,
-		workerWg:            new(sync.WaitGroup),
-		conditionChain:      make([]condition, 0),
-		workerChan:          make(chan *tempResult),
-		fetchFromChildErr:   make(chan error),
-		traverseResultVIDCh: make(chan int64),
-		closeCh:             make(chan struct{}),
-		closeNext:           make(chan struct{}),
-		resultTagID:         v.ResultTagID,
+		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		tablePlan:    v,
+		workerWg:     new(sync.WaitGroup),
+		conditions:   make([]condition, 0),
+		workerCh:     make(chan *traverseTask),
+		childErr:     make(chan error),
+		results:      make(chan int64),
+		die:          make(chan struct{}),
+		resultTagID:  v.ResultTagID,
 	}
 	for _, c := range v.TraverseChain.Verbs {
 		var dir DirType
@@ -729,12 +728,38 @@ func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executo
 		}
 		edgeSchema, err := b.is.TableByName(edgeName.Schema, edgeName.Name)
 		if err != nil {
+			b.err = err
 			return nil
 		}
-		t.conditionChain = append(t.conditionChain, condition{edgeID: edgeSchema.Meta().ID, direction: dir})
+
+		// build condition for edge.
+		var expr expression.Expression
+		var rowDecoder *rowcodec.ChunkDecoder
+		var chk *chunk.Chunk
+		if c.Targets[0].Where != nil {
+			schema, names, err := expression.TableInfo2SchemaAndNames(b.ctx, edgeName.Schema, edgeSchema.Meta())
+			if err != nil {
+				b.err = err
+				return nil
+			}
+
+			expr, err = expression.RewriteSimpleExprWithNames(b.ctx, c.Targets[0].Where, schema, names)
+			if err != nil {
+				b.err = err
+				return nil
+			}
+			rowDecoder = NewRowDecoder(b.ctx, schema, edgeSchema.Meta())
+			retFieldTypes := make([]*types.FieldType, len(schema.Columns))
+			for i := range schema.Columns {
+				retFieldTypes[i] = schema.Columns[i].RetType
+			}
+			chk = chunk.New(retFieldTypes, 1, 1)
+		}
+		t.conditions = append(t.conditions, condition{edgeID: edgeSchema.Meta().ID, direction: dir, cond: expr, rowDecoder: rowDecoder, chk: chk})
 	}
 	startTS, err := b.getSnapshotTS()
 	if err != nil {
+		b.err = err
 		return nil
 	}
 	t.startTS = startTS
