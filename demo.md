@@ -5,7 +5,7 @@ TiGraph 项目实现了在 TiDB 无缝集成图模式：
 - 在 SQL 中扩展出一个让 DBA 一眼就能学会的图遍历语法
 - 同一个事务中操作图数据和关系型数据的能力
 
-[TiGraph 介绍 PPT](https://docs.google.com/presentation/d/1RBe8HUtGqzlyruEyCbzKh8dxOk6D7Zd5dSz1mPXvPoc/edit#slide=id.g78c10247c3_0_0)
+[TiGraph 介绍 PPT](https://docs.google.com/presentation/d/1RBe8HUtGqzlyruEyCbzKh8dxOk6D7Zd5dSz1mPXvPoc/edit#slide=id.p)
 
 # Usage
 
