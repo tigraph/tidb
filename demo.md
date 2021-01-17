@@ -1,6 +1,24 @@
+# prepare
+
+```shell
+git clone https://github.com/tigraph/tidb.git
+cd tidb
+# build tidb-server binary
+make
+# start tidb-server
+bin/tidb-server
+```
+
+
+
+
+
 # Sample Demo
 
 ```sql
+drop database if exists example;
+create database example;
+use example;
 -- 创建一个节点定义
 CREATE TAG people (id BIGINT, name VARCHAR(32), register TIMESTAMP DEFAULT now(), UNIQUE INDEX (name), index (register));
 -- 写入 4 个点
