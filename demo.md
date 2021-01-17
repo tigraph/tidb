@@ -1,4 +1,13 @@
-# prepare
+# TiGraph
+
+TiGraph 项目实现了在 TiDB 无缝集成图模式：
+
+- 在 SQL 中扩展出一个让 DBA 一眼就能学会的图遍历语法
+- 同一个事务中操作图数据和关系型数据的能力
+
+# Usage
+
+Start the `tidb-server` first.
 
 ```shell
 git clone https://github.com/tigraph/tidb.git
@@ -9,11 +18,7 @@ make
 bin/tidb-server
 ```
 
-
-
-
-
-# Sample Demo
+## Sample Demo
 
 ```sql
 drop database if exists example;
@@ -43,6 +48,8 @@ DESC SELECT * FROM people use index (register) WHERE register='2010-01-16 18:00:
 
 # Benchmark
 
+## 用 TiGraph 进行 N 度人脉测试
+
 1. 准备图节点测试数据
 
 ```shell
@@ -54,7 +61,7 @@ go run main.go
 mysql -u root -h 127.0.0.1 -P 4000 test < data.sql
 ```
 
-2. N 度人脉测试
+2. N 度人脉测试 SQL
 
 ```sql
 use test;
@@ -72,7 +79,7 @@ SELECT count(*) FROM people WHERE id=1234 TRAVERSE OUT(friends).OUT(friends).OUT
 
 ## 对比 TiDB N 度人脉测试
 
-### prepare 数据
+1. 准备表的测试数据
 
 将生成 的 `data.sql` 的前 4 行 SQL 换成以下 SQL 以创建表：
 
@@ -86,13 +93,13 @@ drop table if exists friends;
 create table friends (src bigint, dst bigint);
 ```
 
-然后倒入数据：
+然后导入数据：
 
 ```shell
 mysql -u root -h 127.0.0.1 -P 4000 test2 < data.sql
 ```
 
-2. N 度人脉测试
+2. N 度人脉测试 SQL
 
 ```sql
 use test2;
