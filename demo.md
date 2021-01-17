@@ -70,3 +70,38 @@ SELECT count(*) FROM people WHERE id=1234 TRAVERSE OUT(friends).OUT(friends).OUT
 SELECT count(*) FROM people WHERE id=1234 TRAVERSE OUT(friends).OUT(friends).OUT(friends).OUT(friends).OUT(friends).OUT(friends).TAG(people);
 ```
 
+## 对比 TiDB N 度人脉测试
+
+### prepare 数据
+
+将生成 的 `data.sql` 的前 4 行 SQL 换成以下 SQL 以创建表：
+
+```sql
+drop database if exists test2;
+create database test2;
+use test2;
+drop table if exists people;
+create table people (id bigint, name varchar(32));
+drop table if exists friends;
+create table friends (src bigint, dst bigint);
+```
+
+然后倒入数据：
+
+```shell
+mysql -u root -h 127.0.0.1 -P 4000 test2 < data.sql
+```
+
+2. N 度人脉测试
+
+```sql
+use test2;
+-- 2 度人脉查询
+SELECT count(*) FROM people WHERE id IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234);
+
+-- 3 度人脉查询
+SELECT count(*) FROM people WHERE id IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234) AND src != 1234);
+
+-- 4 度人脉查询
+SELECT count(*) FROM people WHERE id IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234) AND src != 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src IN (SELECT dst FROM friends WHERE src = 1234) AND dst NOT IN (SELECT dst FROM friends WHERE src = 1234) AND src != 1234) AND src != 1234) AND src != 1234);
+```
