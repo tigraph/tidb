@@ -7,9 +7,9 @@ import (
 	"github.com/Pallinder/go-randomdata"
 )
 
-const RowCount = 1000000
-const friendsMin = 10
-const friendsMax = 50
+const RowCount = 100000
+const friendsMin = 30
+const friendsMax = 100
 const step = 10000
 
 func buildVertex(f *os.File) error {
@@ -17,14 +17,14 @@ func buildVertex(f *os.File) error {
 	sql := "insert into people values "
 	for i := 0; i < RowCount; i++ {
 		k := randomdata.Number(10, 20)
-		if k % 2 == 0 {
+		if k%2 == 0 {
 			name = randomdata.FullName(randomdata.Male)
 		} else {
 			name = randomdata.FullName(randomdata.Female)
 		}
 		sql += fmt.Sprintf(" (%d, '%s'),", i+1, name)
 
-		if (i+1) % step == 0 {
+		if (i+1)%step == 0 {
 			sql = sql[:len(sql)-1]
 			sql += ";\n"
 			_, err := f.WriteString(sql)
@@ -43,7 +43,7 @@ func buildEdge(f *os.File) error {
 	sql := fmt.Sprintf("insert ignore into friends values ")
 	for i := 0; i < RowCount; i++ {
 		friendsCnt := randomdata.Number(friendsMin, friendsMax+1)
-		for j := 0 ; j < friendsCnt; j++ {
+		for j := 0; j < friendsCnt; j++ {
 			cnt++
 			to := randomdata.Number(1, RowCount+1)
 			if to == i {
@@ -51,7 +51,7 @@ func buildEdge(f *os.File) error {
 			}
 			sql = sql + fmt.Sprintf(" (%d, %d),", i+1, to)
 
-			if (cnt+1) % step == 0 {
+			if (cnt+1)%step == 0 {
 				sql = sql[:len(sql)-1]
 				sql += ";\n"
 				_, err := f.WriteString(sql)
@@ -63,7 +63,7 @@ func buildEdge(f *os.File) error {
 		}
 	}
 
-	if (cnt+1) % step != 0 {
+	if (cnt+1)%step != 0 {
 		sql = sql[:len(sql)-1]
 		sql += ";\n"
 		_, err := f.WriteString(sql)
@@ -76,12 +76,11 @@ func buildEdge(f *os.File) error {
 }
 
 func buildGraph() {
-	file, err := os.OpenFile("./data.sql",os.O_WRONLY| os.O_CREATE | os.O_TRUNC,0666)
+	file, err := os.OpenFile("./data.sql", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		fmt.Println("file open error")
 		return
 	}
-
 
 	_, err = file.WriteString("drop table if exists people;\n")
 	if err != nil {
@@ -113,7 +112,7 @@ func buildPeopleRel(f *os.File) error {
 	var name string
 	for i := 0; i < RowCount; i++ {
 		k := randomdata.Number(10, 20)
-		if k % 2 == 0 {
+		if k%2 == 0 {
 			name = randomdata.FullName(randomdata.Male)
 		} else {
 			name = randomdata.FullName(randomdata.Female)
@@ -130,7 +129,7 @@ func buildPeopleRel(f *os.File) error {
 
 func buildFriendsRel(f *os.File) error {
 	for i := 0; i < RowCount; i++ {
-		for j := 0 ; j <= 10; j++ {
+		for j := 0; j <= 10; j++ {
 			to := randomdata.Number(1, RowCount+1)
 			if to == i {
 				continue
@@ -152,7 +151,7 @@ func buildFriendsRel(f *os.File) error {
 }
 
 func buildRal() {
-	file, err := os.OpenFile("./data_rel.sql",os.O_WRONLY| os.O_CREATE | os.O_TRUNC,0666)
+	file, err := os.OpenFile("./data_rel.sql", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		fmt.Println("file open error")
 		return
