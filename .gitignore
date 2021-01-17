@@ -18,3 +18,5 @@ vendor
 /_tools/
 .DS_Store
 .vscode
+cmd/tigraph-generator/data.sql
+
