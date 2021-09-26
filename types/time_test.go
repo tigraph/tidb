@@ -39,7 +39,7 @@ func (s *testTimeSuite) TestTimeEncoding(c *C) {
 	tests := []struct {
 		Year, Month, Day, Hour, Minute, Second, Microsecond int
 		Type                                                uint8
-		Fsp                                                 int8
+		Fsp                                                 int
 		Expect                                              uint64
 	}{
 		{2019, 9, 16, 0, 0, 0, 0, mysql.TypeDatetime, 0, 0b1111110001110011000000000000000000000000000000000000000000000},
@@ -116,7 +116,7 @@ func (s *testTimeSuite) TestDateTime(c *C) {
 
 	fspTbl := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Expect string
 	}{
 		{"20170118.123", 6, "2017-01-18 12:03:00.000000"},
@@ -394,9 +394,9 @@ func (s *testTimeSuite) TestDurationAdd(c *C) {
 	defer testleak.AfterTest(c)()
 	table := []struct {
 		Input    string
-		Fsp      int8
+		Fsp      int
 		InputAdd string
-		FspAdd   int8
+		FspAdd   int
 		Expect   string
 	}{
 		{"00:00:00.1", 1, "00:00:00.1", 1, "00:00:00.2"},
@@ -433,9 +433,9 @@ func (s *testTimeSuite) TestDurationSub(c *C) {
 	defer testleak.AfterTest(c)()
 	table := []struct {
 		Input    string
-		Fsp      int8
+		Fsp      int
 		InputAdd string
-		FspAdd   int8
+		FspAdd   int
 		Expect   string
 	}{
 		{"00:00:00.1", 1, "00:00:00.1", 1, "00:00:00.0"},
@@ -458,7 +458,7 @@ func (s *testTimeSuite) TestTimeFsp(c *C) {
 	defer testleak.AfterTest(c)()
 	table := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Expect string
 	}{
 		{"00:00:00.1", 0, "00:00:00"},
@@ -481,7 +481,7 @@ func (s *testTimeSuite) TestTimeFsp(c *C) {
 
 	errTable := []struct {
 		Input string
-		Fsp   int8
+		Fsp   int
 	}{
 		{"00:00:00.1", -2},
 	}
@@ -695,7 +695,7 @@ func (s *testTimeSuite) TestToNumber(c *C) {
 	defer testleak.AfterTest(c)()
 	tblDateTime := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Expect string
 	}{
 		{"12-12-31 11:30:45", 0, "20121231113045"},
@@ -718,7 +718,7 @@ func (s *testTimeSuite) TestToNumber(c *C) {
 	// Fix issue #1046
 	tblDate := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Expect string
 	}{
 		{"12-12-31 11:30:45", 0, "20121231"},
@@ -740,7 +740,7 @@ func (s *testTimeSuite) TestToNumber(c *C) {
 
 	tblDuration := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Expect string
 	}{
 		{"11:30:45", 0, "113045"},
@@ -769,7 +769,7 @@ func (s *testTimeSuite) TestParseTimeFromFloatString(c *C) {
 	defer testleak.AfterTest(c)()
 	table := []struct {
 		Input       string
-		Fsp         int8
+		Fsp         int
 		ExpectError bool
 		Expect      string
 	}{
@@ -800,7 +800,7 @@ func (s *testTimeSuite) TestParseFrac(c *C) {
 	defer testleak.AfterTest(c)()
 	tbl := []struct {
 		S        string
-		Fsp      int8
+		Fsp      int
 		Ret      int
 		Overflow bool
 	}{
@@ -840,7 +840,7 @@ func (s *testTimeSuite) TestRoundFrac(c *C) {
 	defer testleak.AfterTest(c)()
 	tbl := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Except string
 	}{
 		{"2012-12-31 11:30:45.123456", 4, "2012-12-31 11:30:45.1235"},
@@ -869,7 +869,7 @@ func (s *testTimeSuite) TestRoundFrac(c *C) {
 	sc.TimeZone = losAngelesTz
 	tbl = []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Except string
 	}{
 		{"2019-11-25 07:25:45.123456", 4, "2019-11-25 07:25:45.1235"},
@@ -891,7 +891,7 @@ func (s *testTimeSuite) TestRoundFrac(c *C) {
 
 	tbl = []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Except string
 	}{
 		{"11:30:45.123456", 4, "11:30:45.1235"},
@@ -912,7 +912,7 @@ func (s *testTimeSuite) TestRoundFrac(c *C) {
 
 	cols := []struct {
 		input  time.Time
-		fsp    int8
+		fsp    int
 		output time.Time
 	}{
 		{time.Date(2011, 11, 11, 10, 10, 10, 888888, time.UTC), 0, time.Date(2011, 11, 11, 10, 10, 10, 11, time.UTC)},
@@ -934,7 +934,7 @@ func (s *testTimeSuite) TestConvert(c *C) {
 	defer testleak.AfterTest(c)()
 	tbl := []struct {
 		Input  string
-		Fsp    int8
+		Fsp    int
 		Except string
 	}{
 		{"2012-12-31 11:30:45.123456", 4, "11:30:45.1235"},
@@ -956,7 +956,7 @@ func (s *testTimeSuite) TestConvert(c *C) {
 
 	tblDuration := []struct {
 		Input string
-		Fsp   int8
+		Fsp   int
 	}{
 		{"11:30:45.123456", 4},
 		{"11:30:45.123456", 6},
@@ -1450,7 +1450,7 @@ func (s *testTimeSuite) TestExtractDurationValue(c *C) {
 func (s *testTimeSuite) TestCurrentTime(c *C) {
 	res := types.CurrentTime(mysql.TypeTimestamp)
 	c.Assert(res.Type(), Equals, mysql.TypeTimestamp)
-	c.Assert(res.Fsp(), Equals, int8(0))
+	c.Assert(res.Fsp(), Equals, 0)
 }
 
 func (s *testTimeSuite) TestInvalidZero(c *C) {
@@ -1464,16 +1464,16 @@ func (s *testTimeSuite) TestInvalidZero(c *C) {
 
 func (s *testTimeSuite) TestGetFsp(c *C) {
 	res := types.GetFsp("2019:04:12 14:00:00.123456")
-	c.Assert(res, Equals, int8(6))
+	c.Assert(res, Equals, 6)
 
 	res = types.GetFsp("2019:04:12 14:00:00.1234567890")
-	c.Assert(res, Equals, int8(6))
+	c.Assert(res, Equals, 6)
 
 	res = types.GetFsp("2019:04:12 14:00:00.1")
-	c.Assert(res, Equals, int8(1))
+	c.Assert(res, Equals, 1)
 
 	res = types.GetFsp("2019:04:12 14:00:00")
-	c.Assert(res, Equals, int8(0))
+	c.Assert(res, Equals, 0)
 }
 
 func (s *testTimeSuite) TestExtractDatetimeNum(c *C) {
@@ -1763,7 +1763,7 @@ func (s *testTimeSuite) TestTimeOverflow(c *C) {
 func (s *testTimeSuite) TestTruncateFrac(c *C) {
 	cols := []struct {
 		input  time.Time
-		fsp    int8
+		fsp    int
 		output time.Time
 	}{
 		{time.Date(2011, 11, 11, 10, 10, 10, 888888, time.UTC), 0, time.Date(2011, 11, 11, 10, 10, 10, 11, time.UTC)},
@@ -1930,7 +1930,7 @@ func (s *testTimeSuite) TestParseWithTimezone(c *C) {
 	// note that sysTZ won't affect the physical time the string literal represents.
 	cases := []struct {
 		lit          string
-		fsp          int8
+		fsp          int
 		parseChecker Checker
 		gt           time.Time
 		sysTZ        *time.Location

@@ -982,7 +982,7 @@ func newIntFieldType() *types.FieldType {
 func newDurFieldType() *types.FieldType {
 	return &types.FieldType{
 		Tp:      mysql.TypeDuration,
-		Decimal: int(types.DefaultFsp),
+		Decimal: types.DefaultFsp,
 	}
 }
 

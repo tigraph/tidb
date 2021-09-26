@@ -334,7 +334,7 @@ func (b *builtinCastDurationAsIntSig) vecEvalInt(input *chunk.Chunk, result *chu
 	i64s := result.Int64s()
 	var duration types.Duration
 	ds := buf.GoDurations()
-	fsp := int8(b.args[0].GetType().Decimal)
+	fsp := b.args[0].GetType().Decimal
 	for i := 0; i < n; i++ {
 		if result.IsNull(i) {
 			continue
@@ -375,7 +375,7 @@ func (b *builtinCastIntAsTimeSig) vecEvalTime(input *chunk.Chunk, result *chunk.
 	times := result.Times()
 	i64s := buf.Int64s()
 	stmt := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 
 	var tm types.Time
 	for i := 0; i < n; i++ {
@@ -482,7 +482,7 @@ func (b *builtinCastJSONAsTimeSig) vecEvalTime(input *chunk.Chunk, result *chunk
 	result.MergeNulls(buf)
 	times := result.Times()
 	stmtCtx := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 	for i := 0; i < n; i++ {
 		if result.IsNull(i) {
 			continue
@@ -528,7 +528,7 @@ func (b *builtinCastRealAsTimeSig) vecEvalTime(input *chunk.Chunk, result *chunk
 	times := result.Times()
 	f64s := buf.Float64s()
 	stmt := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 	for i := 0; i < n; i++ {
 		if buf.IsNull(i) {
 			continue
@@ -607,7 +607,7 @@ func (b *builtinCastDurationAsTimeSig) vecEvalTime(input *chunk.Chunk, result *c
 	ds := buf.GoDurations()
 	times := result.Times()
 	stmtCtx := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 	for i := 0; i < n; i++ {
 		if result.IsNull(i) {
 			continue
@@ -938,7 +938,7 @@ func (b *builtinCastStringAsDurationSig) vecEvalDuration(input *chunk.Chunk, res
 		if result.IsNull(i) {
 			continue
 		}
-		dur, err := types.ParseDuration(b.ctx.GetSessionVars().StmtCtx, buf.GetString(i), int8(b.tp.Decimal))
+		dur, err := types.ParseDuration(b.ctx.GetSessionVars().StmtCtx, buf.GetString(i), b.tp.Decimal)
 		if err != nil {
 			if types.ErrTruncatedWrongVal.Equal(err) {
 				err = b.ctx.GetSessionVars().StmtCtx.HandleTruncate(err)
@@ -976,8 +976,8 @@ func (b *builtinCastDurationAsDecimalSig) vecEvalDecimal(input *chunk.Chunk, res
 	var duration types.Duration
 	ds := buf.GoDurations()
 	sc := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.args[0].GetType().Decimal)
-	if fsp, err = types.CheckFsp(int(fsp)); err != nil {
+	fsp := b.args[0].GetType().Decimal
+	if fsp, err = types.CheckFsp(fsp); err != nil {
 		return err
 	}
 	for i := 0; i < n; i++ {
@@ -1140,8 +1140,8 @@ func (b *builtinCastDurationAsRealSig) vecEvalReal(input *chunk.Chunk, result *c
 	f64s := result.Float64s()
 
 	var duration types.Duration
-	fsp := int8(b.args[0].GetType().Decimal)
-	if fsp, err = types.CheckFsp(int(fsp)); err != nil {
+	fsp := b.args[0].GetType().Decimal
+	if fsp, err = types.CheckFsp(fsp); err != nil {
 		return err
 	}
 	ds := buf.GoDurations()
@@ -1212,7 +1212,7 @@ func (b *builtinCastRealAsDurationSig) vecEvalDuration(input *chunk.Chunk, resul
 		if result.IsNull(i) {
 			continue
 		}
-		dur, err := types.ParseDuration(b.ctx.GetSessionVars().StmtCtx, strconv.FormatFloat(f64s[i], 'f', -1, 64), int8(b.tp.Decimal))
+		dur, err := types.ParseDuration(b.ctx.GetSessionVars().StmtCtx, strconv.FormatFloat(f64s[i], 'f', -1, 64), b.tp.Decimal)
 		if err != nil {
 			return err
 		}
@@ -1247,7 +1247,7 @@ func (b *builtinCastTimeAsDurationSig) vecEvalDuration(input *chunk.Chunk, resul
 		if err != nil {
 			return err
 		}
-		d, err = d.RoundFrac(int8(b.tp.Decimal))
+		d, err = d.RoundFrac(b.tp.Decimal)
 		if err != nil {
 			return err
 		}
@@ -1276,7 +1276,7 @@ func (b *builtinCastDurationAsDurationSig) vecEvalDuration(input *chunk.Chunk, r
 			continue
 		}
 		dur.Duration = v
-		rd, err = dur.RoundFrac(int8(b.tp.Decimal))
+		rd, err = dur.RoundFrac(b.tp.Decimal)
 		if err != nil {
 			return err
 		}
@@ -1392,7 +1392,7 @@ func (b *builtinCastDecimalAsTimeSig) vecEvalTime(input *chunk.Chunk, result *ch
 	times := result.Times()
 	decimals := buf.Decimals()
 	stmt := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 	for i := 0; i < n; i++ {
 		if buf.IsNull(i) {
 			continue
@@ -1462,7 +1462,7 @@ func (b *builtinCastTimeAsTimeSig) vecEvalTime(input *chunk.Chunk, result *chunk
 
 	times := result.Times()
 	stmt := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 	for i := 0; i < n; i++ {
 		if result.IsNull(i) {
 			continue
@@ -1676,7 +1676,7 @@ func (b *builtinCastStringAsTimeSig) vecEvalTime(input *chunk.Chunk, result *chu
 	result.MergeNulls(buf)
 	times := result.Times()
 	stmtCtx := b.ctx.GetSessionVars().StmtCtx
-	fsp := int8(b.tp.Decimal)
+	fsp := b.tp.Decimal
 	for i := 0; i < n; i++ {
 		if result.IsNull(i) {
 			continue
@@ -1774,7 +1774,7 @@ func (b *builtinCastDecimalAsDurationSig) vecEvalDuration(input *chunk.Chunk, re
 		if result.IsNull(i) {
 			continue
 		}
-		dur, err := types.ParseDuration(b.ctx.GetSessionVars().StmtCtx, string(args[i].ToString()), int8(b.tp.Decimal))
+		dur, err := types.ParseDuration(b.ctx.GetSessionVars().StmtCtx, string(args[i].ToString()), b.tp.Decimal)
 		if err != nil {
 			if types.ErrTruncatedWrongVal.Equal(err) {
 				err = b.ctx.GetSessionVars().StmtCtx.HandleTruncate(err)
@@ -1861,7 +1861,7 @@ func (b *builtinCastJSONAsDurationSig) vecEvalDuration(input *chunk.Chunk, resul
 		if err != nil {
 			return nil
 		}
-		dur, err = types.ParseDuration(ctx, s, int8(b.tp.Decimal))
+		dur, err = types.ParseDuration(ctx, s, b.tp.Decimal)
 		if types.ErrTruncatedWrongVal.Equal(err) {
 			err = ctx.HandleTruncate(err)
 		}
