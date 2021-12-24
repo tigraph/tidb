@@ -75,6 +75,14 @@ func (s SchemaState) String() string {
 	}
 }
 
+type TableType byte
+
+const (
+	TableTypeIsRegular TableType = 0
+	TableTypeIsVertex  TableType = 1
+	TableTypeIsEdge    TableType = 2
+)
+
 const (
 	// ColumnInfoVersion0 means the column info version is 0.
 	ColumnInfoVersion0 = uint64(0)
@@ -345,6 +353,8 @@ type TableInfo struct {
 
 	// StatsOptions is used when do analyze/auto-analyze for each table
 	StatsOptions *StatsOptions `json:"stats_options"`
+
+	Type TableType `json:"type"`
 }
 type TableCacheStatusType int
 

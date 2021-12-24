@@ -122,6 +122,7 @@ import (
 	doubleType        "DOUBLE"
 	drop              "DROP"
 	dual              "DUAL"
+	edge              "EDGE"
 	elseKwd           "ELSE"
 	enclosed          "ENCLOSED"
 	escaped           "ESCAPED"
@@ -206,6 +207,7 @@ import (
 	optionally        "OPTIONALLY"
 	or                "OR"
 	order             "ORDER"
+	out               "OUT"
 	outer             "OUTER"
 	over              "OVER"
 	partition         "PARTITION"
@@ -236,6 +238,7 @@ import (
 	selectKwd         "SELECT"
 	set               "SET"
 	show              "SHOW"
+	shortest          "SHORTEST"
 	smallIntType      "SMALLINT"
 	spatial           "SPATIAL"
 	sql               "SQL"
@@ -275,6 +278,7 @@ import (
 	varcharacter      "VARCHARACTER"
 	varbinaryType     "VARBINARY"
 	varying           "VARYING"
+	vertex            "VERTEX"
 	virtual           "VIRTUAL"
 	when              "WHEN"
 	where             "WHERE"
@@ -1021,6 +1025,15 @@ import (
 	GetFormatSelector                      "{DATE|DATETIME|TIME|TIMESTAMP}"
 	GlobalScope                            "The scope of variable"
 	GroupByClause                          "GROUP BY clause"
+	MatchClause                            "MATCH clause"
+	GraphPattern                           "GRAPH PATTERN"
+	GraphPathPatternList                   "GRAPH PATH PATTERN list"
+	GraphPathPattern                       "GRAPH PATH PATTERN"
+	GraphVertexPattern                     "GRAPH VERTEX PATTERN"
+	GraphEdgePatternList                   "GRAPH EDGE PATTERN list"
+	GraphEdgePattern                       "GRAPH EDGE PATTERN"
+	GraphVariableSpecList                  "GRAPH VARIABLE specification list"
+	GraphVariableSpec                      "GRAPH VARIABLE specification"
 	HavingClause                           "HAVING clause"
 	AsOfClause                             "AS OF clause"
 	AsOfClauseOpt                          "AS OF clause optional"
@@ -3738,6 +3751,36 @@ CreateTableStmt:
 		}
 		$$ = tmp
 	}
+|	"CREATE" OptTemporary "VERTEX" IfNotExists TableName TableElementListOpt CreateTableOptionListOpt PartitionOpt DuplicateOpt AsOpt CreateTableSelectOpt
+	{
+		stmt := $6.(*ast.CreateTableStmt)
+		stmt.Type = model.TableTypeIsVertex
+		stmt.Table = $5.(*ast.TableName)
+		stmt.IfNotExists = $4.(bool)
+		stmt.IsTemporary = $2.(bool)
+		stmt.Options = $7.([]*ast.TableOption)
+		if $8 != nil {
+			stmt.Partition = $8.(*ast.PartitionOptions)
+		}
+		stmt.OnDuplicate = $9.(ast.OnDuplicateKeyHandlingType)
+		stmt.Select = $11.(*ast.CreateTableStmt).Select
+		$$ = stmt
+	}
+|	"CREATE" OptTemporary "EDGE" IfNotExists TableName TableElementListOpt CreateTableOptionListOpt PartitionOpt DuplicateOpt AsOpt CreateTableSelectOpt
+	{
+		stmt := $6.(*ast.CreateTableStmt)
+		stmt.Type = model.TableTypeIsEdge
+		stmt.Table = $5.(*ast.TableName)
+		stmt.IfNotExists = $4.(bool)
+		stmt.IsTemporary = $2.(bool)
+		stmt.Options = $7.([]*ast.TableOption)
+		if $8 != nil {
+			stmt.Partition = $8.(*ast.PartitionOptions)
+		}
+		stmt.OnDuplicate = $9.(ast.OnDuplicateKeyHandlingType)
+		stmt.Select = $11.(*ast.CreateTableStmt).Select
+		$$ = stmt
+	}
 
 OnCommitOpt:
 	{
@@ -6087,6 +6130,8 @@ TiDBKeyword:
 |	"TIFLASH"
 |	"TOPN"
 |	"SPLIT"
+|	"VERTEX"
+|	"EDGE"
 |	"OPTIMISTIC"
 |	"PESSIMISTIC"
 |	"WIDTH"
@@ -8696,6 +8741,7 @@ EscapedTableRef:
 
 TableRef:
 	TableFactor
+|	MatchClause
 |	JoinTable
 
 TableFactor:
@@ -8829,6 +8875,139 @@ IndexHintListOpt:
 		$$ = []*ast.IndexHint{}
 	}
 |	IndexHintList
+
+MatchClause:
+	"MATCH" GraphPattern
+	{
+		$$ = &ast.GraphPattern{Paths: $2.([]*ast.GraphPathPattern)}
+	}
+
+GraphPattern:
+	GraphPathPatternList %prec lowerThanComma
+
+GraphPathPatternList:
+	GraphPathPattern
+	{
+		$$ = []*ast.GraphPathPattern{$1.(*ast.GraphPathPattern)}
+	}
+|	GraphPathPatternList ',' GraphPathPattern
+	{
+		$$ = append($1.([]*ast.GraphPathPattern), $3.(*ast.GraphPathPattern))
+	}
+
+GraphPathPattern:
+	GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeSimple,
+			Source:      $1.(*ast.GraphVariableSpec),
+		}
+	}
+|	GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeSimple,
+			Source:      $1.(*ast.GraphVariableSpec),
+			Edges:       $3.([]*ast.GraphEdgePattern),
+			Destination: $5.(*ast.GraphVariableSpec),
+		}
+	}
+|	"ANY" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeAnyPath,
+			Source:      $2.(*ast.GraphVariableSpec),
+			Edges:       $4.([]*ast.GraphEdgePattern),
+			Destination: $6.(*ast.GraphVariableSpec),
+		}
+	}
+|	"ANY" "SHORTEST" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeAnyShortestPath,
+			Source:      $3.(*ast.GraphVariableSpec),
+			Edges:       $5.([]*ast.GraphEdgePattern),
+			Destination: $7.(*ast.GraphVariableSpec),
+		}
+	}
+|	"ALL" "SHORTEST" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeAllShortestPath,
+			Source:      $3.(*ast.GraphVariableSpec),
+			Edges:       $5.([]*ast.GraphEdgePattern),
+			Destination: $7.(*ast.GraphVariableSpec),
+		}
+	}
+|	"TOP" Int64Num GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeTopKShortestPath,
+			Source:      $3.(*ast.GraphVariableSpec),
+			Edges:       $5.([]*ast.GraphEdgePattern),
+			Destination: $7.(*ast.GraphVariableSpec),
+			Top:         $2.(int64),
+		}
+	}
+|	"ALL" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+	{
+		$$ = &ast.GraphPathPattern{
+			Type:        ast.GraphPathPatternTypeAllPath,
+			Source:      $2.(*ast.GraphVariableSpec),
+			Edges:       $4.([]*ast.GraphEdgePattern),
+			Destination: $6.(*ast.GraphVariableSpec),
+		}
+	}
+
+GraphVertexPattern:
+	'(' GraphVariableSpec ')'
+	{
+		$$ = $2.(*ast.GraphVariableSpec)
+	}
+
+GraphEdgePatternList:
+	GraphEdgePattern
+	{
+		$$ = []*ast.GraphEdgePattern{$1.(*ast.GraphEdgePattern)}
+	}
+|	GraphEdgePatternList '.' GraphEdgePattern
+	{
+		$$ = append($1.([]*ast.GraphEdgePattern), $3.(*ast.GraphEdgePattern))
+	}
+
+GraphEdgePattern:
+	"IN" '(' GraphVariableSpecList ')'
+	{
+		$$ = &ast.GraphMatchVerb{Direction: ast.GraphEdgeDirectionIn, Targets: $3.([]*ast.GraphVariableSpec)}
+	}
+|	"OUT" '(' GraphVariableSpecList ')'
+	{
+		$$ = &ast.GraphMatchVerb{Direction: ast.GraphEdgeDirectionOut, Targets: $3.([]*ast.GraphVariableSpec)}
+	}
+|	"BOTH" '(' GraphVariableSpecList ')'
+	{
+		$$ = &ast.GraphMatchVerb{Direction: ast.GraphEdgeDirectionBoth, Targets: $3.([]*ast.GraphVariableSpec)}
+	}
+
+GraphVariableSpecList:
+	GraphVariableSpec
+	{
+		$$ = []*ast.GraphVariableSpec{$1.(*ast.GraphVariableSpec)}
+	}
+|	GraphVariableSpecList ',' GraphVariableSpec
+	{
+		$$ = append($1.([]*ast.GraphVariableSpec), $3.(*ast.GraphVariableSpec))
+	}
+
+GraphVariableSpec:
+	TableName TableAsNameOpt WhereClauseOptional
+	{
+		$$ := &ast.GraphVariableSpec{
+			Name:   $1.(*ast.TableName),
+			AsName: $2.(model.CIStr)
+			Where:  $3.(ast.ExprNode),
+		}
+	}
 
 JoinTable:
 	/* Use %prec to evaluate production TableRef before cross join */
