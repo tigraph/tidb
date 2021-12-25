@@ -6495,22 +6495,18 @@ func TestGraph(t *testing.T) {
 			assert: func(stmt *ast.SelectStmt) {},
 		},
 		{
-			query:  "select * from match (students).in(a).out(b).(university) where x=10",
+			query:  "select * from match (students).in(a).(high_school as hs).out(b).(university) where x=10",
 			assert: func(stmt *ast.SelectStmt) {},
 		},
 		{
-			query:  "select * from match (students).in(a).out(b).both(c).(university) where x=10",
+			query:  "select * from match (students).in(a).(high_school as hs).out(b).(university as u1).both(c).(university as u2) where x=10",
 			assert: func(stmt *ast.SelectStmt) {},
 		},
 		{
-			query:  "select * from match (students).in(a).out(b).both(c).x(xxx).(university) where x=10",
-			error:  "line 1 column 53 near \"x(xxx).(university) where x=10\" Wrong edge direction: x",
+			query:  "select * from match (students).in(a).(high_school as hs).x(xxx).(university) where x=10",
+			error:  "line 1 column 58 near \"x(xxx).(university) where x=10\" Wrong edge direction: x",
 			assert: func(stmt *ast.SelectStmt) {},
 		},
-		//{
-		//	query:  "select * from match (students as s1 where s1.age > 20, students2 as s2 where s2.age < 10) where x=10",
-		//	assert: func(stmt *ast.SelectStmt) {},
-		//},
 	}
 	for _, c := range cases {
 		stmts, _, err := p.Parse(c.query, "", "")

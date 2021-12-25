@@ -1034,7 +1034,6 @@ import (
 	GraphEdgePatternList                   "GRAPH EDGE PATTERN list"
 	GraphEdgePattern                       "GRAPH EDGE PATTERN"
 	GraphEdgePatternDirection              "GRAPH EDGE PATTERN direction"
-	GraphVariableSpecList                  "GRAPH VARIABLE specification list"
 	GraphVariableSpec                      "GRAPH VARIABLE specification"
 	HavingClause                           "HAVING clause"
 	AsOfClause                             "AS OF clause"
@@ -8918,59 +8917,53 @@ GraphPathPattern:
 			Source: $1.(*ast.GraphVariableSpec),
 		}
 	}
-|	GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+|	GraphVertexPattern '.' GraphEdgePatternList
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeSimple,
-			Source:      $1.(*ast.GraphVariableSpec),
-			Edges:       $3.([]*ast.GraphEdgePattern),
-			Destination: $5.(*ast.GraphVariableSpec),
+			Type:   ast.GraphPathPatternTypeSimple,
+			Source: $1.(*ast.GraphVariableSpec),
+			Edges:  $3.([]*ast.GraphEdgePattern),
 		}
 	}
-|	"ANY" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+|	"ANY" GraphVertexPattern '.' GraphEdgePatternList
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeAnyPath,
-			Source:      $2.(*ast.GraphVariableSpec),
-			Edges:       $4.([]*ast.GraphEdgePattern),
-			Destination: $6.(*ast.GraphVariableSpec),
+			Type:   ast.GraphPathPatternTypeAnyPath,
+			Source: $2.(*ast.GraphVariableSpec),
+			Edges:  $4.([]*ast.GraphEdgePattern),
 		}
 	}
-|	"ANY" "SHORTEST" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+|	"ANY" "SHORTEST" GraphVertexPattern '.' GraphEdgePatternList
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeAnyShortestPath,
-			Source:      $3.(*ast.GraphVariableSpec),
-			Edges:       $5.([]*ast.GraphEdgePattern),
-			Destination: $7.(*ast.GraphVariableSpec),
+			Type:   ast.GraphPathPatternTypeAnyShortestPath,
+			Source: $3.(*ast.GraphVariableSpec),
+			Edges:  $5.([]*ast.GraphEdgePattern),
 		}
 	}
-|	"ALL" "SHORTEST" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+|	"ALL" "SHORTEST" GraphVertexPattern '.' GraphEdgePatternList
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeAllShortestPath,
-			Source:      $3.(*ast.GraphVariableSpec),
-			Edges:       $5.([]*ast.GraphEdgePattern),
-			Destination: $7.(*ast.GraphVariableSpec),
+			Type:   ast.GraphPathPatternTypeAllShortestPath,
+			Source: $3.(*ast.GraphVariableSpec),
+			Edges:  $5.([]*ast.GraphEdgePattern),
 		}
 	}
-|	"TOP" Int64Num GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+|	"TOP" Int64Num GraphVertexPattern '.' GraphEdgePatternList
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeTopKShortestPath,
-			Source:      $3.(*ast.GraphVariableSpec),
-			Edges:       $5.([]*ast.GraphEdgePattern),
-			Destination: $7.(*ast.GraphVariableSpec),
-			TopK:        $2.(int64),
+			Type:   ast.GraphPathPatternTypeTopKShortestPath,
+			Source: $3.(*ast.GraphVariableSpec),
+			Edges:  $5.([]*ast.GraphEdgePattern),
+			TopK:   $2.(int64),
 		}
 	}
-|	"ALL" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
+|	"ALL" GraphVertexPattern '.' GraphEdgePatternList
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeAllPath,
-			Source:      $2.(*ast.GraphVariableSpec),
-			Edges:       $4.([]*ast.GraphEdgePattern),
-			Destination: $6.(*ast.GraphVariableSpec),
+			Type:   ast.GraphPathPatternTypeAllPath,
+			Source: $2.(*ast.GraphVariableSpec),
+			Edges:  $4.([]*ast.GraphEdgePattern),
 		}
 	}
 
@@ -8991,9 +8984,13 @@ GraphEdgePatternList:
 	}
 
 GraphEdgePattern:
-	GraphEdgePatternDirection '(' GraphVariableSpecList ')'
+	GraphEdgePatternDirection '(' GraphVariableSpec ')' '.' GraphVertexPattern
 	{
-		$$ = &ast.GraphEdgePattern{Direction: $1.(ast.GraphEdgeDirection), Targets: $3.([]*ast.GraphVariableSpec)}
+		$$ = &ast.GraphEdgePattern{
+			Direction:   $1.(ast.GraphEdgeDirection),
+			Edge:        $3.(*ast.GraphVariableSpec),
+			Destination: $6.(*ast.GraphVariableSpec),
+		}
 	}
 
 GraphEdgePatternDirection:
@@ -9014,16 +9011,6 @@ GraphEdgePatternDirection:
 			// TODO: refine the error message.
 			yylex.AppendError(yylex.ErrorfShift(len($1), "Wrong edge direction: %s", $1))
 		}
-	}
-
-GraphVariableSpecList:
-	GraphVariableSpec
-	{
-		$$ = []*ast.GraphVariableSpec{$1.(*ast.GraphVariableSpec)}
-	}
-|	GraphVariableSpecList ',' GraphVariableSpec
-	{
-		$$ = append($1.([]*ast.GraphVariableSpec), $3.(*ast.GraphVariableSpec))
 	}
 
 GraphVariableSpec:

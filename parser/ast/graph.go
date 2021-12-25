@@ -39,19 +39,19 @@ type (
 	GraphEdgePattern struct {
 		node
 
-		Direction GraphEdgeDirection
-		Targets   []*GraphVariableSpec
+		Direction   GraphEdgeDirection
+		Edge        *GraphVariableSpec
+		Destination *GraphVariableSpec
 	}
 
 	// GraphPathPattern is used to represent a path of traversal.
 	GraphPathPattern struct {
 		node
 
-		Type        GraphPathPatternType
-		Source      *GraphVariableSpec
-		Edges       []*GraphEdgePattern
-		Destination *GraphVariableSpec
-		TopK        int64
+		Type   GraphPathPatternType
+		Source *GraphVariableSpec
+		Edges  []*GraphEdgePattern
+		TopK   int64
 	}
 
 	// GraphPattern ise used to represent a group of action to match a graph
@@ -155,12 +155,6 @@ func (t *GraphPathPattern) Restore(ctx *format.RestoreCtx) error {
 		}
 	}
 
-	if t.Destination != nil {
-		if err := t.Destination.Restore(ctx); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -187,13 +181,6 @@ func (t *GraphPathPattern) Accept(v Visitor) (node Node, ok bool) {
 		}
 		n.Edges[i] = node.(*GraphEdgePattern)
 	}
-	if n.Destination != nil {
-		node, ok := n.Destination.Accept(v)
-		if !ok {
-			return n, false
-		}
-		n.Destination = node.(*GraphVariableSpec)
-	}
 
 	return v.Leave(n)
 }
@@ -201,18 +188,23 @@ func (t *GraphPathPattern) Accept(v Visitor) (node Node, ok bool) {
 // Restore implements Node Accept interface.
 func (t *GraphEdgePattern) Restore(ctx *format.RestoreCtx) error {
 	ctx.WritePlainf("%s(", t.Direction.String())
-	for j, n := range t.Targets {
+	if n := t.Edge; n != nil {
 		if err := n.Name.Restore(ctx); err != nil {
 			return err
 		}
 		if err := n.Where.Restore(ctx); err != nil {
 			return err
 		}
-		if j != len(t.Targets)-1 {
-			ctx.WritePlain(", ")
+	}
+
+	ctx.WritePlain(")")
+
+	if t.Destination != nil {
+		ctx.WritePlain(".")
+		if err := t.Destination.Restore(ctx); err != nil {
+			return err
 		}
 	}
-	ctx.WritePlain(")")
 
 	return nil
 }
@@ -226,12 +218,20 @@ func (t *GraphEdgePattern) Accept(v Visitor) (node Node, ok bool) {
 
 	n := newNode.(*GraphEdgePattern)
 
-	for i, e := range n.Targets {
-		node, ok := e.Accept(v)
+	if n.Edge != nil {
+		node, ok := n.Edge.Accept(v)
 		if !ok {
 			return n, false
 		}
-		n.Targets[i] = node.(*GraphVariableSpec)
+		n.Edge = node.(*GraphVariableSpec)
+	}
+
+	if n.Destination != nil {
+		node, ok := n.Destination.Accept(v)
+		if !ok {
+			return n, false
+		}
+		n.Destination = node.(*GraphVariableSpec)
 	}
 
 	return v.Leave(n)
