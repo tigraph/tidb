@@ -64,18 +64,18 @@ type (
 )
 
 const (
-	GraphPathPatternTypeSimple           GraphPathPatternType = 0
-	GraphPathPatternTypeAnyPath          GraphPathPatternType = 1
-	GraphPathPatternTypeAnyShortestPath  GraphPathPatternType = 2
-	GraphPathPatternTypeAllShortestPath  GraphPathPatternType = 3
-	GraphPathPatternTypeTopKShortestPath GraphPathPatternType = 4
-	GraphPathPatternTypeAllPath          GraphPathPatternType = 7
+	GraphPathPatternTypeSimple GraphPathPatternType = iota
+	GraphPathPatternTypeAnyPath
+	GraphPathPatternTypeAnyShortestPath
+	GraphPathPatternTypeAllShortestPath
+	GraphPathPatternTypeTopKShortestPath
+	GraphPathPatternTypeAllPath
 )
 
 const (
-	GraphEdgeDirectionIn   GraphEdgeDirection = 0
-	GraphEdgeDirectionOut  GraphEdgeDirection = 1
-	GraphEdgeDirectionBoth GraphEdgeDirection = 2
+	GraphEdgeDirectionIn GraphEdgeDirection = iota
+	GraphEdgeDirectionOut
+	GraphEdgeDirectionBoth
 )
 
 // String implements the fmt.Stringer interface

@@ -372,6 +372,7 @@ import (
 	deallocate            "DEALLOCATE"
 	definer               "DEFINER"
 	delayKeyWrite         "DELAY_KEY_WRITE"
+	destination           "DESTINATION"
 	directory             "DIRECTORY"
 	disable               "DISABLE"
 	discard               "DISCARD"
@@ -3077,6 +3078,20 @@ ColumnOption:
 |	"AUTO_RANDOM" OptFieldLen
 	{
 		$$ = &ast.ColumnOption{Tp: ast.ColumnOptionAutoRandom, AutoRandomBitLength: $2.(int)}
+	}
+|	"SOURCE" "KEY" ReferDef
+	{
+		$$ = &ast.ColumnOption{
+			Tp:    ast.ColumnOptionSourceKey,
+			Refer: $1.(*ast.ReferenceDef),
+		}
+	}
+|	"DESTINATION" "KEY" ReferDef
+	{
+		$$ = &ast.ColumnOption{
+			Tp:    ast.ColumnOptionDestinationKey,
+			Refer: $1.(*ast.ReferenceDef),
+		}
 	}
 
 StorageMedia:
