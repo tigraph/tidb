@@ -6442,3 +6442,81 @@ func (g *gbkEncodingChecker) Enter(n ast.Node) (node ast.Node, skipChildren bool
 func (g *gbkEncodingChecker) Leave(n ast.Node) (node ast.Node, ok bool) {
 	return n, true
 }
+
+func TestGraph(t *testing.T) {
+	p := parser.New()
+
+	ddls := []string{
+		`create vertex v2(a int not null)`,
+		`create vertex v3(a int not null, b int)`,
+		`create edge e1(a int source key references v2, b int destination key references v3)`,
+		`create edge e2(a int not null source key references v2, b int not null destination key references v3)`,
+	}
+
+	for _, ddl := range ddls {
+		stmts, _, err := p.Parse(ddl, "", "")
+		require.Nil(t, err, ddl)
+		require.Equal(t, 1, len(stmts))
+		stmt := stmts[0].(*ast.CreateTableStmt)
+		if strings.Contains(ddl, "create vertex") {
+			require.Equal(t, model.TableTypeIsVertex, stmt.Type)
+		} else {
+			require.Equal(t, model.TableTypeIsEdge, stmt.Type)
+			if strings.Contains(ddl, "not null") {
+				require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[1].Tp)
+				require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[1].Tp)
+			} else {
+				require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[0].Tp)
+				require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[0].Tp)
+			}
+		}
+	}
+
+	// graph query
+	cases := []struct {
+		query  string
+		error  string
+		assert func(*ast.SelectStmt)
+	}{
+		{
+			query:  "select * from match (students) where x=10",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students as s1) where x=10",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students as s1 where s1.age > 100) where x=10",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students as s1 where s1.age > 100), (students as s3 where s1.age < 10) where x=10",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students).in(a).(high_school as hs).out(b).(university) where x=10",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students).in(a).(high_school as hs).out(b).(university as u1).both(c).(university as u2) where x=10",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students).in(a).(high_school as hs).x(xxx).(university) where x=10",
+			error:  "line 1 column 58 near \"x(xxx).(university) where x=10\" Wrong edge direction: x",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+	}
+	for _, c := range cases {
+		stmts, _, err := p.Parse(c.query, "", "")
+		if c.error != "" {
+			require.Equal(t, c.error, strings.TrimSpace(err.Error()), c.query)
+		} else {
+			require.Nil(t, err, c.query)
+			require.Equal(t, 1, len(stmts))
+			stmt := stmts[0].(*ast.SelectStmt)
+			c.assert(stmt)
+		}
+	}
+}

@@ -484,6 +484,8 @@ const (
 	ColumnOptionColumnFormat
 	ColumnOptionStorage
 	ColumnOptionAutoRandom
+	ColumnOptionSourceKey
+	ColumnOptionDestinationKey
 )
 
 var (
@@ -529,6 +531,16 @@ func (n *ColumnOption) Restore(ctx *format.RestoreCtx) error {
 			ctx.WriteWithSpecialComments(tidb.FeatureIDClusteredIndex, func() {
 				ctx.WriteKeyWord(pkTp)
 			})
+		}
+	case ColumnOptionSourceKey:
+		ctx.WriteKeyWord("SOURCE KEY")
+		if err := n.Refer.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while splicing ColumnOption ReferenceDef")
+		}
+	case ColumnOptionDestinationKey:
+		ctx.WriteKeyWord("DESTINATION KEY")
+		if err := n.Refer.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while splicing ColumnOption ReferenceDef")
 		}
 	case ColumnOptionNotNull:
 		ctx.WriteKeyWord("NOT NULL")
@@ -983,6 +995,7 @@ type CreateTableStmt struct {
 	// ON COMMIT DELETE ROWS => true
 	// ON COMMIT PRESERVE ROW => false
 	OnCommitDelete bool
+	Type           model.TableType
 	Table          *TableName
 	ReferTable     *TableName
 	Cols           []*ColumnDef
@@ -995,14 +1008,22 @@ type CreateTableStmt struct {
 
 // Restore implements Node interface.
 func (n *CreateTableStmt) Restore(ctx *format.RestoreCtx) error {
-	switch n.TemporaryKeyword {
-	case TemporaryNone:
-		ctx.WriteKeyWord("CREATE TABLE ")
-	case TemporaryGlobal:
-		ctx.WriteKeyWord("CREATE GLOBAL TEMPORARY TABLE ")
-	case TemporaryLocal:
-		ctx.WriteKeyWord("CREATE TEMPORARY TABLE ")
+	switch n.Type {
+	case model.TableTypeIsRegular:
+		switch n.TemporaryKeyword {
+		case TemporaryNone:
+			ctx.WriteKeyWord("CREATE TABLE ")
+		case TemporaryGlobal:
+			ctx.WriteKeyWord("CREATE GLOBAL TEMPORARY TABLE ")
+		case TemporaryLocal:
+			ctx.WriteKeyWord("CREATE TEMPORARY TABLE ")
+		}
+	case model.TableTypeIsVertex:
+		ctx.WriteKeyWord("CREATE VERTEX ")
+	case model.TableTypeIsEdge:
+		ctx.WriteKeyWord("CREATE EDGE ")
 	}
+
 	if n.IfNotExists {
 		ctx.WriteKeyWord("IF NOT EXISTS ")
 	}
