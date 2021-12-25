@@ -841,6 +841,7 @@ var yyhintDebug = 0
 type yyhintLexer interface {
 	Lex(lval *yyhintSymType) int
 	Errorf(format string, a ...interface{}) error
+	ErrorfShift(shift int, format string, a ...interface{}) (err error)
 	AppendError(err error)
 	AppendWarn(err error)
 	Errors() (warns []error, errs []error)

@@ -92,6 +92,8 @@ func (d GraphEdgeDirection) String() string {
 	}
 }
 
+func (*GraphPattern) resultSet() {}
+
 // Restore implements Node Accept interface.
 func (t *GraphPattern) Restore(ctx *format.RestoreCtx) error {
 	ctx.WriteKeyWord("MATCH ")

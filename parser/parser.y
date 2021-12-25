@@ -1033,6 +1033,7 @@ import (
 	GraphVertexPattern                     "GRAPH VERTEX PATTERN"
 	GraphEdgePatternList                   "GRAPH EDGE PATTERN list"
 	GraphEdgePattern                       "GRAPH EDGE PATTERN"
+	GraphEdgePatternDirection              "GRAPH EDGE PATTERN direction"
 	GraphVariableSpecList                  "GRAPH VARIABLE specification list"
 	GraphVariableSpec                      "GRAPH VARIABLE specification"
 	HavingClause                           "HAVING clause"
@@ -3083,14 +3084,14 @@ ColumnOption:
 	{
 		$$ = &ast.ColumnOption{
 			Tp:    ast.ColumnOptionSourceKey,
-			Refer: $1.(*ast.ReferenceDef),
+			Refer: $3.(*ast.ReferenceDef),
 		}
 	}
 |	"DESTINATION" "KEY" ReferDef
 	{
 		$$ = &ast.ColumnOption{
 			Tp:    ast.ColumnOptionDestinationKey,
-			Refer: $1.(*ast.ReferenceDef),
+			Refer: $3.(*ast.ReferenceDef),
 		}
 	}
 
@@ -3772,7 +3773,7 @@ CreateTableStmt:
 		stmt.Type = model.TableTypeIsVertex
 		stmt.Table = $5.(*ast.TableName)
 		stmt.IfNotExists = $4.(bool)
-		stmt.IsTemporary = $2.(bool)
+		stmt.TemporaryKeyword = $2.(ast.TemporaryKeyword)
 		stmt.Options = $7.([]*ast.TableOption)
 		if $8 != nil {
 			stmt.Partition = $8.(*ast.PartitionOptions)
@@ -3787,7 +3788,7 @@ CreateTableStmt:
 		stmt.Type = model.TableTypeIsEdge
 		stmt.Table = $5.(*ast.TableName)
 		stmt.IfNotExists = $4.(bool)
-		stmt.IsTemporary = $2.(bool)
+		stmt.TemporaryKeyword = $2.(ast.TemporaryKeyword)
 		stmt.Options = $7.([]*ast.TableOption)
 		if $8 != nil {
 			stmt.Partition = $8.(*ast.PartitionOptions)
@@ -5814,6 +5815,7 @@ UnReservedKeyword:
 |	"DATETIME"
 |	"DAY"
 |	"DEALLOCATE"
+|	"DESTINATION"
 |	"DO"
 |	"DUPLICATE"
 |	"DYNAMIC"
@@ -6145,8 +6147,6 @@ TiDBKeyword:
 |	"TIFLASH"
 |	"TOPN"
 |	"SPLIT"
-|	"VERTEX"
-|	"EDGE"
 |	"OPTIMISTIC"
 |	"PESSIMISTIC"
 |	"WIDTH"
@@ -8914,8 +8914,8 @@ GraphPathPattern:
 	GraphVertexPattern
 	{
 		$$ = &ast.GraphPathPattern{
-			Type:        ast.GraphPathPatternTypeSimple,
-			Source:      $1.(*ast.GraphVariableSpec),
+			Type:   ast.GraphPathPatternTypeSimple,
+			Source: $1.(*ast.GraphVariableSpec),
 		}
 	}
 |	GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
@@ -8961,7 +8961,7 @@ GraphPathPattern:
 			Source:      $3.(*ast.GraphVariableSpec),
 			Edges:       $5.([]*ast.GraphEdgePattern),
 			Destination: $7.(*ast.GraphVariableSpec),
-			Top:         $2.(int64),
+			TopK:        $2.(int64),
 		}
 	}
 |	"ALL" GraphVertexPattern '.' GraphEdgePatternList '.' GraphVertexPattern
@@ -8991,17 +8991,29 @@ GraphEdgePatternList:
 	}
 
 GraphEdgePattern:
-	"IN" '(' GraphVariableSpecList ')'
+	GraphEdgePatternDirection '(' GraphVariableSpecList ')'
 	{
-		$$ = &ast.GraphMatchVerb{Direction: ast.GraphEdgeDirectionIn, Targets: $3.([]*ast.GraphVariableSpec)}
+		$$ = &ast.GraphEdgePattern{Direction: $1.(ast.GraphEdgeDirection), Targets: $3.([]*ast.GraphVariableSpec)}
 	}
-|	"OUT" '(' GraphVariableSpecList ')'
+
+GraphEdgePatternDirection:
+	Identifier
 	{
-		$$ = &ast.GraphMatchVerb{Direction: ast.GraphEdgeDirectionOut, Targets: $3.([]*ast.GraphVariableSpec)}
-	}
-|	"BOTH" '(' GraphVariableSpecList ')'
-	{
-		$$ = &ast.GraphMatchVerb{Direction: ast.GraphEdgeDirectionBoth, Targets: $3.([]*ast.GraphVariableSpec)}
+		// WORKAROUND because all tokens after '.' will be recognized as identifier.
+		// reference: `lexer.go#lex.isTokenIdentifier`
+		switch strings.ToUpper($1) {
+		case "IN":
+			$$ = ast.GraphEdgeDirectionIn
+		case "OUT":
+			$$ = ast.GraphEdgeDirectionOut
+		case "BOTH":
+			$$ = ast.GraphEdgeDirectionBoth
+		default:
+			$$ = ast.GraphEdgeDirection(0xff)
+			// Invalid edge direction
+			// TODO: refine the error message.
+			yylex.AppendError(yylex.ErrorfShift(len($1), "Wrong edge direction: %s", $1))
+		}
 	}
 
 GraphVariableSpecList:
@@ -9017,10 +9029,11 @@ GraphVariableSpecList:
 GraphVariableSpec:
 	TableName TableAsNameOpt WhereClauseOptional
 	{
-		$$ := &ast.GraphVariableSpec{
+		where, _ := $3.(ast.ExprNode)
+		$$ = &ast.GraphVariableSpec{
 			Name:   $1.(*ast.TableName),
-			AsName: $2.(model.CIStr)
-			Where:  $3.(ast.ExprNode),
+			AsName: $2.(model.CIStr),
+			Where:  where,
 		}
 	}
 
