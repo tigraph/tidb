@@ -341,6 +341,19 @@ func (p PhysicalMergeJoin) Init(ctx sessionctx.Context, stats *property.StatsInf
 	return &p
 }
 
+// Init initializes LogicalTraverse.
+func (p LogicalTraverse) Init(ctx sessionctx.Context, offset int) *LogicalTraverse {
+	p.baseLogicalPlan = newBaseLogicalPlan(ctx, plancodec.TypeTraverse, &p, offset)
+	return &p
+}
+
+// Init initializes PhysicalTraverse.
+func (p PhysicalTraverse) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int) *PhysicalTraverse {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeTraverse, &p, offset)
+	p.stats = stats
+	return &p
+}
+
 // Init initializes basePhysicalAgg.
 func (base basePhysicalAgg) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int) *basePhysicalAgg {
 	base.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeHashAgg, &base, offset)

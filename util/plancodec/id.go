@@ -122,6 +122,8 @@ const (
 	TypeIndexFullScan = "IndexFullScan"
 	// TypeIndexRangeScan is the type of IndexRangeScan.
 	TypeIndexRangeScan = "IndexRangeScan"
+	// TypeTraverse is the type of Traverse.
+	TypeTraverse = "Traverse"
 )
 
 // plan id.

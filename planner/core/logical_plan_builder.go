@@ -989,6 +989,37 @@ func (b *PlanBuilder) buildSelection(ctx context.Context, p LogicalPlan, where a
 	return selection, nil
 }
 
+func (b *PlanBuilder) buildTraverse(ctx context.Context, p LogicalPlan, traverseChain *ast.TraverseChain) (LogicalPlan, error) {
+	traverse := LogicalTraverse{}.Init(b.ctx, b.getSelectOffset())
+
+	outputTag := traverseChain.Verbs[len(traverseChain.Verbs)-1]
+	if outputTag.Action != ast.TraverseActionTags {
+		return nil, errors.New("Wrong traverse definition")
+	}
+	tag := outputTag.Targets[0].Name
+
+	tblInfo, err := b.is.TableByName(model.NewCIStr(b.ctx.GetSessionVars().CurrentDB), tag.Name)
+	if err != nil {
+		return nil, err
+	}
+	dbName := tag.Schema
+	if dbName.L == "" {
+		dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+	}
+	cols, _, err := expression.ColumnInfos2ColumnsAndNames(b.ctx, dbName, tag.Name, tblInfo.Meta().Columns, tblInfo.Meta())
+	if err != nil {
+		return nil, err
+	}
+
+	schema := expression.NewSchema(cols...)
+	traverse.TraverseChain = traverseChain
+	traverse.ResultTagID = tblInfo.Meta().ID
+	traverse.SetChildren(p)
+	traverse.SetSchema(schema)
+	b.optFlag &^= flagPrunColumns
+	return traverse, nil
+}
+
 // buildProjectionFieldNameFromColumns builds the field name, table name and database name when field expression is a column reference.
 func (b *PlanBuilder) buildProjectionFieldNameFromColumns(origField *ast.SelectField, colNameField *ast.ColumnNameExpr, name *types.FieldName) (colName, origColName, tblName, origTblName, dbName model.CIStr) {
 	origTblName, origColName, dbName = name.OrigTblName, name.OrigColName, name.DBName
@@ -3363,8 +3394,14 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 			return nil, err
 		}
 	}
+	if sel.Traverse != nil {
+		p, err = b.buildTraverse(ctx, p, sel.Traverse)
+		if err != nil {
+			return p, err
+		}
+	}
 	if sel.LockInfo != nil && sel.LockInfo.LockType != ast.SelectLockNone {
-		if sel.LockInfo.LockType == ast.SelectLockInShareMode && !enableNoopFuncs {
+		if sel.LockInfo.LockType == ast.SelectLockForShare && !enableNoopFuncs {
 			err = expression.ErrFunctionsNoopImpl.GenWithStackByArgs("LOCK IN SHARE MODE")
 			return nil, err
 		}

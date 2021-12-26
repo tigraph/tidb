@@ -243,7 +243,10 @@ func (e *PointGetExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		}
 	}
 
-	key := tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
+	key, err := tables.RecordKeyFromHandle(e.handle, tblID, e.tblInfo.Type)
+	if err != nil {
+		return err
+	}
 	val, err := e.getAndLock(ctx, key)
 	if err != nil {
 		return err

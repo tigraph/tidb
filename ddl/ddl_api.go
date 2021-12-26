@@ -1683,6 +1683,11 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
+	tbInfo.Type = s.Type
+	err = checkGraphInfo(tbInfo)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
 
 	if err = setTableAutoRandomBits(ctx, tbInfo, colDefs); err != nil {
 		return nil, errors.Trace(err)
@@ -1697,6 +1702,80 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 		return nil, errors.Trace(err)
 	}
 	return tbInfo, nil
+}
+
+func checkGraphInfo(tbInfo *model.TableInfo) error {
+	var err error
+	switch tbInfo.Type {
+	case model.TableTypeIsGraphTag:
+		err = checkGraphTagInfo(tbInfo)
+	case model.TableTypeIsGraphEdge:
+		err = checkGraphEdgeInfo(tbInfo)
+	default:
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if tbInfo.IsCommonHandle || tbInfo.PKIsHandle {
+		return errors.New("can not specified primary key on graph tag")
+	}
+	switch tbInfo.Type {
+	case model.TableTypeIsGraphTag:
+		tbInfo.PKIsHandle = true
+		tbInfo.Columns[0].Flag |= mysql.PriKeyFlag
+		tbInfo.Columns[0].Flag |= mysql.NotNullFlag
+	case model.TableTypeIsGraphEdge:
+		tbInfo.IsCommonHandle = true
+		tbInfo.Columns[0].Flag |= mysql.PriKeyFlag
+		tbInfo.Columns[0].Flag |= mysql.NotNullFlag
+		tbInfo.Columns[1].Flag |= mysql.PriKeyFlag
+		tbInfo.Columns[1].Flag |= mysql.NotNullFlag
+		idxInfo := &model.IndexInfo{
+			Name: model.NewCIStr(mysql.PrimaryKeyName),
+			Columns: []*model.IndexColumn{
+				{
+					Name:   model.NewCIStr(tbInfo.Columns[0].Name.O),
+					Offset: 0,
+					Length: types.UnspecifiedLength,
+				},
+				{
+					Name:   model.NewCIStr(tbInfo.Columns[1].Name.O),
+					Offset: 1,
+					Length: types.UnspecifiedLength,
+				},
+			},
+			Unique:  true,
+			Primary: true,
+			State:   model.StatePublic,
+		}
+		tbInfo.Indices = append(tbInfo.Indices, idxInfo)
+	}
+	return nil
+}
+
+func checkGraphTagInfo(tbInfo *model.TableInfo) error {
+	if tbInfo.Type == model.TableTypeIsGraphTag {
+		if tbInfo.Columns[0].Name.L != "id" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
+			return errors.Errorf("the first column of graph tag should be 'id bigint'")
+		}
+	}
+	return nil
+}
+
+func checkGraphEdgeInfo(tbInfo *model.TableInfo) error {
+	if tbInfo.Type == model.TableTypeIsGraphEdge {
+		if len(tbInfo.Columns) < 2 {
+			return errors.Errorf("graph edge should at lease contain 2 columns: `src` bigint, `dst` bigint")
+		}
+		if tbInfo.Columns[0].Name.L != "src" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
+			return errors.Errorf("the first column of graph edge should be '`src` bigint'")
+		}
+		if tbInfo.Columns[1].Name.L != "dst" || tbInfo.Columns[1].Tp != mysql.TypeLonglong {
+			return errors.Errorf("the second column of graph edge should be '`dst` bigint'")
+		}
+	}
+	return nil
 }
 
 func (d *ddl) assignTableID(tbInfo *model.TableInfo) error {

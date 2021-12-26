@@ -6489,3 +6489,47 @@ func (s *testDBSuite4) TestUnsupportedAlterTableOption(c *C) {
 	tk.MustExec("create table t(a char(10) not null,b char(20)) shard_row_id_bits=6;")
 	tk.MustGetErrCode("alter table t pre_split_regions=6;", errno.ErrUnsupportedDDLOperation)
 }
+
+func (s *testSerialDBSuite) TestCreateGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	defer config.RestoreFunc()()
+	config.UpdateGlobal(func(conf *config.Config) {
+		conf.AlterPrimaryKey = false
+	})
+
+	tk.MustExec("drop database if exists test_graph")
+	defer tk.MustExec("drop database if exists test_graph")
+	tk.MustExec("create database test_graph")
+	tk.MustExec("set @@tidb_enable_clustered_index=0")
+	tk.MustExec("use test_graph")
+	tk.MustExec("create tag  people1 (id bigint)")
+	tk.MustExec("create tag  people2 (id bigint, name varchar(32), uid int)")
+	people1 := testGetTableByName(c, tk.Se, "test_graph", "people1")
+	c.Assert(people1.Meta().Type, Equals, model.TableTypeIsGraphTag)
+
+	tk.MustExec("create edge friend1 (src bigint, dst bigint)")
+	tk.MustExec("create edge friend2 (src bigint, dst bigint, description varchar(32), start timestamp)")
+	friend1 := testGetTableByName(c, tk.Se, "test_graph", "friend1")
+	c.Assert(friend1.Meta().Type, Equals, model.TableTypeIsGraphEdge)
+
+	errMsg := "the first column of graph tag should be 'id bigint'"
+	_, err := tk.Exec("create tag  p1 (name varchar(32), id int)")
+	c.Assert(err.Error(), Equals, errMsg)
+	_, err = tk.Exec("create tag  p1 (id varchar(32), id int)")
+	c.Assert(err.Error(), Equals, errMsg)
+
+	errMsg = "can not specified primary key on graph tag"
+	_, err = tk.Exec("create tag  people3 (id bigint key, name varchar(32), id int)")
+	c.Assert(err.Error(), Equals, errMsg)
+	_, err = tk.Exec("create tag  p1 (id bigint, id int, primary key (id))")
+	c.Assert(err.Error(), Equals, errMsg)
+
+	errMsg = "the first column of graph edge should be '`src` bigint'"
+	_, err = tk.Exec("create edge  e1 (name varchar(32), id int)")
+	c.Assert(err.Error(), Equals, errMsg)
+	_, err = tk.Exec("create edge e1 (`src` varchar(32), `dst` bigint)")
+	c.Assert(err.Error(), Equals, errMsg)
+	errMsg = "the second column of graph edge should be '`dst` bigint'"
+	_, err = tk.Exec("create edge e1 (`src` bigint, `dst` varchar(32))")
+	c.Assert(err.Error(), Equals, errMsg)
+}

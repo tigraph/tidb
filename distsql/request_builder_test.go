@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	. "github.com/pingcap/check"
+	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/kv"
@@ -123,7 +124,7 @@ func (s *testSuite) TestTableHandlesToKVRanges(c *C) {
 
 	// Build key ranges.
 	expect := s.getExpectedRanges(1, hrs)
-	actual := TableHandlesToKVRanges(1, handles)
+	actual := TableHandlesToKVRanges(1, handles, model.TableTypeIsTable)
 
 	// Compare key ranges and expected key ranges.
 	c.Assert(len(actual), Equals, len(expect))
@@ -278,7 +279,7 @@ func (s *testSuite) TestRequestBuilder1(c *C) {
 		},
 	}
 
-	actual, err := (&RequestBuilder{}).SetHandleRanges(nil, 12, false, ranges, nil).
+	actual, err := (&RequestBuilder{}).SetHandleRanges(nil, 12, false, model.TableTypeIsTable, ranges, nil).
 		SetDAGRequest(&tipb.DAGRequest{}).
 		SetDesc(false).
 		SetKeepOrder(false).
@@ -405,7 +406,7 @@ func (s *testSuite) TestRequestBuilder3(c *C) {
 	handles := []kv.Handle{kv.IntHandle(0), kv.IntHandle(2), kv.IntHandle(3), kv.IntHandle(4),
 		kv.IntHandle(5), kv.IntHandle(10), kv.IntHandle(11), kv.IntHandle(100)}
 
-	actual, err := (&RequestBuilder{}).SetTableHandles(15, handles).
+	actual, err := (&RequestBuilder{}).SetTableHandles(15, handles, model.TableTypeIsTable).
 		SetDAGRequest(&tipb.DAGRequest{}).
 		SetDesc(false).
 		SetKeepOrder(false).

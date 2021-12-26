@@ -49,6 +49,7 @@ var (
 	_ LogicalPlan = &LogicalLock{}
 	_ LogicalPlan = &LogicalLimit{}
 	_ LogicalPlan = &LogicalWindow{}
+	_ LogicalPlan = &LogicalTraverse{}
 )
 
 // JoinType contains CrossJoin, InnerJoin, LeftOuterJoin, RightOuterJoin, FullOuterJoin, SemiJoin.
@@ -1166,4 +1167,11 @@ type LogicalShowDDLJobs struct {
 	logicalSchemaProducer
 
 	JobNumber int64
+}
+
+// LogicalTraverse is for traverse graph
+type LogicalTraverse struct {
+	logicalSchemaProducer
+	TraverseChain *ast.TraverseChain
+	ResultTagID   int64
 }

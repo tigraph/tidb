@@ -5,6 +5,7 @@ require (
 	github.com/DATA-DOG/go-sqlmock v1.5.0 // indirect
 	github.com/HdrHistogram/hdrhistogram-go v0.9.0 // indirect
 	github.com/Jeffail/gabs/v2 v2.5.1
+	github.com/Pallinder/go-randomdata v1.2.0
 	github.com/blacktear23/go-proxyprotocol v0.0.0-20180807104634-af7a81e8dd0d
 	github.com/carlmjohnson/flagext v0.20.2 // indirect
 	github.com/cheggaaa/pb/v3 v3.0.4 // indirect
@@ -89,3 +90,5 @@ require (
 )
 
 go 1.13
+
+replace github.com/pingcap/parser => github.com/tigraph/parser v0.0.0-20210116110552-c3196a642930

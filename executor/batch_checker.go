@@ -223,7 +223,11 @@ func formatDataForDupError(data []types.Datum) (string, error) {
 // t could be a normal table or a partition, but it must not be a PartitionedTable.
 func getOldRow(ctx context.Context, sctx sessionctx.Context, txn kv.Transaction, t table.Table, handle kv.Handle,
 	genExprs []expression.Expression) ([]types.Datum, error) {
-	oldValue, err := txn.Get(ctx, t.RecordKey(handle))
+	key, err := t.RecordKey2(handle, t.Meta().ID)
+	if err != nil {
+		return nil, err
+	}
+	oldValue, err := txn.Get(ctx, key)
 	if err != nil {
 		return nil, err
 	}

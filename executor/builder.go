@@ -16,6 +16,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -161,6 +162,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildShowSlow(v)
 	case *plannercore.PhysicalShow:
 		return b.buildShow(v)
+	case *plannercore.PhysicalTraverse:
+		return b.buildTraverse(v)
 	case *plannercore.Simple:
 		return b.buildSimple(v)
 	case *plannercore.PhysicalSimpleWrapper:
@@ -690,6 +693,85 @@ func (b *executorBuilder) buildShow(v *plannercore.PhysicalShow) Executor {
 		}
 	}
 	return e
+}
+
+func (b *executorBuilder) buildTraverse(v *plannercore.PhysicalTraverse) Executor {
+	childExec := b.build(v.Children()[0])
+	if b.err != nil {
+		return nil
+	}
+	concurrency := runtime.NumCPU() * 60
+	t := &TraverseExecutor{
+		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		concurrency:    concurrency,
+		tablePlan:      v,
+		workerWg:       new(sync.WaitGroup),
+		traverseLevels: make([]*traverseLevel, 0),
+		workerCh:       make(chan *traverseTask, concurrency*1000),
+		childErr:       make(chan error),
+		results:        make(chan *chunk.Chunk, concurrency*10),
+		die:            make(chan struct{}),
+		resultTagID:    v.ResultTagID,
+	}
+	for _, c := range v.TraverseChain.Verbs {
+		var dir DirType
+		switch c.Action {
+		case ast.TraverseActionIn:
+			dir = IN
+		case ast.TraverseActionOut:
+			dir = OUT
+		case ast.TraverseActionBoth:
+			dir = BOTH
+		case ast.TraverseActionTags:
+			continue
+		}
+		edgeName := c.Targets[0].Name
+		if edgeName.Schema.L == "" {
+			edgeName.Schema = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		edgeSchema, err := b.is.TableByName(edgeName.Schema, edgeName.Name)
+		if err != nil {
+			b.err = err
+			return nil
+		}
+
+		// build condition for edge.
+		var expr expression.Expression
+		var rowDecoder *rowcodec.ChunkDecoder
+		var chk *chunk.Chunk
+		if c.Targets[0].Where != nil {
+			schema, names, err := expression.TableInfo2SchemaAndNames(b.ctx, edgeName.Schema, edgeSchema.Meta())
+			if err != nil {
+				b.err = err
+				return nil
+			}
+
+			expr, err = expression.RewriteSimpleExprWithNames(b.ctx, c.Targets[0].Where, schema, names)
+			if err != nil {
+				b.err = err
+				return nil
+			}
+			rowDecoder = NewRowDecoder(b.ctx, schema, edgeSchema.Meta())
+			retFieldTypes := make([]*types.FieldType, len(schema.Columns))
+			for i := range schema.Columns {
+				retFieldTypes[i] = schema.Columns[i].RetType
+			}
+			chk = chunk.New(retFieldTypes, 1, 1)
+		}
+		t.traverseLevels = append(t.traverseLevels, &traverseLevel{
+			edgeID:     edgeSchema.Meta().ID,
+			direction:  dir,
+			cond:       expr,
+			rowDecoder: rowDecoder, chk: chk,
+		})
+	}
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		b.err = err
+		return nil
+	}
+	t.startTS = startTS
+	return t
 }
 
 func (b *executorBuilder) buildSimple(v *plannercore.Simple) Executor {
@@ -3255,10 +3337,10 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 
 	handles, lookUpContents := dedupHandles(lookUpContents)
 	if tbInfo.GetPartitionInfo() == nil {
-		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, handles, tbInfo.Type, canReorderHandles)
 	}
 	if !builder.ctx.GetSessionVars().UseDynamicPartitionPrune() {
-		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, handles, tbInfo.Type, canReorderHandles)
 	}
 
 	tbl, _ := builder.is.TableByID(tbInfo.ID)
@@ -3283,7 +3365,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 			}
 			pid := p.GetPhysicalID()
 			handle := kv.IntHandle(content.keys[0].GetInt64())
-			tmp := distsql.TableHandlesToKVRanges(pid, []kv.Handle{handle})
+			tmp := distsql.TableHandlesToKVRanges(pid, []kv.Handle{handle}, tbInfo.Type)
 			kvRanges = append(kvRanges, tmp...)
 		}
 	} else {
@@ -3294,7 +3376,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 		}
 		for _, p := range partitions {
 			pid := p.GetPhysicalID()
-			tmp := distsql.TableHandlesToKVRanges(pid, handles)
+			tmp := distsql.TableHandlesToKVRanges(pid, handles, tbInfo.Type)
 			kvRanges = append(kvRanges, tmp...)
 		}
 	}
@@ -3338,7 +3420,7 @@ func (h kvRangeBuilderFromRangeAndPartition) buildKeyRange(int64) ([]kv.KeyRange
 	for _, p := range h.partitions {
 		pid := p.GetPhysicalID()
 		meta := p.Meta()
-		kvRange, err := distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, meta != nil && meta.IsCommonHandle, h.ranges, nil)
+		kvRange, err := distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, meta != nil && meta.IsCommonHandle, meta.Type, h.ranges, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3375,7 +3457,7 @@ func (builder *dataReaderBuilder) buildTableReaderBase(ctx context.Context, e *T
 	return e, nil
 }
 
-func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, handles []kv.Handle, canReorderHandles bool) (*TableReaderExecutor, error) {
+func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, handles []kv.Handle, tableTp model.TableType, canReorderHandles bool) (*TableReaderExecutor, error) {
 	if canReorderHandles {
 		sort.Slice(handles, func(i, j int) bool {
 			return handles[i].Compare(handles[j]) < 0
@@ -3386,7 +3468,7 @@ func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Contex
 		if _, ok := handles[0].(kv.PartitionHandle); ok {
 			b.SetPartitionsAndHandles(handles)
 		} else {
-			b.SetTableHandles(getPhysicalTableID(e.table), handles)
+			b.SetTableHandles(getPhysicalTableID(e.table), handles, tableTp)
 		}
 	}
 	return builder.buildTableReaderBase(ctx, e, b)

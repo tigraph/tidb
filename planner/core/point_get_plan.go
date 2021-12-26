@@ -118,7 +118,14 @@ func (p *PointGetPlan) ExplainNormalizedInfo() string {
 func (p *PointGetPlan) AccessObject(normalized bool) string {
 	buffer := bytes.NewBufferString("")
 	tblName := p.TblInfo.Name.O
-	fmt.Fprintf(buffer, "table:%s", tblName)
+	tableTp := "table"
+	switch p.TblInfo.Type {
+	case model.TableTypeIsGraphTag:
+		tableTp = "tag"
+	case model.TableTypeIsGraphEdge:
+		tableTp = "edge"
+	}
+	fmt.Fprintf(buffer, "%s:%s", tableTp, tblName)
 	if p.PartitionInfo != nil {
 		if normalized {
 			fmt.Fprintf(buffer, ", partition:?")
@@ -295,7 +302,14 @@ func (p *BatchPointGetPlan) ExplainNormalizedInfo() string {
 func (p *BatchPointGetPlan) AccessObject(_ bool) string {
 	buffer := bytes.NewBufferString("")
 	tblName := p.TblInfo.Name.O
-	fmt.Fprintf(buffer, "table:%s", tblName)
+	tableTp := "table"
+	switch p.TblInfo.Type {
+	case model.TableTypeIsGraphTag:
+		tableTp = "tag"
+	case model.TableTypeIsGraphEdge:
+		tableTp = "edge"
+	}
+	fmt.Fprintf(buffer, "%s:%s", tableTp, tblName)
 	if p.IndexInfo != nil {
 		if p.IndexInfo.Primary && p.TblInfo.IsCommonHandle {
 			buffer.WriteString(", clustered index:" + p.IndexInfo.Name.O + "(")
@@ -418,6 +432,9 @@ func TryFastPlan(ctx sessionctx.Context, node ast.Node) (p Plan) {
 				p = nil
 			}
 		}()
+		if x.Traverse != nil {
+			return
+		}
 		// Try to convert the `SELECT a, b, c FROM t WHERE (a, b, c) in ((1, 2, 4), (1, 3, 5))` to
 		// `PhysicalUnionAll` which children are `PointGet` if exists an unique key (a, b, c) in table `t`
 		if fp := tryWhereIn2BatchPointGet(ctx, x); fp != nil {
@@ -454,7 +471,7 @@ func TryFastPlan(ctx sessionctx.Context, node ast.Node) (p Plan) {
 // IsSelectForUpdateLockType checks if the select lock type is for update type.
 func IsSelectForUpdateLockType(lockType ast.SelectLockType) bool {
 	if lockType == ast.SelectLockForUpdate ||
-		lockType == ast.SelectLockInShareMode ||
+		lockType == ast.SelectLockForShare ||
 		lockType == ast.SelectLockForUpdateNoWait ||
 		lockType == ast.SelectLockForUpdateWaitN {
 		return true

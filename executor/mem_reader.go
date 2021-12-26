@@ -157,6 +157,7 @@ type memTableReader struct {
 	colIDs        map[int64]int
 	buffer        allocBuf
 	pkColIDs      []int64
+	rowFilter     func(key kv.Key) bool
 }
 
 type allocBuf struct {
@@ -199,7 +200,8 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 			handleBytes: make([]byte, 0, 16),
 			rd:          rd,
 		},
-		pkColIDs: pkColIDs,
+		pkColIDs:  pkColIDs,
+		rowFilter: tablecodec.BuildRecordKeyFilter(getPhysicalTableID(us.table), us.table.Meta().Type),
 	}
 }
 
@@ -207,6 +209,9 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 	mutableRow := chunk.MutRowFromTypes(m.retFieldTypes)
 	err := iterTxnMemBuffer(m.ctx, m.kvRanges, func(key, value []byte) error {
+		if m.rowFilter != nil && !m.rowFilter(key) {
+			return nil
+		}
 		row, err := m.decodeRecordKeyValue(key, value)
 		if err != nil {
 			return err
@@ -232,7 +237,7 @@ func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 }
 
 func (m *memTableReader) decodeRecordKeyValue(key, value []byte) ([]types.Datum, error) {
-	handle, err := tablecodec.DecodeRowKey(key)
+	handle, err := tablecodec.DecodeRowKeyByType(key)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -415,7 +420,7 @@ func (m *memIndexLookUpReader) getMemRows() ([][]types.Datum, error) {
 		return nil, err
 	}
 
-	tblKVRanges := distsql.TableHandlesToKVRanges(getPhysicalTableID(m.table), handles)
+	tblKVRanges := distsql.TableHandlesToKVRanges(getPhysicalTableID(m.table), handles, m.table.Meta().Type)
 	colIDs := make(map[int64]int, len(m.columns))
 	for i, col := range m.columns {
 		colIDs[col.ID] = i
@@ -450,6 +455,7 @@ func (m *memIndexLookUpReader) getMemRows() ([][]types.Datum, error) {
 			handleBytes: make([]byte, 0, 16),
 			rd:          rd,
 		},
+		rowFilter: tablecodec.BuildRecordKeyFilter(getPhysicalTableID(m.table), m.table.Meta().Type),
 	}
 
 	return memTblReader.getMemRows()

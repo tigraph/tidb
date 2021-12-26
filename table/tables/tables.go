@@ -142,6 +142,9 @@ func TableFromMeta(allocs autoid.Allocators, tblInfo *model.TableInfo) (table.Ta
 		if err := initTableIndices(&t); err != nil {
 			return nil, err
 		}
+		//if tblInfo.Type == model.TableTypeIsGraphTag || tblInfo.Type == model.TableTypeIsGraphEdge {
+		//	return &GraphCommon{t}, nil
+		//}
 		return &t, nil
 	}
 
@@ -161,8 +164,15 @@ func initTableCommon(t *TableCommon, tblInfo *model.TableInfo, physicalTableID i
 	t.WritableColumns = t.WritableCols()
 	t.FullHiddenColsAndVisibleColumns = t.FullHiddenColsAndVisibleCols()
 	t.writableIndices = t.WritableIndices()
-	t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
-	t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	switch t.meta.Type {
+	case model.TableTypeIsTable:
+		t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
+		t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	case model.TableTypeIsGraphTag, model.TableTypeIsGraphEdge:
+		// TODO: use graph prefix
+		t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
+		t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	}
 	if tblInfo.IsSequence() {
 		t.sequence = &sequenceCommon{meta: tblInfo.Sequence}
 	}
@@ -328,6 +338,20 @@ func (t *TableCommon) RecordKey(h kv.Handle) kv.Key {
 	return tablecodec.EncodeRecordKey(t.recordPrefix, h)
 }
 
+func (t *TableCommon) RecordKey2(h kv.Handle, physicalID int64) (kv.Key, error) {
+	if t.Meta().Type == model.TableTypeIsTable {
+		return t.RecordKey(h), nil
+	}
+	return RecordKeyFromHandle(h, physicalID, t.Meta().Type)
+}
+
+func (t *TableCommon) RecordKeys2(h kv.Handle, physicalID int64) ([]kv.Key, error) {
+	if t.Meta().Type == model.TableTypeIsTable {
+		return []kv.Key{t.RecordKey(h)}, nil
+	}
+	return RecordKeysFromHandle(h, physicalID, t.Meta().Type)
+}
+
 // FirstKey implements table.Table interface.
 func (t *TableCommon) FirstKey() kv.Key {
 	return t.RecordKey(kv.IntHandle(math.MinInt64))
@@ -418,14 +442,20 @@ func (t *TableCommon) UpdateRecord(ctx context.Context, sctx sessionctx.Context,
 		}
 	}
 
-	key := t.RecordKey(h)
+	keys, err := t.RecordKeys2(h, t.tableID)
+	if err != nil {
+		return err
+	}
+
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
 	value, err := tablecodec.EncodeRow(sc, row, colIDs, nil, nil, rd)
 	if err != nil {
 		return err
 	}
-	if err = memBuffer.Set(key, value); err != nil {
-		return err
+	for _, key := range keys {
+		if err = memBuffer.Set(key, value); err != nil {
+			return err
+		}
 	}
 	memBuffer.Release(sh)
 	if shouldWriteBinlog(sctx) {
@@ -725,9 +755,14 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 
 	writeBufs := sessVars.GetWriteStmtBufs()
 	adjustRowValuesBuf(writeBufs, len(row))
-	key := t.RecordKey(recordID)
+	var keys []kv.Key
+	if t.meta.Type == model.TableTypeIsTable {
+		keys = []kv.Key{t.RecordKey(recordID)}
+	} else {
+		keys = t.graphRecordKey(r)
+	}
 	logutil.BgLogger().Debug("addRecord",
-		zap.Stringer("key", key))
+		zap.Stringer("key", keys[0]))
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
 	writeBufs.RowValBuf, err = tablecodec.EncodeRow(sc, row, colIDs, writeBufs.RowValBuf, writeBufs.AddRowValues, rd)
 	if err != nil {
@@ -740,7 +775,7 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 	if (t.meta.IsCommonHandle || t.meta.PKIsHandle) && !skipCheck && !opt.SkipHandleCheck {
 		if sctx.GetSessionVars().LazyCheckKeyNotExists() {
 			var v []byte
-			v, err = txn.GetMemBuffer().Get(ctx, key)
+			v, err = txn.GetMemBuffer().Get(ctx, keys[0])
 			if err != nil {
 				setPresume = true
 			}
@@ -748,7 +783,7 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 				err = kv.ErrNotExist
 			}
 		} else {
-			_, err = txn.Get(ctx, key)
+			_, err = txn.Get(ctx, keys[0])
 		}
 		if err == nil {
 			handleStr := getDuplicateErrorHandleString(t, recordID, r)
@@ -758,13 +793,15 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 		}
 	}
 
-	if setPresume {
-		err = memBuffer.SetWithFlags(key, value, kv.SetPresumeKeyNotExists)
-	} else {
-		err = memBuffer.Set(key, value)
-	}
-	if err != nil {
-		return nil, err
+	for _, key := range keys {
+		if setPresume {
+			err = memBuffer.SetWithFlags(key, value, kv.SetPresumeKeyNotExists)
+		} else {
+			err = memBuffer.Set(key, value)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var createIdxOpts []table.CreateIdxOptFunc
@@ -1111,8 +1148,17 @@ func (t *TableCommon) removeRowData(ctx sessionctx.Context, h kv.Handle) error {
 		return err
 	}
 
-	key := t.RecordKey(h)
-	return txn.Delete(key)
+	keys, err := t.RecordKeys2(h, t.tableID)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		err = txn.Delete(key)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // removeRowIndices removes all the indices of a row.
@@ -1727,4 +1773,71 @@ func BuildTableScanFromInfos(tableInfo *model.TableInfo, columnInfos []*model.Co
 		PrimaryColumnIds: pkColIds,
 	}
 	return tsExec
+}
+
+func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, error) {
+	switch tp {
+	case model.TableTypeIsTable:
+		return tablecodec.EncodeRowKeyWithHandle(tid, h), nil
+	case model.TableTypeIsGraphTag:
+		return tablecodec.EncodeGraphTag(h.IntValue(), tid), nil
+	case model.TableTypeIsGraphEdge:
+		if h.NumCols() != 2 {
+			return nil, nil
+		}
+		_, src, err := codec.DecodeOne(h.EncodedCol(0))
+		if err != nil {
+			return nil, err
+		}
+		_, dst, err := codec.DecodeOne(h.EncodedCol(1))
+		if err != nil {
+			return nil, err
+		}
+		srcVertexID := src.GetInt64()
+		dstVertexID := dst.GetInt64()
+		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, tid), nil
+	}
+	panic("should never hapen")
+}
+
+func RecordKeysFromHandle(h kv.Handle, tid int64, tp model.TableType) ([]kv.Key, error) {
+	switch tp {
+	case model.TableTypeIsTable:
+		return []kv.Key{tablecodec.EncodeRowKeyWithHandle(tid, h)}, nil
+	case model.TableTypeIsGraphTag:
+		return []kv.Key{tablecodec.EncodeGraphTag(h.IntValue(), tid)}, nil
+	case model.TableTypeIsGraphEdge:
+		if h.NumCols() != 2 {
+			return nil, nil
+		}
+		_, src, err := codec.DecodeOne(h.EncodedCol(0))
+		if err != nil {
+			return nil, err
+		}
+		_, dst, err := codec.DecodeOne(h.EncodedCol(1))
+		if err != nil {
+			return nil, err
+		}
+		srcVertexID := src.GetInt64()
+		dstVertexID := dst.GetInt64()
+		return []kv.Key{
+			tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, tid),
+			tablecodec.EncodeGraphInEdge(dstVertexID, srcVertexID, tid)}, nil
+	}
+	panic("should never hapen")
+}
+
+func (t *TableCommon) graphRecordKey(r []types.Datum) []kv.Key {
+	switch t.meta.Type {
+	case model.TableTypeIsGraphTag:
+		vertexID := r[0].GetInt64()
+		return []kv.Key{tablecodec.EncodeGraphTag(vertexID, t.tableID)}
+	case model.TableTypeIsGraphEdge:
+		srcVertexID := r[0].GetInt64()
+		dstVertexID := r[1].GetInt64()
+		return []kv.Key{
+			tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID),
+			tablecodec.EncodeGraphInEdge(dstVertexID, srcVertexID, t.tableID)}
+	}
+	panic("should never hapen")
 }

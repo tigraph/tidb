@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	. "github.com/pingcap/check"
@@ -3869,4 +3870,289 @@ func testEqualDatumsAsBinary(c *C, a []interface{}, b []interface{}, same bool) 
 	res, err := re.EqualDatumsAsBinary(sc, types.MakeDatums(a...), types.MakeDatums(b...))
 	c.Assert(err, IsNil)
 	c.Assert(res, Equals, same, Commentf("a: %v, b: %v", a, b))
+}
+
+func (s *testSuite) TestWriteGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p")
+	// Test for tag
+	tk.MustExec("create tag  p (id bigint, name varchar(32));")
+	tk.MustExec("insert into p values (1,'bob'),(2,'jim');")
+	tk.MustExec("insert into p values (3,'jack');")
+	tk.MustQuery("select * from p where id = 1").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select * from p where id in (1,2,3)").Check(testkit.Rows("1 bob", "2 jim", "3 jack"))
+	tk.MustExec("delete from p where id=2;")
+	tk.MustQuery("select * from p where id = 2").Check(testkit.Rows())
+	tk.MustQuery("select * from p where id in (1,2,3)").Check(testkit.Rows("1 bob", "3 jack"))
+	// Test for table scan of tag.
+	tk.MustQuery("select * from p").Check(testkit.Rows("1 bob", "3 jack"))
+	tk.MustQuery("select * from p where id > 1").Check(testkit.Rows("3 jack"))
+	tk.MustQuery("select * from p where name='bob'").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select * from p where name='none'").Check(testkit.Rows())
+
+	// Test for edge
+	tk.MustExec("create edge f (src bigint, dst bigint);")
+	tk.MustExec("insert into f values (1,3)")
+	tk.MustQuery("select * from f where src = 1 and dst = 3").Check(testkit.Rows("1 3"))
+
+	tk.MustExec("create edge f2 (src bigint, dst bigint, comment varchar(100));")
+	tk.MustExec("insert into p values (2, 'jim'),(5,'a'),(6,'b');")
+	tk.MustExec("insert into f2 (src,dst)values (1,3),(3,1)")
+	tk.MustExec("insert into f2 values (1,2,'hello')")
+	tk.MustQuery("select * from f2 where src = 1 and dst = 2").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2 where src = 3 and dst = 1").Check(testkit.Rows("3 1 <nil>"))
+	tk.MustQuery("select * from f2 where (src, dst) in ((1,2))").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2 where (src, dst) in ((1,2),(1,3),(5,1))").Check(testkit.Rows("1 2 hello", "1 3 <nil>"))
+	tk.MustExec("delete from f2 where src = 1 and dst = 3")
+	tk.MustQuery("select * from f2 where (src, dst) in ((1,2),(1,3),(5,1))").Check(testkit.Rows("1 2 hello"))
+}
+
+func (s *testSuite) TestWriteGraphWithIndex(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p")
+	// Test for tag
+	tk.MustExec("create tag  p (id bigint, name varchar(32), age int, index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	tk.MustExec("insert into p values (3,'jack', 23);")
+	// Add some edge to skip when scan tag data.
+	tk.MustExec("create edge f (src bigint, dst bigint);")
+	tk.MustExec("insert into f values (1,3),(1,2),(2,1),(3,2)")
+
+	// Test for index look up
+	tk.MustQuery("select * from p use index (idx) where name='jim'").Check(testkit.Rows("2 jim 22"))
+	tk.MustQuery("select * from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	tk.MustExec("delete from p where id=2;")
+	tk.MustQuery("select * from p use index (idx) where name='jim'").Check(testkit.Rows())
+	tk.MustQuery("select * from p use index (idx) where name in ('bob', 'jack')").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	// Test for index scan of tag.
+	tk.MustQuery("select id, name from p use index (idx) where name < 'jim'").Check(testkit.Rows("1 bob", "3 jack"))
+	tk.MustQuery("select id, name from p use index (idx) where name > 'bob'").Check(testkit.Rows("3 jack"))
+	tk.MustQuery("select id, name from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select id, name from p use index (idx) where name='none'").Check(testkit.Rows())
+
+	// test selection push down.
+	tk.MustQuery("select * from p where age < 100").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select * from p where age < 100 limit 2").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select * from p where age < 100 limit 1").Check(testkit.Rows("1 bob 21"))
+	// test agg push down.
+	tk.MustQuery("select count(*) from p where age < 100").Check(testkit.Rows("2"))
+	tk.MustQuery("select count(*) from p where age < 23").Check(testkit.Rows("1"))
+	// test TopN push down.
+	tk.MustQuery("select * from p where age < 100 order by age desc limit 2").Check(testkit.Rows("3 jack 23", "1 bob 21"))
+	tk.MustQuery("select * from p where age < 100 order by age desc limit 1").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select * from p where age < 23 order by age desc limit 2").Check(testkit.Rows("1 bob 21"))
+}
+
+func (s *testSuite) TestWriteGraphWithUniqueIndex(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p")
+	tk.MustExec("create tag  p (id bigint, name varchar(32), age int, unique index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	tk.MustExec("insert into p values (3,'jack', 23);")
+	// Test for point-get
+	tk.MustQuery("select * from p use index (idx) where name='jim'").Check(testkit.Rows("2 jim 22"))
+	tk.MustQuery("select * from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	tk.MustExec("delete from p where id=2;")
+	tk.MustQuery("select * from p use index (idx) where name='jim'").Check(testkit.Rows())
+	// Test for batch-point-get
+	tk.MustQuery("select * from p use index (idx) where name in ('bob', 'jack')").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	// Test for index scan of tag.
+	tk.MustQuery("select id, name from p use index (idx) where name < 'jim'").Check(testkit.Rows("1 bob", "3 jack"))
+	tk.MustQuery("select id, name from p use index (idx) where name > 'bob'").Check(testkit.Rows("3 jack"))
+	tk.MustQuery("select id, name from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select id, name from p use index (idx) where name='none'").Check(testkit.Rows())
+	// Test for index look up of tag.
+	tk.MustQuery("select *  from p use index (idx) where name < 'jim'").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	tk.MustQuery("select *  from p use index (idx) where name > 'bob'").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select *  from p use index (idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	tk.MustQuery("select *  from p use index (idx) where name='none'").Check(testkit.Rows())
+
+	// Test for insert meet duplicate error
+	_, err := tk.Exec("insert into p values (4,'jack', 24);")
+	c.Assert(err.Error(), Equals, "[kv:1062]Duplicate entry 'jack' for key 'idx'")
+
+	// Test for insert on duplicate update
+	tk.MustExec("insert into p values (4,'jack', 24) on duplicate key update age = 24")
+	tk.MustQuery("select * from p use index (idx) where name='jack'").Check(testkit.Rows("3 jack 24"))
+	// Test for insert ignore
+	tk.MustExec("insert ignore into p values (4,'jack', 25)")
+	tk.MustQuery("select * from p use index (idx) where name='jack'").Check(testkit.Rows("3 jack 24"))
+}
+
+func (s *testSuite) TestWriteGraphInTxn(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (id bigint, name varchar(32), age int, unique index idx(name));")
+
+	tk.MustExec("begin")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	tk.MustQuery("select * from p order by id").Check(testkit.Rows("1 bob 21", "2 jim 22"))
+	// test for mem-point-get
+	tk.MustQuery("select * from p where id=1").Check(testkit.Rows("1 bob 21"))
+	// test for mem table scan
+	tk.MustQuery("select * from p where id < 3").Check(testkit.Rows("1 bob 21", "2 jim 22"))
+	// Test for mem index look up
+	tk.MustQuery("select * from p use index(idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	// Test for mem index reader
+	tk.MustQuery("select id from p use index(idx) where name='bob'").Check(testkit.Rows("1"))
+	tk.MustExec("rollback")
+
+	tk.MustQuery("select * from p order by id").Check(testkit.Rows())
+
+	tk.MustExec("insert into p values (3,'jack', 23);")
+	tk.MustExec("begin")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	// Test for union scan
+	tk.MustQuery("select * from p order by id").Check(testkit.Rows("1 bob 21", "2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where id>1 order by id").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where id in (2,3) order by id").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	// Test for mem index look up
+	tk.MustQuery("select * from p use index(idx) where name in ('bob', 'jack')").Check(testkit.Rows("1 bob 21", "3 jack 23"))
+	// Test for mem index reader
+	tk.MustQuery("select id from p use index(idx) where name in ('bob', 'jack')").Check(testkit.Rows("1", "3"))
+	tk.MustExec("commit")
+	tk.MustQuery("select * from p order by id").Check(testkit.Rows("1 bob 21", "2 jim 22", "3 jack 23"))
+
+	//
+	tk.MustExec("delete from p")
+	tk.MustExec("create edge f (src bigint, dst bigint);")
+	tk.MustExec("begin")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22);")
+	tk.MustExec("insert into p values (3,'jack', 23);")
+	tk.MustExec("insert into f values (1,3),(2,3)")
+	tk.MustExec("insert into f values (3,1),(2,1)")
+
+	tk.MustQuery("select * from p order by id").Check(testkit.Rows("1 bob 21", "2 jim 22", "3 jack 23"))
+	// test for mem-point-get
+	tk.MustQuery("select * from p where id=1").Check(testkit.Rows("1 bob 21"))
+	// test for mem table scan
+	tk.MustQuery("select * from p where id < 3").Check(testkit.Rows("1 bob 21", "2 jim 22"))
+	// Test for mem index look up
+	tk.MustQuery("select * from p use index(idx) where name='bob'").Check(testkit.Rows("1 bob 21"))
+	// Test for mem index reader
+	tk.MustQuery("select id from p use index(idx) where name='bob'").Check(testkit.Rows("1"))
+
+	// test for point-get in edge
+	tk.MustQuery("select * from f where src=1 and dst = 3").Check(testkit.Rows("1 3"))
+	tk.MustExec("rollback")
+}
+
+func (s *testSuite) TestTraverseGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (id bigint, name varchar(32), age int, unique index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22), (3, 'jack', 23);")
+
+	tk.MustExec("create edge f (src bigint, dst bigint, time year);")
+	tk.MustExec("insert into f values (1,3, 2000),(1,2,2001), (2,3,2010), (3,2,2020)")
+
+	tk.MustQuery("select * from p where name='bob' traverse out(f).tag(p);").Check(testkit.Rows("2 jim 22", "3 jack 23"))
+	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2000).tag(p);").Check(testkit.Rows("3 jack 23"))
+	tk.MustQuery("select * from p where name='bob' traverse out(f where time=2010).tag(p);").Check(testkit.Rows())
+	tk.MustQuery("select * from p traverse out(f where time>=2015).tag(p);").Check(testkit.Rows("2 jim 22"))
+}
+
+func (s *testSuite) TestTraverseGraphWithMultiRelation(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	cases := []struct {
+		sql    string
+		result string
+	}{
+		{sql: "use test"},
+		{sql: "drop table if exists student,teacher,love,hate;"},
+		{sql: "create tag student (id bigint, name varchar(32), age int, unique index idx(name));"},
+		{sql: "create tag teacher (id bigint, name varchar(32), age int, unique index idx(name))"},
+		{sql: "insert into student values (1,'bob', 11),(2,'jim',12), (3, 'jack', 13);"},
+		{sql: "insert into teacher values (4,'BOB', 21),(5,'JIM',22), (6, 'JACK', 23);"},
+		{sql: "create edge love (src bigint, dst bigint, time year);"},
+		{sql: "create edge hate (src bigint, dst bigint, time year);"},
+		{sql: "insert into love values (1,2,2000),(2,3,2010),(1,5,2015);"},
+		{sql: "insert into hate values (2,4,2011),(3,1,2020);"},
+		{
+			sql:    "select * from student where name='bob' traverse out(love).tag(teacher);",
+			result: "5 JIM 22",
+		},
+		{
+			sql:    "select * from student where name='bob' traverse out(love).out(hate).tag(teacher);",
+			result: "4 BOB 21",
+		},
+	}
+	for _, ca := range cases {
+		if strings.HasPrefix(ca.sql, "select") {
+			tk.MustQuery(ca.sql).Check(testkit.Rows(strings.Split(ca.result, "|")...))
+		} else {
+			tk.MustExec(ca.sql)
+		}
+	}
+}
+
+func (s *testSuite) TestMultiGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	for i := 0; i < 10; i++ {
+		sqls := []string{
+			"create tag p%v (id bigint, name varchar(32), age int, unique index idx(name))",
+			"insert into p%v values (1,'bob', 11),(2,'jim',12), (3, 'jack', 13), (4,'BOB', 21),(5,'JIM',22), (6, 'JACK', 23)",
+			"create edge f%v (src bigint, dst bigint, time year)",
+			"insert into f%v values (1,2,2000),(2,3,2010),(1,5,2015),(2,4,2011),(3,1,2020)",
+		}
+		for _, sql := range sqls {
+			sql = fmt.Sprintf(sql, i)
+			tk.MustExec(sql)
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		cases := []struct {
+			sql    string
+			result string
+		}{
+			{
+				sql:    "select count(*) from p%v;",
+				result: "6",
+			},
+			{
+				sql:    "select max(age) from p%v;",
+				result: "23",
+			},
+			{
+				sql:    "select * from p%[1]v where name='bob' traverse out(f%[1]v).tag(p%[1]v);",
+				result: "2 jim 12|5 JIM 22",
+			},
+			{
+				sql:    "select * from p%[1]v where age in (11,12,13) traverse out(f%[1]v).tag(p%[1]v);",
+				result: "2 jim 12|5 JIM 22|3 jack 13|4 BOB 21|1 bob 11",
+			},
+			{
+				sql:    "select * from p%[1]v where age in (11,12,13) traverse out(f%[1]v where time > 2010).tag(p%[1]v);",
+				result: "5 JIM 22|4 BOB 21|1 bob 11",
+			},
+		}
+		for _, ca := range cases {
+			ca.sql = fmt.Sprintf(ca.sql, i)
+			if strings.HasPrefix(ca.sql, "select") {
+				tk.MustQuery(ca.sql).Check(testkit.Rows(strings.Split(ca.result, "|")...))
+			} else {
+				tk.MustExec(ca.sql)
+			}
+		}
+	}
+}
+
+func (s *testSuite) TestMultiGraph2(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p,f")
+	tk.MustExec("create tag  p (id bigint, name varchar(32), age int, unique index idx(name));")
+	tk.MustExec("insert into p values (1,'bob', 21),(2,'jim',22), (3, 'jack', 23);")
+
+	tk.MustExec("create edge f (src bigint, dst bigint, time year);")
+	tk.MustExec("insert into f values (1,2, 2000),(2,3,2001)")
+
+	tk.MustQuery("select * from p where name='bob' traverse out(f).out(f).tag(p);").Check(testkit.Rows("3 jack 23"))
 }

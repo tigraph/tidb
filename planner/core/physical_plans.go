@@ -63,6 +63,7 @@ var (
 	_ PhysicalPlan = &PhysicalShuffleReceiverStub{}
 	_ PhysicalPlan = &BatchPointGetPlan{}
 	_ PhysicalPlan = &PhysicalTableSample{}
+	_ PhysicalPlan = &PhysicalTraverse{}
 )
 
 // PhysicalTableReader is the table reader in tidb.
@@ -1310,6 +1311,14 @@ type PhysicalShowDDLJobs struct {
 	physicalSchemaProducer
 
 	JobNumber int64
+}
+
+// PhysicalTraverse traverse the graph
+type PhysicalTraverse struct {
+	physicalSchemaProducer
+
+	TraverseChain *ast.TraverseChain
+	ResultTagID   int64
 }
 
 // BuildMergeJoinPlan builds a PhysicalMergeJoin from the given fields. Currently, it is only used for test purpose.

@@ -167,6 +167,22 @@ func (p *LogicalShowDDLJobs) findBestTask(prop *property.PhysicalProperty, planC
 	return &rootTask{p: pShow}, 1, nil
 }
 
+func (p *LogicalTraverse) findBestTask(prop *property.PhysicalProperty, planCounter *PlanCounterTp) (task, int64, error) {
+	if !prop.IsEmpty() || planCounter.Empty() {
+		return invalidTask, 0, nil
+	}
+	cp, _, err := p.children[0].findBestTask(prop, planCounter)
+	if err != nil {
+		return nil, 0, err
+	}
+	cp = finishCopTask(p.ctx, cp)
+	pShow := PhysicalTraverse{TraverseChain: p.TraverseChain, ResultTagID: p.ResultTagID}.Init(p.ctx, p.stats, p.blockOffset)
+	pShow.SetSchema(p.schema)
+	pShow.SetChildren(cp.plan())
+	planCounter.Dec(1)
+	return &rootTask{p: pShow}, 1, nil
+}
+
 // rebuildChildTasks rebuilds the childTasks to make the clock_th combination.
 func (p *baseLogicalPlan) rebuildChildTasks(childTasks *[]task, pp PhysicalPlan, childCnts []int64, planCounter int64, TS uint64) error {
 	// The taskMap of children nodes should be rolled back first.
