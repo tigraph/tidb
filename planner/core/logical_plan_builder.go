@@ -374,6 +374,8 @@ func (b *PlanBuilder) buildResultSetNode(ctx context.Context, node ast.ResultSet
 		return b.buildSelect(ctx, x)
 	case *ast.SetOprStmt:
 		return b.buildSetOpr(ctx, x)
+	case *ast.GraphPattern:
+		return b.buildGraph(ctx, x)
 	default:
 		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.ResultSetNode(%T) for buildResultSetNode()", x)
 	}
@@ -6477,4 +6479,8 @@ func getResultCTESchema(seedSchema *expression.Schema, svar *variable.SessionVar
 		col.RetType.Flag &= ^mysql.NotNullFlag
 	}
 	return res
+}
+
+func (b *PlanBuilder) buildGraph(ctx context.Context, g *ast.GraphPattern) (p LogicalPlan, err error) {
+
 }
