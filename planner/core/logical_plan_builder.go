@@ -6481,6 +6481,236 @@ func getResultCTESchema(seedSchema *expression.Schema, svar *variable.SessionVar
 	return res
 }
 
-func (b *PlanBuilder) buildGraph(ctx context.Context, g *ast.GraphPattern) (p LogicalPlan, err error) {
+func (b *PlanBuilder) buildGraph(ctx context.Context, graphPattern *ast.GraphPattern) (LogicalPlan, error) {
+	var children []LogicalPlan
+	for _, path := range graphPattern.Paths {
+		child, err := b.buildGraphPath(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
 
+	if len(children) == 1 {
+		return children[0], nil
+	}
+
+	// FIXME: offset should be assigned a correct value.
+	unionAll := LogicalUnionAll{}.Init(b.ctx, 0)
+	unionAll.SetChildren(children...)
+	err := b.buildProjection4Union(ctx, unionAll)
+	if err != nil {
+		return nil, err
+	}
+	return unionAll, nil
+}
+
+func (b *PlanBuilder) buildGraphConditions(ctx context.Context, p LogicalPlan, where ast.ExprNode) (LogicalPlan, []expression.Expression, error) {
+	conditions := splitWhere(where)
+	expressions := make([]expression.Expression, 0, len(conditions))
+	for _, cond := range conditions {
+		expr, np, err := b.rewrite(ctx, cond, p, nil, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		p = np
+		if expr == nil {
+			continue
+		}
+		expressions = append(expressions, expr)
+	}
+	cnfExpres := make([]expression.Expression, 0)
+	for _, expr := range expressions {
+		cnfItems := expression.SplitCNFItems(expr)
+		for _, item := range cnfItems {
+			if con, ok := item.(*expression.Constant); ok && con.DeferredExpr == nil && con.ParamMarker == nil {
+				ret, _, err := expression.EvalBool(b.ctx, expression.CNFExprs{con}, chunk.Row{})
+				if err != nil {
+					return nil, nil, errors.Trace(err)
+				}
+				if ret {
+					continue
+				}
+				// If there is condition which is always false, return dual plan directly.
+				dual := LogicalTableDual{}.Init(b.ctx, b.getSelectOffset())
+				dual.names = p.OutputNames()
+				dual.SetSchema(p.Schema())
+				return dual, nil, nil
+			}
+			cnfExpres = append(cnfExpres, item)
+		}
+	}
+	if len(cnfExpres) == 0 {
+		return p, nil, nil
+	}
+	// check expr field types.
+	for i, expr := range cnfExpres {
+		if expr.GetType().EvalType() == types.ETString {
+			tp := &types.FieldType{
+				Tp:      mysql.TypeDouble,
+				Flag:    expr.GetType().Flag,
+				Flen:    mysql.MaxRealWidth,
+				Decimal: types.UnspecifiedLength,
+			}
+			types.SetBinChsClnFlag(tp)
+			cnfExpres[i] = expression.TryPushCastIntoControlFunctionForHybridType(b.ctx, expr, tp)
+		}
+	}
+	return p, cnfExpres, nil
+}
+
+func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, error) {
+	sessionVars := b.ctx.GetSessionVars()
+
+	// Source vertices
+	if dbName.L == "" {
+		dbName = model.NewCIStr(sessionVars.CurrentDB)
+	}
+
+	tbl, err := b.is.TableByName(dbName, tblName)
+	if err != nil {
+		return nil, err
+	}
+	tableInfo := tbl.Meta()
+	if tableInfo.Type != model.TableTypeIsVertex {
+		return nil, errors.Errorf("cannot match graph on table %s", tblName)
+	}
+	var authErr error
+	if sessionVars.User != nil {
+		authErr = ErrTableaccessDenied.FastGenByArgs("SELECT", sessionVars.User.AuthUsername, sessionVars.User.AuthHostname, tableInfo.Name.L)
+	}
+	b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SelectPriv, dbName.L, tableInfo.Name.L, "", authErr)
+
+	var columns []*table.Column
+	if b.inUpdateStmt {
+		// create table t(a int, b int).
+		// Imagine that, There are 2 TiDB instances in the cluster, name A, B. We add a column `c` to table t in the TiDB cluster.
+		// One of the TiDB, A, the column type in its infoschema is changed to public. And in the other TiDB, the column type is
+		// still StateWriteReorganization.
+		// TiDB A: insert into t values(1, 2, 3);
+		// TiDB B: update t set a = 2 where b = 2;
+		// If we use tbl.Cols() here, the update statement, will ignore the col `c`, and the data `3` will lost.
+		columns = tbl.WritableCols()
+	} else if b.inDeleteStmt {
+		// DeletableCols returns all columns of the table in deletable states.
+		columns = tbl.DeletableCols()
+	} else {
+		columns = tbl.Cols()
+	}
+	var handleCols HandleCols
+	schema := expression.NewSchema(make([]*expression.Column, 0, len(columns))...)
+	for _, col := range columns {
+		fn := &types.FieldName{
+			DBName:      dbName,
+			TblName:     tableInfo.Name,
+			ColName:     col.Name,
+			OrigTblName: tableInfo.Name,
+			OrigColName: col.Name,
+			// For update statement and delete statement, internal version should see the special middle state column, while user doesn't.
+			NotExplicitUsable: col.State != model.StatePublic,
+		}
+		newCol := &expression.Column{
+			UniqueID: sessionVars.AllocPlanColumnID(),
+			ID:       col.ID,
+			RetType:  col.FieldType.Clone(),
+			OrigName: fn.String(),
+			IsHidden: col.Hidden,
+		}
+		if col.IsPKHandleColumn(tableInfo) {
+			handleCols = &IntHandleCols{col: newCol}
+		}
+		schema.Append(newCol)
+	}
+	// We append an extra handle column to the schema when the handle
+	// column is not the primary key of "ds".
+	if handleCols == nil {
+		tp := types.NewFieldType(mysql.TypeLonglong)
+		tp.Flag = mysql.NotNullFlag | mysql.PriKeyFlag
+		extraCol := &expression.Column{
+			RetType:  tp,
+			UniqueID: sessionVars.AllocPlanColumnID(),
+			ID:       model.ExtraHandleID,
+			OrigName: fmt.Sprintf("%v.%v.%v", dbName, tableInfo.Name, model.ExtraHandleName),
+		}
+		handleCols = &IntHandleCols{col: extraCol}
+		schema.Append(extraCol)
+	}
+	handleMap := make(map[int64][]HandleCols)
+	handleMap[tableInfo.ID] = []HandleCols{handleCols}
+	b.handleHelper.pushMap(handleMap)
+
+	return schema, nil
+}
+
+func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
+	// TODO: support more path patterns.
+	if pathPattern.Type != ast.GraphPathPatternTypeSimple {
+		return nil, errors.Errorf("unsupported graph path type: %v", pathPattern.Type)
+	}
+
+	vertexScan := LogicalGraphVertexScan{}.Init(b.ctx)
+	schema, err := b.buildGraphSchema(pathPattern.Source.Name.Schema, pathPattern.Source.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	vertexScan.SetSchema(schema)
+
+	var p LogicalPlan = vertexScan
+
+	// Build source vertices conditions
+	if where := pathPattern.Source.Where; where != nil {
+		np, conditions, err := b.buildGraphConditions(ctx, p, where)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := np.(*LogicalTableDual); ok {
+			return np, nil
+		}
+		vertexScan.Conditions = conditions
+		p = np
+	}
+
+	if len(pathPattern.Edges) == 0 {
+		return p, nil
+	}
+
+	for _, edge := range pathPattern.Edges {
+		edgeScan := LogicalGraphEdgeScan{}.Init(b.ctx)
+		edgeSchema, err := b.buildGraphSchema(edge.Edge.Name.Schema, edge.Edge.Name.Name)
+		if err != nil {
+			return nil, err
+		}
+		destSchema, err := b.buildGraphSchema(edge.Destination.Name.Schema, edge.Destination.Name.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		// The new columns added by edge scan executor.
+		newSchema := expression.MergeSchema(destSchema, edgeSchema)
+
+		// Merge the edge scan executor schema with the child executor.
+		edgeScan.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
+		edgeScan.SetChildren(p)
+		p = edgeScan
+
+		// Conditions
+		var allConditions []expression.Expression
+		for _, where := range []ast.ExprNode{edge.Edge.Where, edge.Destination.Where} {
+			if where == nil {
+				continue
+			}
+			np, conditions, err := b.buildGraphConditions(ctx, p, where)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := np.(*LogicalTableDual); ok {
+				return np, nil
+			}
+			allConditions = append(allConditions, conditions...)
+			p = np
+		}
+		edgeScan.Conditions = allConditions
+	}
+
+	return p, nil
 }

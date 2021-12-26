@@ -53,6 +53,8 @@ var (
 	_ LogicalPlan = &LogicalLock{}
 	_ LogicalPlan = &LogicalLimit{}
 	_ LogicalPlan = &LogicalWindow{}
+	_ LogicalPlan = &LogicalGraphVertexScan{}
+	_ LogicalPlan = &LogicalGraphEdgeScan{}
 )
 
 // JoinType contains CrossJoin, InnerJoin, LeftOuterJoin, RightOuterJoin, FullOuterJoin, SemiJoin.
@@ -1318,4 +1320,22 @@ func (p *LogicalCTE) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
 		corCols = append(corCols, ExtractCorrelatedCols4LogicalPlan(p.cte.recursivePartLogicalPlan)...)
 	}
 	return corCols
+}
+
+type LogicalGraphVertexScan struct {
+	logicalSchemaProducer
+
+	// Originally the WHERE or ON condition is parsed into a single expression,
+	// but after we converted to CNF(Conjunctive normal form), it can be
+	// split into a list of AND conditions.
+	Conditions []expression.Expression
+}
+
+type LogicalGraphEdgeScan struct {
+	logicalSchemaProducer
+
+	// Originally the WHERE or ON condition is parsed into a single expression,
+	// but after we converted to CNF(Conjunctive normal form), it can be
+	// split into a list of AND conditions.
+	Conditions []expression.Expression
 }

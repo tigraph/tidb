@@ -555,3 +555,13 @@ func (p PhysicalCTETable) Init(ctx sessionctx.Context, stats *property.StatsInfo
 	p.stats = stats
 	return &p
 }
+
+func (p LogicalGraphVertexScan) Init(ctx sessionctx.Context) *LogicalGraphVertexScan {
+	p.baseLogicalPlan = newBaseLogicalPlan(ctx, plancodec.TypeSel, &p, 0)
+	return &p
+}
+
+func (p LogicalGraphEdgeScan) Init(ctx sessionctx.Context) *LogicalGraphEdgeScan {
+	p.baseLogicalPlan = newBaseLogicalPlan(ctx, plancodec.TypeSel, &p, 0)
+	return &p
+}
