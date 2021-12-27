@@ -128,18 +128,18 @@ func (s *Scanner) Errorf(format string, a ...interface{}) (err error) {
 	return
 }
 
-// ErrorfShift tells scanner something is wrong and left shift the cursor while reporting the error message.
+// ErrorfAt tells scanner something is wrong and left shift the cursor while reporting the error message.
 //// Scanner satisfies yyLexer interface which need this function.
-func (s *Scanner) ErrorfShift(shift int, format string, a ...interface{}) (err error) {
+func (s *Scanner) ErrorfAt(pos int, format string, a ...interface{}) (err error) {
 	str := fmt.Sprintf(format, a...)
-	val := s.r.s[s.lastScanOffset-shift:]
+	val := s.r.s[pos:]
 	var lenStr = ""
 	if len(val) > 2048 {
 		lenStr = "(total length " + strconv.Itoa(len(val)) + ")"
 		val = val[:2048]
 	}
 	err = fmt.Errorf("line %d column %d near \"%s\" %s %s",
-		s.r.p.Line, s.r.p.Col-shift, val, str, lenStr)
+		s.r.p.Line, pos, val, str, lenStr)
 	return
 }
 
