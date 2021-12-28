@@ -6505,61 +6505,7 @@ func (b *PlanBuilder) buildGraph(ctx context.Context, graphPattern *ast.GraphPat
 	return unionAll, nil
 }
 
-func (b *PlanBuilder) buildGraphConditions(ctx context.Context, p LogicalPlan, where ast.ExprNode) (LogicalPlan, []expression.Expression, error) {
-	conditions := splitWhere(where)
-	expressions := make([]expression.Expression, 0, len(conditions))
-	for _, cond := range conditions {
-		expr, np, err := b.rewrite(ctx, cond, p, nil, false)
-		if err != nil {
-			return nil, nil, err
-		}
-		p = np
-		if expr == nil {
-			continue
-		}
-		expressions = append(expressions, expr)
-	}
-	cnfExpres := make([]expression.Expression, 0)
-	for _, expr := range expressions {
-		cnfItems := expression.SplitCNFItems(expr)
-		for _, item := range cnfItems {
-			if con, ok := item.(*expression.Constant); ok && con.DeferredExpr == nil && con.ParamMarker == nil {
-				ret, _, err := expression.EvalBool(b.ctx, expression.CNFExprs{con}, chunk.Row{})
-				if err != nil {
-					return nil, nil, errors.Trace(err)
-				}
-				if ret {
-					continue
-				}
-				// If there is condition which is always false, return dual plan directly.
-				dual := LogicalTableDual{}.Init(b.ctx, b.getSelectOffset())
-				dual.names = p.OutputNames()
-				dual.SetSchema(p.Schema())
-				return dual, nil, nil
-			}
-			cnfExpres = append(cnfExpres, item)
-		}
-	}
-	if len(cnfExpres) == 0 {
-		return p, nil, nil
-	}
-	// check expr field types.
-	for i, expr := range cnfExpres {
-		if expr.GetType().EvalType() == types.ETString {
-			tp := &types.FieldType{
-				Tp:      mysql.TypeDouble,
-				Flag:    expr.GetType().Flag,
-				Flen:    mysql.MaxRealWidth,
-				Decimal: types.UnspecifiedLength,
-			}
-			types.SetBinChsClnFlag(tp)
-			cnfExpres[i] = expression.TryPushCastIntoControlFunctionForHybridType(b.ctx, expr, tp)
-		}
-	}
-	return p, cnfExpres, nil
-}
-
-func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, error) {
+func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, *model.TableInfo, error) {
 	sessionVars := b.ctx.GetSessionVars()
 
 	// Source vertices
@@ -6569,11 +6515,11 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) 
 
 	tbl, err := b.is.TableByName(dbName, tblName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	tableInfo := tbl.Meta()
 	if tableInfo.Type != model.TableTypeIsVertex {
-		return nil, errors.Errorf("cannot match graph on table %s", tblName)
+		return nil, nil, errors.Errorf("cannot match graph on table %s", tblName)
 	}
 	var authErr error
 	if sessionVars.User != nil {
@@ -6639,7 +6585,7 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) 
 	handleMap[tableInfo.ID] = []HandleCols{handleCols}
 	b.handleHelper.pushMap(handleMap)
 
-	return schema, nil
+	return schema, tableInfo, nil
 }
 
 func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
@@ -6648,25 +6594,29 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		return nil, errors.Errorf("unsupported graph path type: %v", pathPattern.Type)
 	}
 
-	vertexScan := LogicalGraphVertexScan{}.Init(b.ctx)
-	schema, err := b.buildGraphSchema(pathPattern.Source.Name.Schema, pathPattern.Source.Name.Name)
+	dbNameOrDefault := func(dbName model.CIStr) model.CIStr {
+		// Source vertices
+		if dbName.L == "" {
+			dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		return dbName
+	}
+
+	vs := LogicalGraphVertexScan{DBName: dbNameOrDefault(pathPattern.Source.Name.Schema)}.Init(b.ctx)
+	schema, tableInfo, err := b.buildGraphSchema(vs.DBName, pathPattern.Source.Name.Name)
 	if err != nil {
 		return nil, err
 	}
-	vertexScan.SetSchema(schema)
+	vs.TableInfo = tableInfo
+	vs.SetSchema(schema)
 
-	var p LogicalPlan = vertexScan
+	var p LogicalPlan = vs
 
-	// Build source vertices conditions
 	if where := pathPattern.Source.Where; where != nil {
-		np, conditions, err := b.buildGraphConditions(ctx, p, where)
+		np, err := b.buildSelection(ctx, vs, where, nil)
 		if err != nil {
 			return nil, err
 		}
-		if _, ok := np.(*LogicalTableDual); ok {
-			return np, nil
-		}
-		vertexScan.Conditions = conditions
 		p = np
 	}
 
@@ -6675,41 +6625,57 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 	}
 
 	for _, edge := range pathPattern.Edges {
-		edgeScan := LogicalGraphEdgeScan{}.Init(b.ctx)
-		edgeSchema, err := b.buildGraphSchema(edge.Edge.Name.Schema, edge.Edge.Name.Name)
+		es := LogicalGraphEdgeScan{EdgeDBName: dbNameOrDefault(edge.Edge.Name.Schema)}.Init(b.ctx)
+		edgeSchema, edgeTableInfo, err := b.buildGraphSchema(es.EdgeDBName, edge.Edge.Name.Name)
 		if err != nil {
 			return nil, err
 		}
-		destSchema, err := b.buildGraphSchema(edge.Destination.Name.Schema, edge.Destination.Name.Name)
+		es.EdgeTableInfo = edgeTableInfo
+
+		// SELECT * FROM MATCH (v).OUT(e).OUT(e).(v)
+		// Use the table information referenced at Edge table definition.
+		var (
+			destSchema    *expression.Schema
+			destTableInfo *model.TableInfo
+			destDBName    model.CIStr
+		)
+		if edge.Destination != nil {
+			destDBName = dbNameOrDefault(edge.Destination.Name.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edge.Destination.Name.Name)
+		} else {
+			destDBName = dbNameOrDefault(edgeTableInfo.DestinationVertex.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.DestinationVertex.Vertex)
+		}
 		if err != nil {
 			return nil, err
 		}
+		es.DestDBName = destDBName
+		es.DestTableInfo = destTableInfo
 
 		// The new columns added by edge scan executor.
 		newSchema := expression.MergeSchema(destSchema, edgeSchema)
 
 		// Merge the edge scan executor schema with the child executor.
-		edgeScan.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
-		edgeScan.SetChildren(p)
-		p = edgeScan
-
-		// Conditions
-		var allConditions []expression.Expression
-		for _, where := range []ast.ExprNode{edge.Edge.Where, edge.Destination.Where} {
-			if where == nil {
-				continue
+		es.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
+		es.SetChildren(p)
+		if edge.Edge.Where != nil || (edge.Destination != nil && edge.Destination.Where != nil) {
+			var where ast.ExprNode
+			switch {
+			case edge.Edge.Where != nil && edge.Destination != nil && edge.Destination.Where != nil:
+				where = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: edge.Edge.Where, R: edge.Destination.Where}
+			case edge.Edge.Where != nil:
+				where = edge.Edge.Where
+			case edge.Destination != nil && edge.Destination.Where != nil:
+				where = edge.Destination.Where
 			}
-			np, conditions, err := b.buildGraphConditions(ctx, p, where)
+			np, err := b.buildSelection(ctx, es, where, nil)
 			if err != nil {
 				return nil, err
 			}
-			if _, ok := np.(*LogicalTableDual); ok {
-				return np, nil
-			}
-			allConditions = append(allConditions, conditions...)
 			p = np
+		} else {
+			p = es
 		}
-		edgeScan.Conditions = allConditions
 	}
 
 	return p, nil

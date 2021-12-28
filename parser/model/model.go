@@ -354,8 +354,16 @@ type TableInfo struct {
 	// StatsOptions is used when do analyze/auto-analyze for each table
 	StatsOptions *StatsOptions `json:"stats_options"`
 
-	Type TableType `json:"type"`
+	Type              TableType      `json:"type"`
+	SourceVertex      *EdgeReference `json:"source_vertex,omitempty"`
+	DestinationVertex *EdgeReference `json:"destination_vertex,omitempty"`
 }
+
+type EdgeReference struct {
+	Schema CIStr
+	Vertex CIStr
+}
+
 type TableCacheStatusType int
 
 const (

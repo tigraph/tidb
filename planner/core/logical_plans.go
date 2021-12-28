@@ -1329,6 +1329,8 @@ type LogicalGraphVertexScan struct {
 	// but after we converted to CNF(Conjunctive normal form), it can be
 	// split into a list of AND conditions.
 	Conditions []expression.Expression
+	DBName     model.CIStr
+	TableInfo  *model.TableInfo
 }
 
 type LogicalGraphEdgeScan struct {
@@ -1337,5 +1339,9 @@ type LogicalGraphEdgeScan struct {
 	// Originally the WHERE or ON condition is parsed into a single expression,
 	// but after we converted to CNF(Conjunctive normal form), it can be
 	// split into a list of AND conditions.
-	Conditions []expression.Expression
+	Conditions    []expression.Expression
+	EdgeDBName    model.CIStr
+	EdgeTableInfo *model.TableInfo
+	DestDBName    model.CIStr
+	DestTableInfo *model.TableInfo
 }
