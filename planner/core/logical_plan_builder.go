@@ -374,6 +374,8 @@ func (b *PlanBuilder) buildResultSetNode(ctx context.Context, node ast.ResultSet
 		return b.buildSelect(ctx, x)
 	case *ast.SetOprStmt:
 		return b.buildSetOpr(ctx, x)
+	case *ast.GraphPattern:
+		return b.buildGraph(ctx, x)
 	default:
 		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.ResultSetNode(%T) for buildResultSetNode()", x)
 	}
@@ -6477,4 +6479,204 @@ func getResultCTESchema(seedSchema *expression.Schema, svar *variable.SessionVar
 		col.RetType.Flag &= ^mysql.NotNullFlag
 	}
 	return res
+}
+
+func (b *PlanBuilder) buildGraph(ctx context.Context, graphPattern *ast.GraphPattern) (LogicalPlan, error) {
+	var children []LogicalPlan
+	for _, path := range graphPattern.Paths {
+		child, err := b.buildGraphPath(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
+
+	if len(children) == 1 {
+		return children[0], nil
+	}
+
+	// FIXME: offset should be assigned a correct value.
+	unionAll := LogicalUnionAll{}.Init(b.ctx, 0)
+	unionAll.SetChildren(children...)
+	err := b.buildProjection4Union(ctx, unionAll)
+	if err != nil {
+		return nil, err
+	}
+	return unionAll, nil
+}
+
+func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, *model.TableInfo, error) {
+	sessionVars := b.ctx.GetSessionVars()
+
+	// Source vertices
+	if dbName.L == "" {
+		dbName = model.NewCIStr(sessionVars.CurrentDB)
+	}
+
+	tbl, err := b.is.TableByName(dbName, tblName)
+	if err != nil {
+		return nil, nil, err
+	}
+	tableInfo := tbl.Meta()
+	if tableInfo.Type != model.TableTypeIsVertex {
+		return nil, nil, errors.Errorf("cannot match graph on table %s", tblName)
+	}
+	var authErr error
+	if sessionVars.User != nil {
+		authErr = ErrTableaccessDenied.FastGenByArgs("SELECT", sessionVars.User.AuthUsername, sessionVars.User.AuthHostname, tableInfo.Name.L)
+	}
+	b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SelectPriv, dbName.L, tableInfo.Name.L, "", authErr)
+
+	var columns []*table.Column
+	if b.inUpdateStmt {
+		// create table t(a int, b int).
+		// Imagine that, There are 2 TiDB instances in the cluster, name A, B. We add a column `c` to table t in the TiDB cluster.
+		// One of the TiDB, A, the column type in its infoschema is changed to public. And in the other TiDB, the column type is
+		// still StateWriteReorganization.
+		// TiDB A: insert into t values(1, 2, 3);
+		// TiDB B: update t set a = 2 where b = 2;
+		// If we use tbl.Cols() here, the update statement, will ignore the col `c`, and the data `3` will lost.
+		columns = tbl.WritableCols()
+	} else if b.inDeleteStmt {
+		// DeletableCols returns all columns of the table in deletable states.
+		columns = tbl.DeletableCols()
+	} else {
+		columns = tbl.Cols()
+	}
+	var handleCols HandleCols
+	schema := expression.NewSchema(make([]*expression.Column, 0, len(columns))...)
+	for _, col := range columns {
+		fn := &types.FieldName{
+			DBName:      dbName,
+			TblName:     tableInfo.Name,
+			ColName:     col.Name,
+			OrigTblName: tableInfo.Name,
+			OrigColName: col.Name,
+			// For update statement and delete statement, internal version should see the special middle state column, while user doesn't.
+			NotExplicitUsable: col.State != model.StatePublic,
+		}
+		newCol := &expression.Column{
+			UniqueID: sessionVars.AllocPlanColumnID(),
+			ID:       col.ID,
+			RetType:  col.FieldType.Clone(),
+			OrigName: fn.String(),
+			IsHidden: col.Hidden,
+		}
+		if col.IsPKHandleColumn(tableInfo) {
+			handleCols = &IntHandleCols{col: newCol}
+		}
+		schema.Append(newCol)
+	}
+	// We append an extra handle column to the schema when the handle
+	// column is not the primary key of "ds".
+	if handleCols == nil {
+		tp := types.NewFieldType(mysql.TypeLonglong)
+		tp.Flag = mysql.NotNullFlag | mysql.PriKeyFlag
+		extraCol := &expression.Column{
+			RetType:  tp,
+			UniqueID: sessionVars.AllocPlanColumnID(),
+			ID:       model.ExtraHandleID,
+			OrigName: fmt.Sprintf("%v.%v.%v", dbName, tableInfo.Name, model.ExtraHandleName),
+		}
+		handleCols = &IntHandleCols{col: extraCol}
+		schema.Append(extraCol)
+	}
+	handleMap := make(map[int64][]HandleCols)
+	handleMap[tableInfo.ID] = []HandleCols{handleCols}
+	b.handleHelper.pushMap(handleMap)
+
+	return schema, tableInfo, nil
+}
+
+func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
+	// TODO: support more path patterns.
+	if pathPattern.Type != ast.GraphPathPatternTypeSimple {
+		return nil, errors.Errorf("unsupported graph path type: %v", pathPattern.Type)
+	}
+
+	dbNameOrDefault := func(dbName model.CIStr) model.CIStr {
+		// Source vertices
+		if dbName.L == "" {
+			dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		return dbName
+	}
+
+	vs := LogicalGraphVertexScan{DBName: dbNameOrDefault(pathPattern.Source.Name.Schema)}.Init(b.ctx)
+	schema, tableInfo, err := b.buildGraphSchema(vs.DBName, pathPattern.Source.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	vs.TableInfo = tableInfo
+	vs.SetSchema(schema)
+
+	var p LogicalPlan = vs
+
+	if where := pathPattern.Source.Where; where != nil {
+		np, err := b.buildSelection(ctx, vs, where, nil)
+		if err != nil {
+			return nil, err
+		}
+		p = np
+	}
+
+	if len(pathPattern.Edges) == 0 {
+		return p, nil
+	}
+
+	for _, edge := range pathPattern.Edges {
+		es := LogicalGraphEdgeScan{EdgeDBName: dbNameOrDefault(edge.Edge.Name.Schema)}.Init(b.ctx)
+		edgeSchema, edgeTableInfo, err := b.buildGraphSchema(es.EdgeDBName, edge.Edge.Name.Name)
+		if err != nil {
+			return nil, err
+		}
+		es.EdgeTableInfo = edgeTableInfo
+
+		// SELECT * FROM MATCH (v).OUT(e).OUT(e).(v)
+		// Use the table information referenced at Edge table definition.
+		var (
+			destSchema    *expression.Schema
+			destTableInfo *model.TableInfo
+			destDBName    model.CIStr
+		)
+		if edge.Destination != nil {
+			destDBName = dbNameOrDefault(edge.Destination.Name.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edge.Destination.Name.Name)
+		} else {
+			destDBName = dbNameOrDefault(edgeTableInfo.DestinationVertex.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.DestinationVertex.Vertex)
+		}
+		if err != nil {
+			return nil, err
+		}
+		es.DestDBName = destDBName
+		es.DestTableInfo = destTableInfo
+
+		// The new columns added by edge scan executor.
+		newSchema := expression.MergeSchema(destSchema, edgeSchema)
+
+		// Merge the edge scan executor schema with the child executor.
+		es.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
+		es.SetChildren(p)
+		if edge.Edge.Where != nil || (edge.Destination != nil && edge.Destination.Where != nil) {
+			var where ast.ExprNode
+			switch {
+			case edge.Edge.Where != nil && edge.Destination != nil && edge.Destination.Where != nil:
+				where = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: edge.Edge.Where, R: edge.Destination.Where}
+			case edge.Edge.Where != nil:
+				where = edge.Edge.Where
+			case edge.Destination != nil && edge.Destination.Where != nil:
+				where = edge.Destination.Where
+			}
+			np, err := b.buildSelection(ctx, es, where, nil)
+			if err != nil {
+				return nil, err
+			}
+			p = np
+		} else {
+			p = es
+		}
+	}
+
+	return p, nil
 }

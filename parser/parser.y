@@ -8982,14 +8982,24 @@ GraphEdgePatternList:
 	{
 		$$ = append($1.([]*ast.GraphEdgePattern), $3.(*ast.GraphEdgePattern))
 	}
+|	GraphEdgePatternList '.' GraphVertexPattern
+	{
+		list := $1.([]*ast.GraphEdgePattern)
+		last := list[len(list)-1]
+		if last.Destination != nil {
+			startOffset := parser.startOffset(&yyS[yypt-1])
+			yylex.AppendError(yylex.ErrorfAt(startOffset, "Missing edge direction"))
+		} else {
+			last.Destination = $3.(*ast.GraphVariableSpec)
+		}
+	}
 
 GraphEdgePattern:
-	GraphEdgePatternDirection '(' GraphVariableSpec ')' '.' GraphVertexPattern
+	GraphEdgePatternDirection '(' GraphVariableSpec ')'
 	{
 		$$ = &ast.GraphEdgePattern{
-			Direction:   $1.(ast.GraphEdgeDirection),
-			Edge:        $3.(*ast.GraphVariableSpec),
-			Destination: $6.(*ast.GraphVariableSpec),
+			Direction: $1.(ast.GraphEdgeDirection),
+			Edge:      $3.(*ast.GraphVariableSpec),
 		}
 	}
 
@@ -9007,9 +9017,8 @@ GraphEdgePatternDirection:
 			$$ = ast.GraphEdgeDirectionBoth
 		default:
 			$$ = ast.GraphEdgeDirection(0xff)
-			// Invalid edge direction
-			// TODO: refine the error message.
-			yylex.AppendError(yylex.ErrorfShift(len($1), "Wrong edge direction: %s", $1))
+			startOffset := parser.startOffset(&yyS[yypt-1])
+			yylex.AppendError(yylex.ErrorfAt(startOffset, "Wrong edge direction: %s", $1))
 		}
 	}
 
