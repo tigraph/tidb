@@ -4251,7 +4251,7 @@ func TestWriteGraph(t *testing.T) {
 	tk.MustExec("use test")
 	tk.MustExec("drop table if exists p")
 	// Test for tag
-	tk.MustExec("create vertex people1 (vertex_id bigint, name varchar(32));")
+	tk.MustExec("create vertex people1 (vertex_id bigint primary key, name varchar(32));")
 	tk.MustExec("insert into people1 values (1,'bob'),(2,'jim');")
 	tk.MustExec("insert into people1 values (3,'jack');")
 	tk.MustQuery("select * from people1 where vertex_id = 1").Check(testkit.Rows("1 bob"))
