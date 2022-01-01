@@ -19,14 +19,15 @@ type GraphCommon struct {
 func (t *GraphCommon) recordKey(r []types.Datum) kv.Key {
 	switch t.meta.Type {
 	case model.TableTypeIsVertex:
-		vertexID := r[0].GetInt64()
+		vertexID := r[t.Meta().GetPkColInfo().Offset].GetInt64()
 		return tablecodec.EncodeGraphVertex(vertexID, t.tableID)
 	case model.TableTypeIsEdge:
-		srcVertexID := r[0].GetInt64()
-		dstVertexID := r[1].GetInt64()
+		srcVertexID := r[t.Meta().GetSourceKeyColInfo().Offset].GetInt64()
+		dstVertexID := r[t.Meta().GetDestinationKeyColInfo().Offset].GetInt64()
 		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID)
+	default:
+		panic("unreachable")
 	}
-	panic("unreachable")
 }
 
 func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, error) {
@@ -48,8 +49,9 @@ func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, er
 		srcVertexID := src.GetInt64()
 		dstVertexID := dst.GetInt64()
 		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, tid), nil
+	default:
+		panic("unreachable")
 	}
-	panic("unreachable")
 }
 
 func (t *GraphCommon) RecordKeyFromHandle(h kv.Handle) (kv.Key, error) {

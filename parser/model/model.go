@@ -586,6 +586,24 @@ func (t *TableInfo) GetAutoIncrementColInfo() *ColumnInfo {
 	return nil
 }
 
+func (t *TableInfo) GetSourceKeyColInfo() *ColumnInfo {
+	for _, colInfo := range t.Columns {
+		if mysql.HasSourceKeyFlag(colInfo.Flag) {
+			return colInfo
+		}
+	}
+	return nil
+}
+
+func (t *TableInfo) GetDestinationKeyColInfo() *ColumnInfo {
+	for _, colInfo := range t.Columns {
+		if mysql.HasDestinationKeyFlag(colInfo.Flag) {
+			return colInfo
+		}
+	}
+	return nil
+}
+
 func (t *TableInfo) IsAutoIncColUnsigned() bool {
 	col := t.GetAutoIncrementColInfo()
 	if col == nil {
