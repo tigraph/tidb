@@ -50,6 +50,9 @@ var (
 	recordPrefixSep = []byte("_r")
 	indexPrefixSep  = []byte("_i")
 	metaPrefix      = []byte{'m'}
+	graphPrefix     = []byte{'g'}
+	graphEdgeOut    = byte(1)
+	graphEdgeIn     = byte(0)
 )
 
 const (
@@ -105,6 +108,35 @@ func EncodeRecordKey(recordPrefix kv.Key, h kv.Handle) kv.Key {
 	buf := make([]byte, 0, len(recordPrefix)+h.Len())
 	buf = append(buf, recordPrefix...)
 	buf = append(buf, h.Encoded()...)
+	return buf
+}
+
+func EncodeGraphVertex(vertexID, tableID int64) kv.Key {
+	buf := make([]byte, 0, 24)
+	buf = append(buf, graphPrefix...)
+	buf = append(buf, recordPrefixSep...)
+	buf = codec.EncodeInt(buf, vertexID)
+	buf = codec.EncodeInt(buf, tableID)
+
+	return buf
+}
+
+func EncodeGraphOutEdge(srcVertexID, dstVertexID, edgeID int64) kv.Key {
+	return encodeGraphEdge(srcVertexID, dstVertexID, edgeID, graphEdgeOut)
+}
+
+func EncodeGraphInEdge(srcVertexID, dstVertexID, edgeID int64) kv.Key {
+	return encodeGraphEdge(srcVertexID, dstVertexID, edgeID, graphEdgeIn)
+}
+
+func encodeGraphEdge(srcVertexID, dstVertexID, edgeID int64, tp byte) kv.Key {
+	buf := make([]byte, 0, 32)
+	buf = append(buf, graphPrefix...)
+	buf = append(buf, recordPrefixSep...)
+	buf = codec.EncodeInt(buf, srcVertexID)
+	buf = append(buf, tp)
+	buf = codec.EncodeInt(buf, edgeID)
+	buf = codec.EncodeInt(buf, dstVertexID)
 	return buf
 }
 
