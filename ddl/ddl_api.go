@@ -1920,13 +1920,10 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 			}
 		}
 	}
-	if tbInfo.Type == model.TableTypeIsEdge {
-		if tbInfo.SourceVertex == nil {
-			return nil, errors.Errorf("SOURCE KEY column is missing")
-		}
-		if tbInfo.DestinationVertex == nil {
-			return nil, errors.Errorf("DESTINATION KEY column is missing")
-		}
+
+	err = checkGraphInfo(tbInfo)
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
 
 	if err = setTableAutoRandomBits(ctx, tbInfo, colDefs); err != nil {
@@ -2029,14 +2026,11 @@ func checkGraphVertexInfo(tbInfo *model.TableInfo) error {
 
 func checkGraphEdgeInfo(tbInfo *model.TableInfo) error {
 	if tbInfo.Type == model.TableTypeIsEdge {
-		if len(tbInfo.Columns) < 2 {
-			return errors.Errorf("graph edge should at lease contain 2 columns: `from` bigint, `to` bigint")
+		if tbInfo.SourceVertex == nil {
+			return errors.Errorf("SOURCE KEY column is missing")
 		}
-		if tbInfo.Columns[0].Name.L != "from" || tbInfo.Columns[0].Tp != mysql.TypeLonglong {
-			return errors.Errorf("the first column of graph edge should be '`from` bigint'")
-		}
-		if tbInfo.Columns[1].Name.L != "to" || tbInfo.Columns[1].Tp != mysql.TypeLonglong {
-			return errors.Errorf("the second column of graph edge should be '`to` bigint'")
+		if tbInfo.DestinationVertex == nil {
+			return errors.Errorf("DESTINATION KEY column is missing")
 		}
 	}
 	return nil
