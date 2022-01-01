@@ -2844,3 +2844,13 @@ func (p *LogicalMaxOneRow) exhaustPhysicalPlans(prop *property.PhysicalProperty)
 	mor := PhysicalMaxOneRow{}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: 2})
 	return []PhysicalPlan{mor}, true, nil
 }
+
+func (p *LogicalGraphEdgeScan) exhaustPhysicalPlans(prop *property.PhysicalProperty) ([]PhysicalPlan, bool, error) {
+	es := PhysicalGraphEdgeScan{
+		EdgeDBName:    p.EdgeDBName,
+		EdgeTableInfo: p.EdgeTableInfo,
+		DestDBName:    p.DestDBName,
+		DestTableInfo: p.DestTableInfo,
+	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
+	return []PhysicalPlan{es}, true, nil
+}

@@ -6518,9 +6518,6 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) 
 		return nil, nil, err
 	}
 	tableInfo := tbl.Meta()
-	if tableInfo.Type != model.TableTypeIsVertex {
-		return nil, nil, errors.Errorf("cannot match graph on table %s", tblName)
-	}
 	var authErr error
 	if sessionVars.User != nil {
 		authErr = ErrTableaccessDenied.FastGenByArgs("SELECT", sessionVars.User.AuthUsername, sessionVars.User.AuthHostname, tableInfo.Name.L)
@@ -6567,23 +6564,26 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) 
 		}
 		schema.Append(newCol)
 	}
-	// We append an extra handle column to the schema when the handle
-	// column is not the primary key of "ds".
-	if handleCols == nil {
-		tp := types.NewFieldType(mysql.TypeLonglong)
-		tp.Flag = mysql.NotNullFlag | mysql.PriKeyFlag
-		extraCol := &expression.Column{
-			RetType:  tp,
-			UniqueID: sessionVars.AllocPlanColumnID(),
-			ID:       model.ExtraHandleID,
-			OrigName: fmt.Sprintf("%v.%v.%v", dbName, tableInfo.Name, model.ExtraHandleName),
+
+	if tableInfo.Type == model.TableTypeIsVertex {
+		// We append an extra handle column to the schema when the handle
+		// column is not the primary key of "ds".
+		if handleCols == nil {
+			tp := types.NewFieldType(mysql.TypeLonglong)
+			tp.Flag = mysql.NotNullFlag | mysql.PriKeyFlag
+			extraCol := &expression.Column{
+				RetType:  tp,
+				UniqueID: sessionVars.AllocPlanColumnID(),
+				ID:       model.ExtraHandleID,
+				OrigName: fmt.Sprintf("%v.%v.%v", dbName, tableInfo.Name, model.ExtraHandleName),
+			}
+			handleCols = &IntHandleCols{col: extraCol}
+			schema.Append(extraCol)
 		}
-		handleCols = &IntHandleCols{col: extraCol}
-		schema.Append(extraCol)
+		handleMap := make(map[int64][]HandleCols)
+		handleMap[tableInfo.ID] = []HandleCols{handleCols}
+		b.handleHelper.pushMap(handleMap)
 	}
-	handleMap := make(map[int64][]HandleCols)
-	handleMap[tableInfo.ID] = []HandleCols{handleCols}
-	b.handleHelper.pushMap(handleMap)
 
 	return schema, tableInfo, nil
 }
@@ -6602,18 +6602,13 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		return dbName
 	}
 
-	vs := LogicalGraphVertexScan{DBName: dbNameOrDefault(pathPattern.Source.Name.Schema)}.Init(b.ctx)
-	schema, tableInfo, err := b.buildGraphSchema(vs.DBName, pathPattern.Source.Name.Name)
+	p, err := b.buildDataSource(ctx, pathPattern.Source.Name, &pathPattern.Source.AsName)
 	if err != nil {
 		return nil, err
 	}
-	vs.TableInfo = tableInfo
-	vs.SetSchema(schema)
-
-	var p LogicalPlan = vs
 
 	if where := pathPattern.Source.Where; where != nil {
-		np, err := b.buildSelection(ctx, vs, where, nil)
+		np, err := b.buildSelection(ctx, p, where, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -6638,6 +6633,7 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 			destSchema    *expression.Schema
 			destTableInfo *model.TableInfo
 			destDBName    model.CIStr
+			names         []*types.FieldName
 		)
 		if edge.Destination != nil {
 			destDBName = dbNameOrDefault(edge.Destination.Name.Schema)
@@ -6652,11 +6648,19 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		es.DestDBName = destDBName
 		es.DestTableInfo = destTableInfo
 
+		for _, c := range edgeTableInfo.Columns {
+			names = append(names, &types.FieldName{DBName: es.EdgeDBName, TblName: edgeTableInfo.Name, ColName: c.Name})
+		}
+		for _, c := range destTableInfo.Columns {
+			names = append(names, &types.FieldName{DBName: es.DestDBName, TblName: destTableInfo.Name, ColName: c.Name})
+		}
+
 		// The new columns added by edge scan executor.
 		newSchema := expression.MergeSchema(destSchema, edgeSchema)
-
 		// Merge the edge scan executor schema with the child executor.
 		es.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
+		es.SetOutputNames(append(p.OutputNames(), names...))
+
 		es.SetChildren(p)
 		if edge.Edge.Where != nil || (edge.Destination != nil && edge.Destination.Where != nil) {
 			var where ast.ExprNode

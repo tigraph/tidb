@@ -1506,11 +1506,10 @@ func (p *CTEDefinition) ExplainID() fmt.Stringer {
 
 // PhysicalGraphVertexScan represents a scanner of graph vertex.
 type PhysicalGraphVertexScan struct {
-	basePhysicalPlan
+	physicalSchemaProducer
 
-	Conditions []expression.Expression
-	DBName     model.CIStr
-	TableInfo  *model.TableInfo
+	DBName    model.CIStr
+	TableInfo *model.TableInfo
 }
 
 // Clone implements PhysicalPlan interface.
@@ -1521,26 +1520,15 @@ func (p *PhysicalGraphVertexScan) Clone() (PhysicalPlan, error) {
 		return nil, err
 	}
 	cloned.basePhysicalPlan = *base
-	cloned.Conditions = cloneExprs(p.Conditions)
 	cloned.DBName = p.DBName
 	cloned.TableInfo = p.TableInfo.Clone()
 	return cloned, nil
-}
-
-// ExtractCorrelatedCols implements PhysicalPlan interface.
-func (p *PhysicalGraphVertexScan) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
-	corCols := make([]*expression.CorrelatedColumn, 0, len(p.Conditions))
-	for _, cond := range p.Conditions {
-		corCols = append(corCols, expression.ExtractCorColumns(cond)...)
-	}
-	return corCols
 }
 
 // PhysicalGraphEdgeScan represents a scanner of graph edge.
 type PhysicalGraphEdgeScan struct {
 	basePhysicalPlan
 
-	Conditions    []expression.Expression
 	EdgeDBName    model.CIStr
 	EdgeTableInfo *model.TableInfo
 	DestDBName    model.CIStr
@@ -1555,19 +1543,9 @@ func (p *PhysicalGraphEdgeScan) Clone() (PhysicalPlan, error) {
 		return nil, err
 	}
 	cloned.basePhysicalPlan = *base
-	cloned.Conditions = cloneExprs(p.Conditions)
 	cloned.EdgeDBName = p.EdgeDBName
 	cloned.EdgeTableInfo = p.EdgeTableInfo.Clone()
 	cloned.DestDBName = p.DestDBName
 	cloned.DestTableInfo = p.DestTableInfo.Clone()
 	return cloned, nil
-}
-
-// ExtractCorrelatedCols implements PhysicalPlan interface.
-func (p *PhysicalGraphEdgeScan) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
-	corCols := make([]*expression.CorrelatedColumn, 0, len(p.Conditions))
-	for _, cond := range p.Conditions {
-		corCols = append(corCols, expression.ExtractCorColumns(cond)...)
-	}
-	return corCols
 }
