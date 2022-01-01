@@ -155,6 +155,9 @@ func TableFromMeta(allocs autoid.Allocators, tblInfo *model.TableInfo) (table.Ta
 		if tblInfo.TableCacheStatusType != model.TableCacheStatusDisable {
 			return newCachedTable(&t)
 		}
+		if tblInfo.Type == model.TableTypeIsVertex || tblInfo.Type == model.TableTypeIsEdge {
+			return &GraphCommon{t}, nil
+		}
 		return &t, nil
 	}
 	return newPartitionedTable(&t, tblInfo)
