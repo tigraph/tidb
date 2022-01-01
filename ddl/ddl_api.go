@@ -1900,6 +1900,35 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 		return nil, errors.Trace(err)
 	}
 
+	tbInfo.Type = s.Type
+	for _, cd := range colDefs {
+		if len(cd.Options) == 0 {
+			continue
+		}
+		for _, opt := range cd.Options {
+			switch opt.Tp {
+			case ast.ColumnOptionSourceKey:
+				if tbInfo.SourceVertex != nil {
+					return nil, errors.Errorf("Only one SOURCE KEY can be specified")
+				}
+				tbInfo.SourceVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
+			case ast.ColumnOptionDestinationKey:
+				if tbInfo.DestinationVertex != nil {
+					return nil, errors.Errorf("Only one DESTINATION KEY can be specified")
+				}
+				tbInfo.DestinationVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
+			}
+		}
+	}
+	if tbInfo.Type == model.TableTypeIsEdge {
+		if tbInfo.SourceVertex == nil {
+			return nil, errors.Errorf("SOURCE KEY column is missing")
+		}
+		if tbInfo.DestinationVertex == nil {
+			return nil, errors.Errorf("DESTINATION KEY column is missing")
+		}
+	}
+
 	if err = setTableAutoRandomBits(ctx, tbInfo, colDefs); err != nil {
 		return nil, errors.Trace(err)
 	}

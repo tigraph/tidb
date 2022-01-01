@@ -192,8 +192,10 @@ func (t *GraphEdgePattern) Restore(ctx *format.RestoreCtx) error {
 		if err := n.Name.Restore(ctx); err != nil {
 			return err
 		}
-		if err := n.Where.Restore(ctx); err != nil {
-			return err
+		if n.Where != nil {
+			if err := n.Where.Restore(ctx); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -247,7 +249,11 @@ func (t *GraphVariableSpec) Restore(ctx *format.RestoreCtx) error {
 		ctx.WritePlainf("AS %s", t.AsName.O)
 	}
 
-	return t.Where.Restore(ctx)
+	if t.Where != nil {
+		return t.Where.Restore(ctx)
+	}
+
+	return nil
 }
 
 // Accept implements Node Accept interface.

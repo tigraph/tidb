@@ -53,7 +53,6 @@ var (
 	_ LogicalPlan = &LogicalLock{}
 	_ LogicalPlan = &LogicalLimit{}
 	_ LogicalPlan = &LogicalWindow{}
-	_ LogicalPlan = &LogicalGraphVertexScan{}
 	_ LogicalPlan = &LogicalGraphEdgeScan{}
 )
 
@@ -1322,24 +1321,9 @@ func (p *LogicalCTE) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
 	return corCols
 }
 
-type LogicalGraphVertexScan struct {
-	logicalSchemaProducer
-
-	// Originally the WHERE or ON condition is parsed into a single expression,
-	// but after we converted to CNF(Conjunctive normal form), it can be
-	// split into a list of AND conditions.
-	Conditions []expression.Expression
-	DBName     model.CIStr
-	TableInfo  *model.TableInfo
-}
-
 type LogicalGraphEdgeScan struct {
 	logicalSchemaProducer
 
-	// Originally the WHERE or ON condition is parsed into a single expression,
-	// but after we converted to CNF(Conjunctive normal form), it can be
-	// split into a list of AND conditions.
-	Conditions    []expression.Expression
 	EdgeDBName    model.CIStr
 	EdgeTableInfo *model.TableInfo
 	DestDBName    model.CIStr
