@@ -2852,5 +2852,7 @@ func (p *LogicalGraphEdgeScan) exhaustPhysicalPlans(prop *property.PhysicalPrope
 		DestDBName:    p.DestDBName,
 		DestTableInfo: p.DestTableInfo,
 	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
+	es.SetSchema(p.Schema())
+	es.SetOutputNames(p.OutputNames())
 	return []PhysicalPlan{es}, true, nil
 }

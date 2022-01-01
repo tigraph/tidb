@@ -1527,7 +1527,7 @@ func (p *PhysicalGraphVertexScan) Clone() (PhysicalPlan, error) {
 
 // PhysicalGraphEdgeScan represents a scanner of graph edge.
 type PhysicalGraphEdgeScan struct {
-	basePhysicalPlan
+	physicalSchemaProducer
 
 	EdgeDBName    model.CIStr
 	EdgeTableInfo *model.TableInfo

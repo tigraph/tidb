@@ -563,7 +563,7 @@ func (p LogicalGraphEdgeScan) Init(ctx sessionctx.Context) *LogicalGraphEdgeScan
 
 // Init initializes PhysicalMaxOneRow.
 func (p PhysicalGraphEdgeScan) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int, props ...*property.PhysicalProperty) *PhysicalGraphEdgeScan {
-	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeMaxOneRow, &p, offset)
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeGraphEgdeScan, &p, offset)
 	p.childrenReqProps = props
 	p.stats = stats
 	return &p

@@ -7659,8 +7659,11 @@ func (s *testSerialDBSuite) TestCreateGraph(c *C) {
 	people1 := testGetTableByName(c, tk.Se, "test_graph", "people1")
 	c.Assert(people1.Meta().Type, Equals, model.TableTypeIsVertex)
 
-	tk.MustExec("create edge friend1 (src bigint, dst bigint)")
-	tk.MustExec("create edge friend2 (src bigint, dst bigint, description varchar(32), start timestamp)")
+	tk.MustExec("create edge friend1 (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1)")
+	tk.MustExec("create edge friend2 (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1, description varchar(32), start timestamp)")
 	friend1 := testGetTableByName(c, tk.Se, "test_graph", "friend1")
+
 	c.Assert(friend1.Meta().Type, Equals, model.TableTypeIsEdge)
+	c.Assert(friend1.Meta().SourceVertex.Vertex.O, Equals, "people1")
+	c.Assert(friend1.Meta().DestinationVertex.Vertex.O, Equals, "people1")
 }

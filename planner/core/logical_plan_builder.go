@@ -6505,7 +6505,7 @@ func (b *PlanBuilder) buildGraph(ctx context.Context, graphPattern *ast.GraphPat
 	return unionAll, nil
 }
 
-func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, *model.TableInfo, error) {
+func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, hidden ...bool) (*expression.Schema, *model.TableInfo, error) {
 	sessionVars := b.ctx.GetSessionVars()
 
 	// Source vertices
@@ -6549,6 +6549,7 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) 
 			ColName:     col.Name,
 			OrigTblName: tableInfo.Name,
 			OrigColName: col.Name,
+			Hidden:      len(hidden) > 0 && hidden[0],
 			// For update statement and delete statement, internal version should see the special middle state column, while user doesn't.
 			NotExplicitUsable: col.State != model.StatePublic,
 		}
@@ -6619,7 +6620,7 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		return p, nil
 	}
 
-	for _, edge := range pathPattern.Edges {
+	for i, edge := range pathPattern.Edges {
 		es := LogicalGraphEdgeScan{EdgeDBName: dbNameOrDefault(edge.Edge.Name.Schema)}.Init(b.ctx)
 		edgeSchema, edgeTableInfo, err := b.buildGraphSchema(es.EdgeDBName, edge.Edge.Name.Name)
 		if err != nil {
@@ -6640,7 +6641,7 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edge.Destination.Name.Name)
 		} else {
 			destDBName = dbNameOrDefault(edgeTableInfo.DestinationVertex.Schema)
-			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.DestinationVertex.Vertex)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.DestinationVertex.Vertex, true)
 		}
 		if err != nil {
 			return nil, err
@@ -6648,15 +6649,31 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		es.DestDBName = destDBName
 		es.DestTableInfo = destTableInfo
 
+		tblName := edgeTableInfo.Name
+		if edge.Edge.AsName.O != "" {
+			tblName = edge.Edge.AsName
+		}
 		for _, c := range edgeTableInfo.Columns {
-			names = append(names, &types.FieldName{DBName: es.EdgeDBName, TblName: edgeTableInfo.Name, ColName: c.Name})
+			names = append(names, &types.FieldName{DBName: es.EdgeDBName, TblName: tblName, ColName: c.Name})
+		}
+
+		var hidden bool
+		if edge.Destination != nil {
+			if edge.Destination.AsName.O != "" {
+				tblName = edge.Destination.AsName
+			} else {
+				tblName = edge.Destination.Name.Name
+			}
+		} else {
+			hidden = true
+			tblName = model.NewCIStr(fmt.Sprintf("_dest_%d", i))
 		}
 		for _, c := range destTableInfo.Columns {
-			names = append(names, &types.FieldName{DBName: es.DestDBName, TblName: destTableInfo.Name, ColName: c.Name})
+			names = append(names, &types.FieldName{DBName: es.DestDBName, TblName: tblName, ColName: c.Name, Hidden: hidden})
 		}
 
 		// The new columns added by edge scan executor.
-		newSchema := expression.MergeSchema(destSchema, edgeSchema)
+		newSchema := expression.MergeSchema(edgeSchema, destSchema)
 		// Merge the edge scan executor schema with the child executor.
 		es.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
 		es.SetOutputNames(append(p.OutputNames(), names...))
