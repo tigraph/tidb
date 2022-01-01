@@ -1901,27 +1901,7 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 	}
 
 	tbInfo.Type = s.Type
-	for _, cd := range colDefs {
-		if len(cd.Options) == 0 {
-			continue
-		}
-		for _, opt := range cd.Options {
-			switch opt.Tp {
-			case ast.ColumnOptionSourceKey:
-				if tbInfo.SourceVertex != nil {
-					return nil, errors.Errorf("Only one SOURCE KEY can be specified")
-				}
-				tbInfo.SourceVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
-			case ast.ColumnOptionDestinationKey:
-				if tbInfo.DestinationVertex != nil {
-					return nil, errors.Errorf("Only one DESTINATION KEY can be specified")
-				}
-				tbInfo.DestinationVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
-			}
-		}
-	}
-
-	err = checkGraphInfo(tbInfo)
+	err = checkGraphInfo(tbInfo, colDefs)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -1965,13 +1945,13 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 	return tbInfo, nil
 }
 
-func checkGraphInfo(tbInfo *model.TableInfo) error {
+func checkGraphInfo(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error {
 	var err error
 	switch tbInfo.Type {
 	case model.TableTypeIsVertex:
 		err = checkGraphVertexInfo(tbInfo)
 	case model.TableTypeIsEdge:
-		err = checkGraphEdgeInfo(tbInfo)
+		err = checkGraphEdgeInfo(tbInfo, colDefs)
 	default:
 		return nil
 	}
@@ -2024,7 +2004,26 @@ func checkGraphVertexInfo(tbInfo *model.TableInfo) error {
 	return nil
 }
 
-func checkGraphEdgeInfo(tbInfo *model.TableInfo) error {
+func checkGraphEdgeInfo(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error {
+	for _, cd := range colDefs {
+		if len(cd.Options) == 0 {
+			continue
+		}
+		for _, opt := range cd.Options {
+			switch opt.Tp {
+			case ast.ColumnOptionSourceKey:
+				if tbInfo.SourceVertex != nil {
+					return errors.Errorf("Only one SOURCE KEY can be specified")
+				}
+				tbInfo.SourceVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
+			case ast.ColumnOptionDestinationKey:
+				if tbInfo.DestinationVertex != nil {
+					return errors.Errorf("Only one DESTINATION KEY can be specified")
+				}
+				tbInfo.DestinationVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
+			}
+		}
+	}
 	if tbInfo.Type == model.TableTypeIsEdge {
 		if tbInfo.SourceVertex == nil {
 			return errors.Errorf("SOURCE KEY column is missing")
