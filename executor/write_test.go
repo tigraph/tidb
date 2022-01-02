@@ -4259,6 +4259,7 @@ func TestWriteGraph(t *testing.T) {
 	tk.MustExec("delete from people1 where vertex_id=2;")
 	tk.MustQuery("select * from people1 where vertex_id = 2").Check(testkit.Rows())
 	tk.MustQuery("select * from people1 where vertex_id in (1,2,3)").Check(testkit.Rows("1 bob", "3 jack"))
+	tk.MustQuery("select * from people1").Check(testkit.Rows("1 bob", "3 jack"))
 
 	// Test for edge
 	tk.MustExec("create edge f (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1)")

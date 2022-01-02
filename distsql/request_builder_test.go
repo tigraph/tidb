@@ -15,6 +15,7 @@
 package distsql
 
 import (
+	"github.com/pingcap/tidb/parser/model"
 	"testing"
 
 	"github.com/pingcap/tidb/kv"
@@ -59,7 +60,7 @@ func TestTableHandlesToKVRanges(t *testing.T) {
 
 	// Build key ranges.
 	expect := getExpectedRanges(1, hrs)
-	actual := TableHandlesToKVRanges(1, handles)
+	actual := TableHandlesToKVRanges(1, model.TableTypeIsRegular, handles)
 
 	// Compare key ranges and expected key ranges.
 	require.Equal(t, len(expect), len(actual))
@@ -214,7 +215,7 @@ func TestRequestBuilder1(t *testing.T) {
 		},
 	}
 
-	actual, err := (&RequestBuilder{}).SetHandleRanges(nil, 12, false, ranges, nil).
+	actual, err := (&RequestBuilder{}).SetHandleRanges(nil, 12, false, model.TableTypeIsRegular, ranges, nil).
 		SetDAGRequest(&tipb.DAGRequest{}).
 		SetDesc(false).
 		SetKeepOrder(false).
@@ -343,7 +344,7 @@ func TestRequestBuilder3(t *testing.T) {
 	handles := []kv.Handle{kv.IntHandle(0), kv.IntHandle(2), kv.IntHandle(3), kv.IntHandle(4),
 		kv.IntHandle(5), kv.IntHandle(10), kv.IntHandle(11), kv.IntHandle(100)}
 
-	actual, err := (&RequestBuilder{}).SetTableHandles(15, handles).
+	actual, err := (&RequestBuilder{}).SetTableHandles(15, model.TableTypeIsRegular, handles).
 		SetDAGRequest(&tipb.DAGRequest{}).
 		SetDesc(false).
 		SetKeepOrder(false).

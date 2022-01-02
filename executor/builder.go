@@ -2150,6 +2150,7 @@ func (b *executorBuilder) buildAnalyzeIndexPushdown(task plannercore.AnalyzeInde
 	e := &AnalyzeIndexExec{
 		baseAnalyzeExec: base,
 		isCommonHandle:  task.TblInfo.IsCommonHandle,
+		tableType:       task.TblInfo.Type,
 		idxInfo:         task.IndexInfo,
 	}
 	topNSize := new(int32)
@@ -3779,10 +3780,10 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 
 	handles, lookUpContents := dedupHandles(lookUpContents)
 	if tbInfo.GetPartitionInfo() == nil {
-		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, tbInfo.Type, handles, canReorderHandles)
 	}
 	if !builder.ctx.GetSessionVars().UseDynamicPartitionPrune() {
-		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, tbInfo.Type, handles, canReorderHandles)
 	}
 
 	tbl, _ := builder.is.TableByID(tbInfo.ID)
@@ -3807,7 +3808,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 			}
 			pid := p.GetPhysicalID()
 			handle := kv.IntHandle(content.keys[0].GetInt64())
-			tmp := distsql.TableHandlesToKVRanges(pid, []kv.Handle{handle})
+			tmp := distsql.TableHandlesToKVRanges(pid, tbInfo.Type, []kv.Handle{handle})
 			kvRanges = append(kvRanges, tmp...)
 		}
 	} else {
@@ -3818,7 +3819,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 		}
 		for _, p := range partitions {
 			pid := p.GetPhysicalID()
-			tmp := distsql.TableHandlesToKVRanges(pid, handles)
+			tmp := distsql.TableHandlesToKVRanges(pid, tbInfo.Type, handles)
 			kvRanges = append(kvRanges, tmp...)
 		}
 	}
@@ -3855,8 +3856,14 @@ func (h kvRangeBuilderFromRangeAndPartition) buildKeyRangeSeparately(ranges []*r
 	var pids []int64
 	for _, p := range h.partitions {
 		pid := p.GetPhysicalID()
-		meta := p.Meta()
-		kvRange, err := distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, meta != nil && meta.IsCommonHandle, ranges, nil)
+		tableInfo := p.Meta()
+		var kvRange []kv.KeyRange
+		var err error
+		if tableInfo == nil {
+			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, false, model.TableTypeIsRegular, ranges, nil)
+		} else {
+			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, tableInfo.IsCommonHandle, tableInfo.Type, ranges, nil)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3870,8 +3877,14 @@ func (h kvRangeBuilderFromRangeAndPartition) buildKeyRange(_ int64, ranges []*ra
 	var ret []kv.KeyRange
 	for _, p := range h.partitions {
 		pid := p.GetPhysicalID()
-		meta := p.Meta()
-		kvRange, err := distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, meta != nil && meta.IsCommonHandle, ranges, nil)
+		tableInfo := p.Meta()
+		var kvRange []kv.KeyRange
+		var err error
+		if tableInfo == nil {
+			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, false, model.TableTypeIsRegular, ranges, nil)
+		} else {
+			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, tableInfo.IsCommonHandle, tableInfo.Type, ranges, nil)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -3909,7 +3922,7 @@ func (builder *dataReaderBuilder) buildTableReaderBase(ctx context.Context, e *T
 	return e, nil
 }
 
-func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, handles []kv.Handle, canReorderHandles bool) (*TableReaderExecutor, error) {
+func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, tblType model.TableType, handles []kv.Handle, canReorderHandles bool) (*TableReaderExecutor, error) {
 	if canReorderHandles {
 		sort.Slice(handles, func(i, j int) bool {
 			return handles[i].Compare(handles[j]) < 0
@@ -3920,7 +3933,7 @@ func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Contex
 		if _, ok := handles[0].(kv.PartitionHandle); ok {
 			b.SetPartitionsAndHandles(handles)
 		} else {
-			b.SetTableHandles(getPhysicalTableID(e.table), handles)
+			b.SetTableHandles(getPhysicalTableID(e.table), tblType, handles)
 		}
 	}
 	return builder.buildTableReaderBase(ctx, e, b)

@@ -464,16 +464,17 @@ func (manager *DuplicateManager) CollectDuplicateRowsFromLocalIndex(
 	logger := log.With(zap.String("table", tableName))
 
 	allRanges := make([]tidbkv.KeyRange, 0)
-	tableIDs := physicalTableIDs(tbl.Meta())
+	tableInfo := tbl.Meta()
+	tableIDs := physicalTableIDs(tableInfo)
 	// Collect row handle duplicates.
 	var dataConflictInfos []errormanager.DataConflictInfo
 	hasDataConflict := false
 	{
 		ranges := ranger.FullIntRange(false)
-		if tbl.Meta().IsCommonHandle {
+		if tableInfo.IsCommonHandle {
 			ranges = ranger.FullRange()
 		}
-		keyRanges, err := distsql.TableHandleRangesToKVRanges(nil, tableIDs, tbl.Meta().IsCommonHandle, ranges, nil)
+		keyRanges, err := distsql.TableHandleRangesToKVRanges(nil, tableIDs, tableInfo.IsCommonHandle, tableInfo.Type, ranges, nil)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
@@ -534,7 +535,7 @@ func (manager *DuplicateManager) CollectDuplicateRowsFromLocalIndex(
 		}
 	}
 	handles := makePendingIndexHandlesWithCapacity(0)
-	for _, indexInfo := range tbl.Meta().Indices {
+	for _, indexInfo := range tableInfo.Indices {
 		if indexInfo.State != model.StatePublic {
 			continue
 		}
@@ -763,7 +764,7 @@ func (manager *DuplicateManager) makeConn(ctx context.Context, storeID uint64) (
 func buildDuplicateRequests(tableInfo *model.TableInfo) ([]*DuplicateRequest, error) {
 	var reqs []*DuplicateRequest
 	for _, id := range physicalTableIDs(tableInfo) {
-		tableReqs, err := buildTableRequests(id, tableInfo.IsCommonHandle)
+		tableReqs, err := buildTableRequests(id, tableInfo.IsCommonHandle, tableInfo.Type)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -782,12 +783,12 @@ func buildDuplicateRequests(tableInfo *model.TableInfo) ([]*DuplicateRequest, er
 	return reqs, nil
 }
 
-func buildTableRequests(tableID int64, isCommonHandle bool) ([]*DuplicateRequest, error) {
+func buildTableRequests(tableID int64, isCommonHandle bool, tblType model.TableType) ([]*DuplicateRequest, error) {
 	ranges := ranger.FullIntRange(false)
 	if isCommonHandle {
 		ranges = ranger.FullRange()
 	}
-	keysRanges, err := distsql.TableHandleRangesToKVRanges(nil, []int64{tableID}, isCommonHandle, ranges, nil)
+	keysRanges, err := distsql.TableHandleRangesToKVRanges(nil, []int64{tableID}, isCommonHandle, tblType, ranges, nil)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
