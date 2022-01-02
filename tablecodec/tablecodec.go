@@ -89,20 +89,11 @@ func TablePrefix() []byte {
 	return tablePrefix
 }
 
-func EncodeRowKeyByType(tableID int64, tableTp model.TableType, encodedHandle []byte) kv.Key {
-	switch tableTp {
-	case model.TableTypeIsRegular:
-		return EncodeRowKey(tableID, encodedHandle)
-	case model.TableTypeIsVertex:
-		buf := make([]byte, 0, 24)
-		buf = append(buf, graphPrefix...)
-		buf = append(buf, recordPrefixSep...)
-		buf = append(buf, encodedHandle...)
-		buf = codec.EncodeInt(buf, tableID)
-		return buf
-	default:
-		panic("unreachable")
+func EncodeRowKeyByType(tableID int64, isGraphEdge bool, encodedHandle []byte) kv.Key {
+	if isGraphEdge {
+		panic("not implemented")
 	}
+	return EncodeRowKey(tableID, encodedHandle)
 }
 
 // EncodeRowKey encodes the table id and record handle into a kv.Key
@@ -116,6 +107,23 @@ func EncodeRowKey(tableID int64, encodedHandle []byte) kv.Key {
 // EncodeRowKeyWithHandle encodes the table id, row handle into a kv.Key
 func EncodeRowKeyWithHandle(tableID int64, handle kv.Handle) kv.Key {
 	return EncodeRowKey(tableID, handle.Encoded())
+}
+
+func EncodeEdgeKeyWithHandle(tableID int64, handle kv.Handle) (kv.Key, error) {
+	if handle.NumCols() != 2 {
+		return nil, nil
+	}
+	_, src, err := codec.DecodeOne(handle.EncodedCol(0))
+	if err != nil {
+		return nil, err
+	}
+	_, dst, err := codec.DecodeOne(handle.EncodedCol(1))
+	if err != nil {
+		return nil, err
+	}
+	srcVertexID := src.GetInt64()
+	dstVertexID := dst.GetInt64()
+	return EncodeGraphOutEdge(srcVertexID, dstVertexID, tableID), nil
 }
 
 // CutRowKeyPrefix cuts the row key prefix.

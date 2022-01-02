@@ -1900,23 +1900,15 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 		return nil, errors.Trace(err)
 	}
 
-	tbInfo.Type = s.Type
-	switch tbInfo.Type {
-	case model.TableTypeIsVertex:
-		if err := validateVertexInfo(tbInfo); err != nil {
-			return nil, errors.Trace(err)
-		}
-	case model.TableTypeIsEdge:
-		if err := checkGraphEdgeInfo(tbInfo, colDefs); err != nil {
-			return nil, errors.Trace(err)
-		}
-	}
-
 	if err = setTableAutoRandomBits(ctx, tbInfo, colDefs); err != nil {
 		return nil, errors.Trace(err)
 	}
 
 	if err = handleTableOptions(s.Options, tbInfo); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	if err = handleEdgeOptions(tbInfo, colDefs); err != nil {
 		return nil, errors.Trace(err)
 	}
 
@@ -1951,26 +1943,11 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 	return tbInfo, nil
 }
 
-func validateVertexInfo(tbInfo *model.TableInfo) error {
-	var longlongPKFound bool
-	for _, c := range tbInfo.Columns {
-		if c.Flag&mysql.PriKeyFlag != 0 {
-			longlongPKFound = c.Tp == mysql.TypeLonglong
-			break
-		}
-	}
-	if !longlongPKFound {
-		return errors.Errorf("graph vertex must have LongLong primary key column")
-	}
-	return nil
-}
-
-func checkGraphEdgeInfo(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error {
-	if tbInfo.IsCommonHandle || tbInfo.PKIsHandle {
-		return errors.New("can not specified primary key on edge")
-	}
-
-	var srcIdx, dstIdx int
+func handleEdgeOptions(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error {
+	var (
+		srcIdx, dstIdx int
+		edgeOptions    = &model.EdgeOptions{}
+	)
 	for i, cd := range colDefs {
 		if len(cd.Options) == 0 {
 			continue
@@ -1978,57 +1955,58 @@ func checkGraphEdgeInfo(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error
 		for _, opt := range cd.Options {
 			switch opt.Tp {
 			case ast.ColumnOptionSourceKey:
-				if tbInfo.SourceVertex != nil {
-					return errors.Errorf("Only one SOURCE KEY can be specified")
+				if edgeOptions.Source != nil {
+					return errors.Errorf("Only one column can be specified SOURCE KEY option")
 				}
 				srcIdx = i
-
-				tbInfo.SourceVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
+				edgeOptions.Source = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Table: opt.Refer.Table.Name}
 			case ast.ColumnOptionDestinationKey:
-				dstIdx = i
-				if tbInfo.DestinationVertex != nil {
-					return errors.Errorf("Only one DESTINATION KEY can be specified")
+				if edgeOptions.Destination != nil {
+					return errors.Errorf("Only one column can be specified DESTINATION KEY option")
 				}
-				tbInfo.DestinationVertex = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Vertex: opt.Refer.Table.Name}
+				dstIdx = i
+				edgeOptions.Destination = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Table: opt.Refer.Table.Name}
 			}
 		}
 	}
 
-	if tbInfo.SourceVertex == nil {
-		return errors.Errorf("SOURCE KEY column is missing")
-	}
-	if tbInfo.DestinationVertex == nil {
-		return errors.Errorf("DESTINATION KEY column is missing")
+	// Regular table.
+	if edgeOptions.Source == nil && edgeOptions.Destination == nil {
+		return nil
 	}
 
-	tbInfo.IsCommonHandle = true
-	tbInfo.Columns[srcIdx].Flag |= mysql.PriKeyFlag
-	tbInfo.Columns[srcIdx].Flag |= mysql.NotNullFlag
-	tbInfo.Columns[srcIdx].Flag |= mysql.SrcKeyFlag
-	tbInfo.Columns[dstIdx].Flag |= mysql.PriKeyFlag
-	tbInfo.Columns[dstIdx].Flag |= mysql.NotNullFlag
-	tbInfo.Columns[dstIdx].Flag |= mysql.DstKeyFlag
+	// Edge table cannot be assigned a primary key.
+	if tbInfo.IsCommonHandle || tbInfo.PKIsHandle {
+		return errors.New("can not specified primary key on edge")
+	}
+
+	if edgeOptions.Source == nil || edgeOptions.Destination == nil {
+		return errors.Errorf("SOURCE KEY and DESTINATION KEY columns need to be specified at the same time")
+	}
 
 	idxInfo := &model.IndexInfo{
-		Name: model.NewCIStr(mysql.PrimaryKeyName),
-		Columns: []*model.IndexColumn{
-			{
-				Name:   model.NewCIStr(tbInfo.Columns[srcIdx].Name.O),
-				Offset: 0,
-				Length: types.UnspecifiedLength,
-			},
-			{
-				Name:   model.NewCIStr(tbInfo.Columns[dstIdx].Name.O),
-				Offset: 1,
-				Length: types.UnspecifiedLength,
-			},
-		},
+		Name:    model.NewCIStr(mysql.PrimaryKeyName),
 		Unique:  true,
 		Primary: true,
 		State:   model.StatePublic,
 	}
 
+	for i, idx := range []int{srcIdx, dstIdx} {
+		tbInfo.Columns[idx].Flag |= mysql.PriKeyFlag
+		tbInfo.Columns[idx].Flag |= mysql.NotNullFlag
+		idxInfo.Columns = append(idxInfo.Columns, &model.IndexColumn{
+			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
+			Offset: i,
+			Length: types.UnspecifiedLength,
+		})
+	}
+
+	tbInfo.Columns[srcIdx].Flag |= mysql.SrcKeyFlag
+	tbInfo.Columns[dstIdx].Flag |= mysql.DstKeyFlag
+
 	tbInfo.Indices = append(tbInfo.Indices, idxInfo)
+	tbInfo.EdgeOptions = edgeOptions
+	tbInfo.IsCommonHandle = true
 
 	return nil
 }

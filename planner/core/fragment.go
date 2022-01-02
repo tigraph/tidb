@@ -329,9 +329,9 @@ func (e *mppTaskGenerator) constructMPPTasksImpl(ctx context.Context, ts *Physic
 			var kvRanges []kv.KeyRange
 			var err error
 			if tableInfo == nil {
-				kvRanges, err = distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{pid}, false, model.TableTypeIsRegular, splitedRanges, nil)
+				kvRanges, err = distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{pid}, false, false, splitedRanges, nil)
 			} else {
-				kvRanges, err = distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{pid}, ts.Table.IsCommonHandle, ts.Table.Type, splitedRanges, nil)
+				kvRanges, err = distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{pid}, ts.Table.IsCommonHandle, ts.Table.IsGraphEdge(), splitedRanges, nil)
 			}
 			if err != nil {
 				return nil, errors.Trace(err)
@@ -345,7 +345,7 @@ func (e *mppTaskGenerator) constructMPPTasksImpl(ctx context.Context, ts *Physic
 		return ret, nil
 	}
 
-	kvRanges, err := distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{ts.Table.ID}, ts.Table.IsCommonHandle, ts.Table.Type, splitedRanges, nil)
+	kvRanges, err := distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{ts.Table.ID}, ts.Table.IsCommonHandle, ts.Table.IsGraphEdge(), splitedRanges, nil)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

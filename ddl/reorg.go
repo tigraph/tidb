@@ -454,7 +454,7 @@ func (dc *ddlCtx) buildDescTableScan(ctx context.Context, startTS uint64, tbl ta
 	} else {
 		ranges = ranger.FullIntRange(false)
 	}
-	builder = b.SetHandleRanges(sctx.GetSessionVars().StmtCtx, tbl.GetPhysicalID(), tableInfo.IsCommonHandle, tableInfo.Type, ranges, nil)
+	builder = b.SetHandleRanges(sctx.GetSessionVars().StmtCtx, tbl.GetPhysicalID(), tableInfo.IsCommonHandle, tableInfo.IsGraphEdge(), ranges, nil)
 	builder.SetDAGRequest(dagPB).
 		SetStartTS(startTS).
 		SetKeepOrder(true).

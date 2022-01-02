@@ -665,7 +665,7 @@ func (e *IndexLookUpExecutor) buildTableReader(ctx context.Context, task *lookup
 		extraPIDColumnIndex: e.extraPIDColumnIndex,
 	}
 	tableReaderExec.buildVirtualColumnInfo()
-	tableReader, err := e.dataReaderBuilder.buildTableReaderFromHandles(ctx, tableReaderExec, table.Meta().Type, task.handles, true)
+	tableReader, err := e.dataReaderBuilder.buildTableReaderFromHandles(ctx, tableReaderExec, table.Meta().IsGraphEdge(), task.handles, true)
 	if err != nil {
 		logutil.Logger(ctx).Error("build table reader from handles failed", zap.Error(err))
 		return nil, err

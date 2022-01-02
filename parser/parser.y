@@ -122,7 +122,6 @@ import (
 	doubleType        "DOUBLE"
 	drop              "DROP"
 	dual              "DUAL"
-	edge              "EDGE"
 	elseKwd           "ELSE"
 	enclosed          "ENCLOSED"
 	escaped           "ESCAPED"
@@ -278,7 +277,6 @@ import (
 	varcharacter      "VARCHARACTER"
 	varbinaryType     "VARBINARY"
 	varying           "VARYING"
-	vertex            "VERTEX"
 	virtual           "VIRTUAL"
 	when              "WHEN"
 	where             "WHERE"
@@ -3765,36 +3763,6 @@ CreateTableStmt:
 			}
 		}
 		$$ = tmp
-	}
-|	"CREATE" OptTemporary "VERTEX" IfNotExists TableName TableElementListOpt CreateTableOptionListOpt PartitionOpt DuplicateOpt AsOpt CreateTableSelectOpt
-	{
-		stmt := $6.(*ast.CreateTableStmt)
-		stmt.Type = model.TableTypeIsVertex
-		stmt.Table = $5.(*ast.TableName)
-		stmt.IfNotExists = $4.(bool)
-		stmt.TemporaryKeyword = $2.(ast.TemporaryKeyword)
-		stmt.Options = $7.([]*ast.TableOption)
-		if $8 != nil {
-			stmt.Partition = $8.(*ast.PartitionOptions)
-		}
-		stmt.OnDuplicate = $9.(ast.OnDuplicateKeyHandlingType)
-		stmt.Select = $11.(*ast.CreateTableStmt).Select
-		$$ = stmt
-	}
-|	"CREATE" OptTemporary "EDGE" IfNotExists TableName TableElementListOpt CreateTableOptionListOpt PartitionOpt DuplicateOpt AsOpt CreateTableSelectOpt
-	{
-		stmt := $6.(*ast.CreateTableStmt)
-		stmt.Type = model.TableTypeIsEdge
-		stmt.Table = $5.(*ast.TableName)
-		stmt.IfNotExists = $4.(bool)
-		stmt.TemporaryKeyword = $2.(ast.TemporaryKeyword)
-		stmt.Options = $7.([]*ast.TableOption)
-		if $8 != nil {
-			stmt.Partition = $8.(*ast.PartitionOptions)
-		}
-		stmt.OnDuplicate = $9.(ast.OnDuplicateKeyHandlingType)
-		stmt.Select = $11.(*ast.CreateTableStmt).Select
-		$$ = stmt
 	}
 
 OnCommitOpt:

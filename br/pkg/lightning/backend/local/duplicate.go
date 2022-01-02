@@ -783,7 +783,7 @@ func buildDuplicateRequests(tableInfo *model.TableInfo) ([]*DuplicateRequest, er
 	return reqs, nil
 }
 
-func buildTableRequests(tableID int64, isCommonHandle bool, tblType model.TableType) ([]*DuplicateRequest, error) {
+func buildTableRequests(tableID int64, isCommonHandle bool, isGraphEdge bool) ([]*DuplicateRequest, error) {
 	ranges := ranger.FullIntRange(false)
 	if isCommonHandle {
 		ranges = ranger.FullRange()

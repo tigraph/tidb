@@ -7,71 +7,34 @@ import (
 	"github.com/pingcap/tidb/table"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
-	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 )
 
-type GraphCommon struct {
+type EdgeCommon struct {
 	TableCommon
 }
 
-func (t *GraphCommon) recordKey(r []types.Datum) kv.Key {
-	switch t.meta.Type {
-	case model.TableTypeIsVertex:
-		vertexID := r[t.Meta().GetPkColInfo().Offset].GetInt64()
-		return tablecodec.EncodeGraphVertex(vertexID, t.tableID)
-	case model.TableTypeIsEdge:
-		srcVertexID := r[t.Meta().GetSourceKeyColInfo().Offset].GetInt64()
-		dstVertexID := r[t.Meta().GetDestinationKeyColInfo().Offset].GetInt64()
-		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID)
-	default:
-		panic("unreachable")
-	}
+func (t *EdgeCommon) recordKey(r []types.Datum) kv.Key {
+	srcVertexID := r[t.Meta().GetSourceKeyColInfo().Offset].GetInt64()
+	dstVertexID := r[t.Meta().GetDestinationKeyColInfo().Offset].GetInt64()
+	return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, t.tableID)
 }
 
-func RecordKeyFromHandle(h kv.Handle, tid int64, tp model.TableType) (kv.Key, error) {
-	switch tp {
-	case model.TableTypeIsVertex:
-		return tablecodec.EncodeGraphVertex(h.IntValue(), tid), nil
-	case model.TableTypeIsEdge:
-		if h.NumCols() != 2 {
-			return nil, nil
-		}
-		_, src, err := codec.DecodeOne(h.EncodedCol(0))
-		if err != nil {
-			return nil, err
-		}
-		_, dst, err := codec.DecodeOne(h.EncodedCol(1))
-		if err != nil {
-			return nil, err
-		}
-		srcVertexID := src.GetInt64()
-		dstVertexID := dst.GetInt64()
-		return tablecodec.EncodeGraphOutEdge(srcVertexID, dstVertexID, tid), nil
-	default:
-		panic("unreachable")
-	}
-}
-
-func (t *GraphCommon) RecordKeyFromHandle(h kv.Handle) (kv.Key, error) {
-	return RecordKeyFromHandle(h, t.tableID, t.meta.Type)
-}
-
-func (t *GraphCommon) RemoveRecord(ctx sessionctx.Context, h kv.Handle, r []types.Datum) error {
+func (t *EdgeCommon) RemoveRecord(ctx sessionctx.Context, h kv.Handle, r []types.Datum) error {
 	txn, err := ctx.Txn(true)
 	if err != nil {
 		return err
 	}
 
-	key, err := t.RecordKeyFromHandle(h)
+	key, err := tablecodec.EncodeEdgeKeyWithHandle(t.tableID, h)
 	if err != nil {
 		return err
 	}
 	return txn.Delete(key)
 }
 
-func (t *GraphCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts ...table.AddRecordOption) (_ kv.Handle, err error) {
+func (t *EdgeCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts ...table.AddRecordOption) (_ kv.Handle, err error) {
 	txn, err := sctx.Txn(true)
 	if err != nil {
 		return nil, err

@@ -6518,6 +6518,9 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, 
 		return nil, nil, err
 	}
 	tableInfo := tbl.Meta()
+	if !tableInfo.IsGraphEdge() {
+		return nil, nil, errors.Errorf("only EDGE table can be used in graph pattern edge expression")
+	}
 	var authErr error
 	if sessionVars.User != nil {
 		authErr = ErrTableaccessDenied.FastGenByArgs("SELECT", sessionVars.User.AuthUsername, sessionVars.User.AuthHostname, tableInfo.Name.L)
@@ -6540,7 +6543,6 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, 
 	} else {
 		columns = tbl.Cols()
 	}
-	var handleCols HandleCols
 	schema := expression.NewSchema(make([]*expression.Column, 0, len(columns))...)
 	for _, col := range columns {
 		fn := &types.FieldName{
@@ -6560,30 +6562,7 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, 
 			OrigName: fn.String(),
 			IsHidden: col.Hidden,
 		}
-		if col.IsPKHandleColumn(tableInfo) {
-			handleCols = &IntHandleCols{col: newCol}
-		}
 		schema.Append(newCol)
-	}
-
-	if tableInfo.Type == model.TableTypeIsVertex {
-		// We append an extra handle column to the schema when the handle
-		// column is not the primary key of "ds".
-		if handleCols == nil {
-			tp := types.NewFieldType(mysql.TypeLonglong)
-			tp.Flag = mysql.NotNullFlag | mysql.PriKeyFlag
-			extraCol := &expression.Column{
-				RetType:  tp,
-				UniqueID: sessionVars.AllocPlanColumnID(),
-				ID:       model.ExtraHandleID,
-				OrigName: fmt.Sprintf("%v.%v.%v", dbName, tableInfo.Name, model.ExtraHandleName),
-			}
-			handleCols = &IntHandleCols{col: extraCol}
-			schema.Append(extraCol)
-		}
-		handleMap := make(map[int64][]HandleCols)
-		handleMap[tableInfo.ID] = []HandleCols{handleCols}
-		b.handleHelper.pushMap(handleMap)
 	}
 
 	return schema, tableInfo, nil
@@ -6640,8 +6619,8 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 			destDBName = dbNameOrDefault(edge.Destination.Name.Schema)
 			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edge.Destination.Name.Name)
 		} else {
-			destDBName = dbNameOrDefault(edgeTableInfo.DestinationVertex.Schema)
-			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.DestinationVertex.Vertex, true)
+			destDBName = dbNameOrDefault(edgeTableInfo.EdgeOptions.Destination.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.EdgeOptions.Destination.Table, true)
 		}
 		if err != nil {
 			return nil, err
