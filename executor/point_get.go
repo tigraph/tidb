@@ -300,16 +300,7 @@ func (e *PointGetExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		}
 	}
 
-	var key kv.Key
-	if e.tblInfo.IsGraphEdge() {
-		key, err = tablecodec.EncodeEdgeKeyWithHandle(tblID, e.handle)
-		if err != nil {
-			return err
-		}
-	} else {
-		key = tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
-	}
-
+	key := tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
 	val, err := e.getAndLock(ctx, key)
 	if err != nil {
 		return err

@@ -425,15 +425,7 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 		if e.singlePart && e.partTblID != tID {
 			continue
 		}
-		var key kv.Key
-		if e.tblInfo.IsGraphEdge() {
-			key, err = tablecodec.EncodeEdgeKeyWithHandle(tID, handle)
-			if err != nil {
-				return err
-			}
-		} else {
-			key = tablecodec.EncodeRowKeyWithHandle(tID, handle)
-		}
+		key := tablecodec.EncodeRowKeyWithHandle(tID, handle)
 		keys = append(keys, key)
 		newHandles = append(newHandles, handle)
 	}

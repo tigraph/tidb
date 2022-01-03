@@ -783,12 +783,12 @@ func buildDuplicateRequests(tableInfo *model.TableInfo) ([]*DuplicateRequest, er
 	return reqs, nil
 }
 
-func buildTableRequests(tableID int64, isCommonHandle bool, isGraphEdge bool) ([]*DuplicateRequest, error) {
+func buildTableRequests(tableID int64, isCommonHandle bool) ([]*DuplicateRequest, error) {
 	ranges := ranger.FullIntRange(false)
 	if isCommonHandle {
 		ranges = ranger.FullRange()
 	}
-	keysRanges, err := distsql.TableHandleRangesToKVRanges(nil, []int64{tableID}, isCommonHandle, tblType, ranges, nil)
+	keysRanges, err := distsql.TableHandleRangesToKVRanges(nil, []int64{tableID}, isCommonHandle, ranges, nil)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

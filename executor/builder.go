@@ -2150,7 +2150,6 @@ func (b *executorBuilder) buildAnalyzeIndexPushdown(task plannercore.AnalyzeInde
 	e := &AnalyzeIndexExec{
 		baseAnalyzeExec: base,
 		isCommonHandle:  task.TblInfo.IsCommonHandle,
-		isGraphEdge:     task.TblInfo.IsGraphEdge(),
 		idxInfo:         task.IndexInfo,
 	}
 	topNSize := new(int32)

@@ -374,7 +374,6 @@ type AnalyzeIndexExec struct {
 
 	idxInfo        *model.IndexInfo
 	isCommonHandle bool
-	isGraphEdge    bool
 	result         distsql.SelectResult
 	countNullRes   distsql.SelectResult
 }
@@ -1120,7 +1119,6 @@ func (e *AnalyzeColumnsExec) buildSubIndexJobForSpecialIndex(indexInfos []*model
 		idxExec := &AnalyzeIndexExec{
 			baseAnalyzeExec: base,
 			isCommonHandle:  e.tableInfo.IsCommonHandle,
-			isGraphEdge:     e.tableInfo.IsGraphEdge(),
 			idxInfo:         indexInfo,
 		}
 		idxExec.opts = make(map[ast.AnalyzeOptionType]uint64, len(ast.AnalyzeOptionString))
