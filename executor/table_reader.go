@@ -352,12 +352,7 @@ func (e *TableReaderExecutor) buildKVReq(ctx context.Context, ranges []*ranger.R
 		}
 		reqBuilder = builder.SetKeyRanges(kvRange)
 	} else {
-		tableInfo := e.table.Meta()
-		if tableInfo == nil {
-			reqBuilder = builder.SetHandleRanges(e.ctx.GetSessionVars().StmtCtx, getPhysicalTableID(e.table), false, false, ranges, e.feedback)
-		} else {
-			reqBuilder = builder.SetHandleRanges(e.ctx.GetSessionVars().StmtCtx, getPhysicalTableID(e.table), tableInfo.IsCommonHandle, tableInfo.IsGraphEdge(), ranges, e.feedback)
-		}
+		reqBuilder = builder.SetHandleRanges(e.ctx.GetSessionVars().StmtCtx, getPhysicalTableID(e.table), e.table.Meta() != nil && e.table.Meta().IsCommonHandle, ranges, e.feedback)
 	}
 	reqBuilder.
 		SetDAGRequest(e.dagPB).

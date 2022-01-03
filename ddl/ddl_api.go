@@ -1984,17 +1984,30 @@ func handleEdgeOptions(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error 
 		return errors.Errorf("SOURCE KEY and DESTINATION KEY columns need to be specified at the same time")
 	}
 
-	idxInfo := &model.IndexInfo{
+	primaryKey := &model.IndexInfo{
 		Name:    model.NewCIStr(mysql.PrimaryKeyName),
 		Unique:  true,
 		Primary: true,
 		State:   model.StatePublic,
 	}
 
+	edgeKey := &model.IndexInfo{
+		Name:   model.NewCIStr(fmt.Sprintf("idx_graph_in_edge")),
+		Unique: true,
+		State:  model.StatePublic,
+	}
+
 	for i, idx := range []int{srcIdx, dstIdx} {
 		tbInfo.Columns[idx].Flag |= mysql.PriKeyFlag
 		tbInfo.Columns[idx].Flag |= mysql.NotNullFlag
-		idxInfo.Columns = append(idxInfo.Columns, &model.IndexColumn{
+		primaryKey.Columns = append(primaryKey.Columns, &model.IndexColumn{
+			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
+			Offset: i,
+			Length: types.UnspecifiedLength,
+		})
+	}
+	for i, idx := range []int{dstIdx, srcIdx} {
+		edgeKey.Columns = append(edgeKey.Columns, &model.IndexColumn{
 			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
 			Offset: i,
 			Length: types.UnspecifiedLength,
@@ -2003,8 +2016,8 @@ func handleEdgeOptions(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error 
 
 	tbInfo.Columns[srcIdx].Flag |= mysql.SrcKeyFlag
 	tbInfo.Columns[dstIdx].Flag |= mysql.DstKeyFlag
-
-	tbInfo.Indices = append(tbInfo.Indices, idxInfo)
+	tbInfo.Indices = append(tbInfo.Indices, primaryKey)
+	tbInfo.Indices = append(tbInfo.Indices, edgeKey)
 	tbInfo.EdgeOptions = edgeOptions
 	tbInfo.IsCommonHandle = true
 

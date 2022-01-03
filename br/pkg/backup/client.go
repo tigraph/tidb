@@ -244,7 +244,7 @@ func appendRanges(tbl *model.TableInfo, tblID int64) ([]kv.KeyRange, error) {
 		ranges = ranger.FullIntRange(false)
 	}
 
-	kvRanges, err := distsql.TableHandleRangesToKVRanges(nil, []int64{tblID}, tbl.IsCommonHandle, tbl.IsGraphEdge(), ranges, nil)
+	kvRanges, err := distsql.TableHandleRangesToKVRanges(nil, []int64{tblID}, tbl.IsCommonHandle, ranges, nil)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

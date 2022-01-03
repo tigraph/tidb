@@ -126,9 +126,8 @@ const (
 	// TypeCTE is the type of CTEFullScan.
 	TypeCTE = "CTEFullScan"
 	// TypeCTEDefinition is the type of CTE definition
-	TypeCTEDefinition   = "CTE"
-	TypeGraphVertexScan = "GraphVertexScan"
-	TypeGraphEgdeScan   = "GraphEdgeScan"
+	TypeCTEDefinition = "CTE"
+	TypeGraphEgdeScan = "GraphEdgeScan"
 )
 
 // plan id.

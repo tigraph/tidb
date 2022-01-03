@@ -89,13 +89,6 @@ func TablePrefix() []byte {
 	return tablePrefix
 }
 
-func EncodeRowKeyByType(tableID int64, isGraphEdge bool, encodedHandle []byte) kv.Key {
-	if isGraphEdge {
-		panic("not implemented")
-	}
-	return EncodeRowKey(tableID, encodedHandle)
-}
-
 // EncodeRowKey encodes the table id and record handle into a kv.Key
 func EncodeRowKey(tableID int64, encodedHandle []byte) kv.Key {
 	buf := make([]byte, 0, prefixLen+len(encodedHandle))
