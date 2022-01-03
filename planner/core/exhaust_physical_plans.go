@@ -2847,10 +2847,13 @@ func (p *LogicalMaxOneRow) exhaustPhysicalPlans(prop *property.PhysicalProperty)
 
 func (p *LogicalGraphEdgeScan) exhaustPhysicalPlans(prop *property.PhysicalProperty) ([]PhysicalPlan, bool, error) {
 	es := PhysicalGraphEdgeScan{
+		Direction:     p.Direction,
 		EdgeDBName:    p.EdgeDBName,
 		EdgeTableInfo: p.EdgeTableInfo,
+		EdgeSchema:    p.EdgeSchema,
 		DestDBName:    p.DestDBName,
 		DestTableInfo: p.DestTableInfo,
+		DestSchema:    p.DestSchema,
 	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
 	es.SetSchema(p.Schema())
 	es.SetOutputNames(p.OutputNames())

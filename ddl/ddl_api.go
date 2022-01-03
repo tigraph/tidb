@@ -1992,7 +1992,7 @@ func handleEdgeOptions(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error 
 	}
 
 	edgeKey := &model.IndexInfo{
-		Name:   model.NewCIStr(fmt.Sprintf("idx_graph_in_edge")),
+		Name:   model.NewCIStr(fmt.Sprintf(mysql.GraphEdgeKeyName)),
 		Unique: true,
 		State:  model.StatePublic,
 	}

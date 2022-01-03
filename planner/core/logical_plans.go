@@ -1324,8 +1324,11 @@ func (p *LogicalCTE) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
 type LogicalGraphEdgeScan struct {
 	logicalSchemaProducer
 
+	Direction     ast.GraphEdgeDirection
 	EdgeDBName    model.CIStr
 	EdgeTableInfo *model.TableInfo
+	EdgeSchema    *expression.Schema
 	DestDBName    model.CIStr
 	DestTableInfo *model.TableInfo
+	DestSchema    *expression.Schema
 }

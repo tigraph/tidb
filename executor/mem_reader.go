@@ -245,7 +245,7 @@ func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 }
 
 func (m *memTableReader) decodeRecordKeyValue(key, value []byte) ([]types.Datum, error) {
-	handle, err := tablecodec.DecodeRowKeyByType(key)
+	handle, err := tablecodec.DecodeRowKey(key)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

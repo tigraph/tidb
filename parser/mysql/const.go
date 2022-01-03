@@ -591,7 +591,8 @@ func (n *PriorityEnum) Restore(ctx *format.RestoreCtx) error {
 
 const (
 	// PrimaryKeyName defines primary key name.
-	PrimaryKeyName = "PRIMARY"
+	PrimaryKeyName   = "PRIMARY"
+	GraphEdgeKeyName = "GRAPH_EDGE_KEY"
 	// DefaultDecimal defines the default decimal value when the value out of range.
 	DefaultDecimal = "99999999999999999999999999999999999999999999999999999999999999999"
 )

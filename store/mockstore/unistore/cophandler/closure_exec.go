@@ -734,10 +734,6 @@ func (e *tableScanProcessor) Process(key, value []byte) error {
 	if e.rowCount == e.limit {
 		return dbreader.ErrScanBreak
 	}
-	// TODO: refine vertex/edge codec
-	if kl := len(key); kl > 0 && tablecodec.IsGraphKey(key) && kl != tablecodec.GraphVertexRecordRowKeyLen {
-		return nil
-	}
 	e.rowCount++
 	e.curNdv++
 	err := e.tableScanProcessCore(key, value)
@@ -833,7 +829,7 @@ func (e *closureExecutor) tableScanProcessCore(key, value []byte) error {
 	defer func(begin time.Time) {
 		e.scanCtx.execDetail.update(begin, incRow)
 	}(time.Now())
-	handle, err := tablecodec.DecodeRowKeyByType(key)
+	handle, err := tablecodec.DecodeRowKey(key)
 	if err != nil {
 		return errors.Trace(err)
 	}

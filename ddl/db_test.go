@@ -7666,6 +7666,4 @@ func (s *testSerialDBSuite) TestCreateGraph(c *C) {
 	c.Assert(friend1.Meta().EdgeOptions, NotNil)
 	c.Assert(friend1.Meta().EdgeOptions.Source.Table.O, Equals, "people1")
 	c.Assert(friend1.Meta().EdgeOptions.Destination.Table.O, Equals, "people1")
-	c.Assert(friend1.Meta().GetSourceKeyColInfo(), NotNil)
-	c.Assert(friend1.Meta().GetDestinationKeyColInfo(), NotNil)
 }

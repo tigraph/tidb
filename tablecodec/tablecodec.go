@@ -51,22 +51,17 @@ var (
 	recordPrefixSep = []byte("_r")
 	indexPrefixSep  = []byte("_i")
 	metaPrefix      = []byte{'m'}
-	graphPrefix     = []byte{'g'}
-	graphEdgeOut    = byte(1)
-	graphEdgeIn     = byte(0)
 )
 
 const (
-	idLen          = 8
-	prefixLen      = 1 + idLen /*tableID*/ + 2
-	graphPrefixLen = 1 + 2
+	idLen     = 8
+	prefixLen = 1 + idLen /*tableID*/ + 2
 	// RecordRowKeyLen is public for calculating avgerage row size.
-	RecordRowKeyLen            = prefixLen + idLen                                                                /*handle*/
-	GraphVertexRecordRowKeyLen = graphPrefixLen + idLen /*handle*/ + idLen                                        /*tag*/
-	GraphEdgeRecordRowKeyLen   = graphPrefixLen + idLen /*srcVertexID*/ + 1 /*edgeTP*/ + idLen /*edgeID*/ + idLen /*dstVertexID*/
-	tablePrefixLength          = 1
-	recordPrefixSepLength      = 2
-	metaPrefixLength           = 1
+	RecordRowKeyLen       = prefixLen + idLen                         /*handle*/
+	GraphEdgeRowKyeLen    = prefixLen + idLen /*srcVertexID*/ + idLen /*dstVertexID*/
+	tablePrefixLength     = 1
+	recordPrefixSepLength = 2
+	metaPrefixLength      = 1
 	// MaxOldEncodeValueLen is the maximum len of the old encoding of index value.
 	MaxOldEncodeValueLen = 9
 
@@ -102,23 +97,6 @@ func EncodeRowKeyWithHandle(tableID int64, handle kv.Handle) kv.Key {
 	return EncodeRowKey(tableID, handle.Encoded())
 }
 
-func EncodeEdgeKeyWithHandle(tableID int64, handle kv.Handle) (kv.Key, error) {
-	if handle.NumCols() != 2 {
-		return nil, nil
-	}
-	_, src, err := codec.DecodeOne(handle.EncodedCol(0))
-	if err != nil {
-		return nil, err
-	}
-	_, dst, err := codec.DecodeOne(handle.EncodedCol(1))
-	if err != nil {
-		return nil, err
-	}
-	srcVertexID := src.GetInt64()
-	dstVertexID := dst.GetInt64()
-	return EncodeGraphOutEdge(srcVertexID, dstVertexID, tableID), nil
-}
-
 // CutRowKeyPrefix cuts the row key prefix.
 func CutRowKeyPrefix(key kv.Key) []byte {
 	return key[prefixLen:]
@@ -131,93 +109,11 @@ func EncodeRecordKey(recordPrefix kv.Key, h kv.Handle) kv.Key {
 	buf = append(buf, h.Encoded()...)
 	return buf
 }
-
-func EncodeGraphVertex(vertexID, tableID int64) kv.Key {
-	buf := make([]byte, 0, 24)
-	buf = append(buf, graphPrefix...)
-	buf = append(buf, recordPrefixSep...)
-	buf = codec.EncodeInt(buf, vertexID)
-	buf = codec.EncodeInt(buf, tableID)
-	return buf
-}
-
-func EncodeGraphOutEdge(srcVertexID, dstVertexID, edgeID int64) kv.Key {
-	return encodeGraphEdge(srcVertexID, dstVertexID, edgeID, graphEdgeOut)
-}
-
-func EncodeGraphInEdge(srcVertexID, dstVertexID, edgeID int64) kv.Key {
-	return encodeGraphEdge(srcVertexID, dstVertexID, edgeID, graphEdgeIn)
-}
-
-func encodeGraphEdge(srcVertexID, dstVertexID, edgeID int64, tp byte) kv.Key {
-	buf := make([]byte, 0, 32)
-	buf = append(buf, graphPrefix...)
-	buf = append(buf, recordPrefixSep...)
-	buf = codec.EncodeInt(buf, srcVertexID)
-	buf = append(buf, tp)
-	buf = codec.EncodeInt(buf, edgeID)
-	buf = codec.EncodeInt(buf, dstVertexID)
-	return buf
-}
-
-func ConstructKeyForGraph(srcOrDstVertexID int64, isOut bool, edgeID int64) kv.Key {
-	buf := make([]byte, 0, 32)
-	buf = append(buf, graphPrefix...)
-	buf = append(buf, recordPrefixSep...)
-	buf = codec.EncodeInt(buf, srcOrDstVertexID)
-	if isOut {
-		buf = append(buf, graphEdgeOut)
-	} else {
-		buf = append(buf, graphEdgeIn)
-	}
-	buf = codec.EncodeInt(buf, edgeID)
-	return buf
-}
-
-func DecodeGraphEdge(key kv.Key) (srcVertexID, dstVertexID, edgeID int64, isOut bool, err error) {
-	if len(key) != 28 {
-		return 0, 0, 0, false, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
-	}
-	if key[0] != graphPrefix[0] {
-		return 0, 0, 0, false, errors.New("Wrong prefix for graph")
-	}
-	dir := key[11]
-	if dir == graphEdgeOut {
-		isOut = true
-	} else if dir == graphEdgeIn {
-		isOut = false
-	} else {
-		return 0, 0, 0, false, errors.New("Wrong direction for graph")
-	}
-
-	_, firstVID, err := codec.DecodeInt(key[3:11])
-	if err != nil {
-		return 0, 0, 0, false, errors.Trace(err)
-	}
-	_, secondVID, err := codec.DecodeInt(key[19:27])
-	if err != nil {
-		return 0, 0, 0, false, errors.Trace(err)
-	}
-
-	if isOut {
-		srcVertexID = firstVID
-		dstVertexID = secondVID
-	} else {
-		srcVertexID = secondVID
-		dstVertexID = firstVID
-	}
-	_, edgeID, err = codec.DecodeInt(key[11:19])
-	return srcVertexID, dstVertexID, edgeID, isOut, errors.Trace(err)
-}
-
-func DecodeLastIDOfGraphEdge(key kv.Key) (id int64, err error) {
-	if len(key) != 28 {
+func DecodeGraphEdgeDestID(key kv.Key) (id int64, err error) {
+	if len(key) != GraphEdgeRowKyeLen {
 		return 0, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
 	}
-	if key[0] != graphPrefix[0] {
-		return 0, errors.New("Wrong prefix for graph")
-	}
-	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[20:28]))
+	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[GraphEdgeRowKyeLen-8 : GraphEdgeRowKyeLen]))
 	return id, errors.Trace(err)
 }
 
@@ -375,27 +271,6 @@ func DecodeTableID(key kv.Key) int64 {
 	return tableID
 }
 
-func IsGraphKey(key kv.Key) bool {
-	return key.HasPrefix(graphPrefix)
-}
-
-func DecodeRowKeyByType(key kv.Key) (kv.Handle, error) {
-	if len(key) < RecordRowKeyLen {
-		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
-	}
-	switch key[0] {
-	case tablePrefix[0]:
-		return DecodeRowKey(key)
-	case graphPrefix[0]:
-		if len(key) != GraphVertexRecordRowKeyLen {
-			return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
-		}
-		return DecodeGraphVertexRowKey(key)
-	default:
-		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
-	}
-}
-
 // DecodeRowKey decodes the key and gets the handle.
 func DecodeRowKey(key kv.Key) (kv.Handle, error) {
 	if len(key) < RecordRowKeyLen || !hasTablePrefix(key) || !hasRecordPrefixSep(key[prefixLen-2:]) {
@@ -406,27 +281,6 @@ func DecodeRowKey(key kv.Key) (kv.Handle, error) {
 		return kv.IntHandle(codec.DecodeCmpUintToInt(u)), nil
 	}
 	return kv.NewCommonHandle(key[prefixLen:])
-}
-
-func DecodeGraphVertexRowKey(key kv.Key) (kv.Handle, error) {
-	if len(key) < GraphVertexRecordRowKeyLen || key[0] != graphPrefix[0] {
-		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
-	}
-	u := binary.BigEndian.Uint64(key[graphPrefixLen:])
-	return kv.IntHandle(codec.DecodeCmpUintToInt(u)), nil
-}
-
-func DecodeGraphEdgeRowKey(key kv.Key) (kv.Handle, error) {
-	if len(key) != GraphEdgeRecordRowKeyLen || key[0] != graphPrefix[0] {
-		return kv.IntHandle(0), errInvalidKey.GenWithStack("invalid key - %q", key)
-	}
-	src := codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[graphPrefixLen:]))
-	dst := codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[graphPrefixLen+idLen+1+idLen:]))
-	handleBytes, err := codec.EncodeKey(nil, nil, types.NewIntDatum(src), types.NewIntDatum(dst))
-	if err != nil {
-		return nil, err
-	}
-	return kv.NewCommonHandle(handleBytes)
 }
 
 // EncodeValue encodes a go value to bytes.

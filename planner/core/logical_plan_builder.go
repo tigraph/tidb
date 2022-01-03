@@ -6518,9 +6518,6 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, 
 		return nil, nil, err
 	}
 	tableInfo := tbl.Meta()
-	if !tableInfo.IsGraphEdge() {
-		return nil, nil, errors.Errorf("only EDGE table can be used in graph pattern edge expression")
-	}
 	var authErr error
 	if sessionVars.User != nil {
 		authErr = ErrTableaccessDenied.FastGenByArgs("SELECT", sessionVars.User.AuthUsername, sessionVars.User.AuthHostname, tableInfo.Name.L)
@@ -6600,12 +6597,19 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 	}
 
 	for i, edge := range pathPattern.Edges {
-		es := LogicalGraphEdgeScan{EdgeDBName: dbNameOrDefault(edge.Edge.Name.Schema)}.Init(b.ctx)
+		es := LogicalGraphEdgeScan{
+			Direction:  edge.Direction,
+			EdgeDBName: dbNameOrDefault(edge.Edge.Name.Schema),
+		}.Init(b.ctx)
 		edgeSchema, edgeTableInfo, err := b.buildGraphSchema(es.EdgeDBName, edge.Edge.Name.Name)
 		if err != nil {
 			return nil, err
 		}
+		if !edgeTableInfo.IsGraphEdge() {
+			return nil, errors.Errorf("only EDGE table can be used in graph pattern edge expression")
+		}
 		es.EdgeTableInfo = edgeTableInfo
+		es.EdgeSchema = edgeSchema
 
 		// SELECT * FROM MATCH (v).OUT(e).OUT(e).(v)
 		// Use the table information referenced at Edge table definition.
@@ -6627,6 +6631,7 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		}
 		es.DestDBName = destDBName
 		es.DestTableInfo = destTableInfo
+		es.DestSchema = destSchema
 
 		tblName := edgeTableInfo.Name
 		if edge.Edge.AsName.O != "" {
