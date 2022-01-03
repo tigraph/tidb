@@ -1504,35 +1504,17 @@ func (p *CTEDefinition) ExplainID() fmt.Stringer {
 	})
 }
 
-// PhysicalGraphVertexScan represents a scanner of graph vertex.
-type PhysicalGraphVertexScan struct {
-	physicalSchemaProducer
-
-	DBName    model.CIStr
-	TableInfo *model.TableInfo
-}
-
-// Clone implements PhysicalPlan interface.
-func (p *PhysicalGraphVertexScan) Clone() (PhysicalPlan, error) {
-	cloned := new(PhysicalGraphVertexScan)
-	base, err := p.basePhysicalPlan.cloneWithSelf(cloned)
-	if err != nil {
-		return nil, err
-	}
-	cloned.basePhysicalPlan = *base
-	cloned.DBName = p.DBName
-	cloned.TableInfo = p.TableInfo.Clone()
-	return cloned, nil
-}
-
 // PhysicalGraphEdgeScan represents a scanner of graph edge.
 type PhysicalGraphEdgeScan struct {
 	physicalSchemaProducer
 
+	Direction     ast.GraphEdgeDirection
 	EdgeDBName    model.CIStr
 	EdgeTableInfo *model.TableInfo
+	EdgeSchema    *expression.Schema
 	DestDBName    model.CIStr
 	DestTableInfo *model.TableInfo
+	DestSchema    *expression.Schema
 }
 
 // Clone implements PhysicalPlan interface.

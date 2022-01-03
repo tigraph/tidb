@@ -207,14 +207,7 @@ func (p *PhysicalTableScan) TP() string {
 	if p.isChildOfIndexLookUp {
 		return plancodec.TypeTableRowIDScan
 	} else if p.isFullScan() {
-		switch p.Table.Type {
-		case model.TableTypeIsRegular:
-			return plancodec.TypeTableFullScan
-		case model.TableTypeIsVertex:
-			return plancodec.TypeGraphVertexScan
-		case model.TableTypeIsEdge:
-			return plancodec.TypeGraphEgdeScan
-		}
+		return plancodec.TypeTableFullScan
 	}
 	return plancodec.TypeTableRangeScan
 }

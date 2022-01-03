@@ -6447,10 +6447,8 @@ func TestGraph(t *testing.T) {
 	p := parser.New()
 
 	ddls := []string{
-		`create vertex v2(a int not null)`,
-		`create vertex v3(a int not null, b int)`,
-		`create edge e1(a int source key references v2, b int destination key references v3)`,
-		`create edge e2(a int not null source key references v2, b int not null destination key references v3)`,
+		`create table e1(a int source key references v2, b int destination key references v3)`,
+		`create table e2(a int not null source key references v2, b int not null destination key references v3)`,
 	}
 
 	for _, ddl := range ddls {
@@ -6458,17 +6456,12 @@ func TestGraph(t *testing.T) {
 		require.Nil(t, err, ddl)
 		require.Equal(t, 1, len(stmts))
 		stmt := stmts[0].(*ast.CreateTableStmt)
-		if strings.Contains(ddl, "create vertex") {
-			require.Equal(t, model.TableTypeIsVertex, stmt.Type)
+		if strings.Contains(ddl, "not null") {
+			require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[1].Tp)
+			require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[1].Tp)
 		} else {
-			require.Equal(t, model.TableTypeIsEdge, stmt.Type)
-			if strings.Contains(ddl, "not null") {
-				require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[1].Tp)
-				require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[1].Tp)
-			} else {
-				require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[0].Tp)
-				require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[0].Tp)
-			}
+			require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[0].Tp)
+			require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[0].Tp)
 		}
 	}
 

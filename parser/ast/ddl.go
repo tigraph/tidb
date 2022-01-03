@@ -995,7 +995,6 @@ type CreateTableStmt struct {
 	// ON COMMIT DELETE ROWS => true
 	// ON COMMIT PRESERVE ROW => false
 	OnCommitDelete bool
-	Type           model.TableType
 	Table          *TableName
 	ReferTable     *TableName
 	Cols           []*ColumnDef
@@ -1008,20 +1007,13 @@ type CreateTableStmt struct {
 
 // Restore implements Node interface.
 func (n *CreateTableStmt) Restore(ctx *format.RestoreCtx) error {
-	switch n.Type {
-	case model.TableTypeIsRegular:
-		switch n.TemporaryKeyword {
-		case TemporaryNone:
-			ctx.WriteKeyWord("CREATE TABLE ")
-		case TemporaryGlobal:
-			ctx.WriteKeyWord("CREATE GLOBAL TEMPORARY TABLE ")
-		case TemporaryLocal:
-			ctx.WriteKeyWord("CREATE TEMPORARY TABLE ")
-		}
-	case model.TableTypeIsVertex:
-		ctx.WriteKeyWord("CREATE VERTEX ")
-	case model.TableTypeIsEdge:
-		ctx.WriteKeyWord("CREATE EDGE ")
+	switch n.TemporaryKeyword {
+	case TemporaryNone:
+		ctx.WriteKeyWord("CREATE TABLE ")
+	case TemporaryGlobal:
+		ctx.WriteKeyWord("CREATE GLOBAL TEMPORARY TABLE ")
+	case TemporaryLocal:
+		ctx.WriteKeyWord("CREATE TEMPORARY TABLE ")
 	}
 
 	if n.IfNotExists {

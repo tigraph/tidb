@@ -300,15 +300,7 @@ func (e *PointGetExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		}
 	}
 
-	var key kv.Key
-	if e.tblInfo.Type == model.TableTypeIsRegular {
-		key = tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
-	} else {
-		key, err = tables.RecordKeyFromHandle(e.handle, tblID, e.tblInfo.Type)
-		if err != nil {
-			return err
-		}
-	}
+	key := tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
 	val, err := e.getAndLock(ctx, key)
 	if err != nil {
 		return err

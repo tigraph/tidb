@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -285,6 +286,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildCTE(v)
 	case *plannercore.PhysicalCTETable:
 		return b.buildCTETableReader(v)
+	case *plannercore.PhysicalGraphEdgeScan:
+		return b.buildGraphEdgeScan(v)
 	default:
 		if mp, ok := p.(MockPhysicalPlan); ok {
 			return mp.GetExecutor()
@@ -2150,7 +2153,6 @@ func (b *executorBuilder) buildAnalyzeIndexPushdown(task plannercore.AnalyzeInde
 	e := &AnalyzeIndexExec{
 		baseAnalyzeExec: base,
 		isCommonHandle:  task.TblInfo.IsCommonHandle,
-		tableType:       task.TblInfo.Type,
 		idxInfo:         task.IndexInfo,
 	}
 	topNSize := new(int32)
@@ -3780,10 +3782,10 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 
 	handles, lookUpContents := dedupHandles(lookUpContents)
 	if tbInfo.GetPartitionInfo() == nil {
-		return builder.buildTableReaderFromHandles(ctx, e, tbInfo.Type, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
 	}
 	if !builder.ctx.GetSessionVars().UseDynamicPartitionPrune() {
-		return builder.buildTableReaderFromHandles(ctx, e, tbInfo.Type, handles, canReorderHandles)
+		return builder.buildTableReaderFromHandles(ctx, e, handles, canReorderHandles)
 	}
 
 	tbl, _ := builder.is.TableByID(tbInfo.ID)
@@ -3808,7 +3810,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 			}
 			pid := p.GetPhysicalID()
 			handle := kv.IntHandle(content.keys[0].GetInt64())
-			tmp := distsql.TableHandlesToKVRanges(pid, tbInfo.Type, []kv.Handle{handle})
+			tmp := distsql.TableHandlesToKVRanges(pid, []kv.Handle{handle})
 			kvRanges = append(kvRanges, tmp...)
 		}
 	} else {
@@ -3819,7 +3821,7 @@ func (builder *dataReaderBuilder) buildTableReaderForIndexJoin(ctx context.Conte
 		}
 		for _, p := range partitions {
 			pid := p.GetPhysicalID()
-			tmp := distsql.TableHandlesToKVRanges(pid, tbInfo.Type, handles)
+			tmp := distsql.TableHandlesToKVRanges(pid, handles)
 			kvRanges = append(kvRanges, tmp...)
 		}
 	}
@@ -3856,14 +3858,8 @@ func (h kvRangeBuilderFromRangeAndPartition) buildKeyRangeSeparately(ranges []*r
 	var pids []int64
 	for _, p := range h.partitions {
 		pid := p.GetPhysicalID()
-		tableInfo := p.Meta()
-		var kvRange []kv.KeyRange
-		var err error
-		if tableInfo == nil {
-			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, false, model.TableTypeIsRegular, ranges, nil)
-		} else {
-			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, tableInfo.IsCommonHandle, tableInfo.Type, ranges, nil)
-		}
+		meta := p.Meta()
+		kvRange, err := distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, meta != nil && meta.IsCommonHandle, ranges, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3877,14 +3873,8 @@ func (h kvRangeBuilderFromRangeAndPartition) buildKeyRange(_ int64, ranges []*ra
 	var ret []kv.KeyRange
 	for _, p := range h.partitions {
 		pid := p.GetPhysicalID()
-		tableInfo := p.Meta()
-		var kvRange []kv.KeyRange
-		var err error
-		if tableInfo == nil {
-			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, false, model.TableTypeIsRegular, ranges, nil)
-		} else {
-			kvRange, err = distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, tableInfo.IsCommonHandle, tableInfo.Type, ranges, nil)
-		}
+		meta := p.Meta()
+		kvRange, err := distsql.TableHandleRangesToKVRanges(h.sctx.GetSessionVars().StmtCtx, []int64{pid}, meta != nil && meta.IsCommonHandle, ranges, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3922,7 +3912,7 @@ func (builder *dataReaderBuilder) buildTableReaderBase(ctx context.Context, e *T
 	return e, nil
 }
 
-func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, tblType model.TableType, handles []kv.Handle, canReorderHandles bool) (*TableReaderExecutor, error) {
+func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Context, e *TableReaderExecutor, handles []kv.Handle, canReorderHandles bool) (*TableReaderExecutor, error) {
 	if canReorderHandles {
 		sort.Slice(handles, func(i, j int) bool {
 			return handles[i].Compare(handles[j]) < 0
@@ -3933,7 +3923,7 @@ func (builder *dataReaderBuilder) buildTableReaderFromHandles(ctx context.Contex
 		if _, ok := handles[0].(kv.PartitionHandle); ok {
 			b.SetPartitionsAndHandles(handles)
 		} else {
-			b.SetTableHandles(getPhysicalTableID(e.table), tblType, handles)
+			b.SetTableHandles(getPhysicalTableID(e.table), handles)
 		}
 	}
 	return builder.buildTableReaderBase(ctx, e, b)
@@ -4702,6 +4692,53 @@ func (b *executorBuilder) buildCTETableReader(v *plannercore.PhysicalCTETable) E
 		chkIdx:       0,
 	}
 }
+
+func (b *executorBuilder) buildGraphEdgeScan(v *plannercore.PhysicalGraphEdgeScan) Executor {
+	childExec := b.build(v.Children()[0])
+	if b.err != nil {
+		return nil
+	}
+
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		b.err = err
+		return nil
+	}
+
+	edgeRowDecoder := NewRowDecoder(b.ctx, v.EdgeSchema, v.EdgeTableInfo)
+	edgeRetFieldTypes := make([]*types.FieldType, len(v.EdgeSchema.Columns))
+	for i := range v.EdgeSchema.Columns {
+		edgeRetFieldTypes[i] = v.EdgeSchema.Columns[i].RetType
+	}
+	edgeChunk := chunk.New(edgeRetFieldTypes, 1, 1)
+
+	destRowDecoder := NewRowDecoder(b.ctx, v.DestSchema, v.DestTableInfo)
+	destRetFieldTypes := make([]*types.FieldType, len(v.DestSchema.Columns))
+	for i := range v.DestSchema.Columns {
+		destRetFieldTypes[i] = v.DestSchema.Columns[i].RetType
+	}
+	destChunk := chunk.New(destRetFieldTypes, 1, 1)
+
+	concurrency := runtime.NumCPU() * 60
+	return &GraphEdgeScanExecutor{
+		baseExecutor:     newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		concurrency:      concurrency,
+		workerWg:         new(sync.WaitGroup),
+		sourceVerticesCh: make(chan []int64, concurrency*1000),
+		childErr:         make(chan error),
+		results:          make(chan *chunk.Chunk, concurrency*10),
+		direction:        v.Direction,
+		edgeTableInfo:    v.EdgeTableInfo,
+		edgeRowDecoder:   edgeRowDecoder,
+		edgeChunk:        edgeChunk,
+		destTableInfo:    v.DestTableInfo,
+		destRowDecoder:   destRowDecoder,
+		destChunk:        destChunk,
+		startTS:          startTS,
+		die:              make(chan struct{}),
+	}
+}
+
 func (b *executorBuilder) validCanReadTemporaryOrCacheTable(tbl *model.TableInfo) error {
 	err := b.validCanReadTemporaryTable(tbl)
 	if err != nil {

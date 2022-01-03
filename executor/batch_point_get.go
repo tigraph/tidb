@@ -425,15 +425,7 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 		if e.singlePart && e.partTblID != tID {
 			continue
 		}
-		var key kv.Key
-		if e.tblInfo.Type == model.TableTypeIsRegular {
-			key = tablecodec.EncodeRowKeyWithHandle(tID, handle)
-		} else {
-			key, err = tables.RecordKeyFromHandle(handle, tID, e.tblInfo.Type)
-			if err != nil {
-				return err
-			}
-		}
+		key := tablecodec.EncodeRowKeyWithHandle(tID, handle)
 		keys = append(keys, key)
 		newHandles = append(newHandles, handle)
 	}

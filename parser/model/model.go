@@ -75,14 +75,6 @@ func (s SchemaState) String() string {
 	}
 }
 
-type TableType byte
-
-const (
-	TableTypeIsRegular TableType = 0
-	TableTypeIsVertex  TableType = 1
-	TableTypeIsEdge    TableType = 2
-)
-
 const (
 	// ColumnInfoVersion0 means the column info version is 0.
 	ColumnInfoVersion0 = uint64(0)
@@ -354,14 +346,18 @@ type TableInfo struct {
 	// StatsOptions is used when do analyze/auto-analyze for each table
 	StatsOptions *StatsOptions `json:"stats_options"`
 
-	Type              TableType      `json:"type"`
-	SourceVertex      *EdgeReference `json:"source_vertex,omitempty"`
-	DestinationVertex *EdgeReference `json:"destination_vertex,omitempty"`
+	// EdgeOptions is used to represent the source/destination information if current table is a edge table.
+	EdgeOptions *EdgeOptions `json:"edge_options,omitempty"`
+}
+
+type EdgeOptions struct {
+	Source      *EdgeReference `json:"source"`
+	Destination *EdgeReference `json:"destination"`
 }
 
 type EdgeReference struct {
-	Schema CIStr
-	Vertex CIStr
+	Schema CIStr `json:"schema"`
+	Table  CIStr `json:"table"`
 }
 
 type TableCacheStatusType int
@@ -654,6 +650,11 @@ func (t *TableInfo) FindIndexByName(idxName string) *IndexInfo {
 // IsLocked checks whether the table was locked.
 func (t *TableInfo) IsLocked() bool {
 	return t.Lock != nil && len(t.Lock.Sessions) > 0
+}
+
+// IsGraphEdge checks whether the table was a edge table.
+func (t *TableInfo) IsGraphEdge() bool {
+	return t.EdgeOptions != nil
 }
 
 // NewExtraHandleColInfo mocks a column info for extra handle column.

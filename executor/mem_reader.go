@@ -245,7 +245,7 @@ func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 }
 
 func (m *memTableReader) decodeRecordKeyValue(key, value []byte) ([]types.Datum, error) {
-	handle, err := tablecodec.DecodeRowKeyByType(key)
+	handle, err := tablecodec.DecodeRowKey(key)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -511,7 +511,7 @@ func (m *memIndexLookUpReader) getMemRows() ([][]types.Datum, error) {
 			continue
 		}
 		numHandles += len(handles)
-		tblKVRanges = append(tblKVRanges, distsql.TableHandlesToKVRanges(getPhysicalTableID(tbl), m.table.Meta().Type, handles)...)
+		tblKVRanges = append(tblKVRanges, distsql.TableHandlesToKVRanges(getPhysicalTableID(tbl), handles)...)
 	}
 	if numHandles == 0 {
 		return nil, nil
@@ -634,7 +634,7 @@ func (m *memIndexMergeReader) getMemRows() ([][]types.Datum, error) {
 			continue
 		}
 		numHandles += len(handles)
-		tblKVRanges = append(tblKVRanges, distsql.TableHandlesToKVRanges(getPhysicalTableID(tbl), model.TableTypeIsRegular, handles)...)
+		tblKVRanges = append(tblKVRanges, distsql.TableHandlesToKVRanges(getPhysicalTableID(tbl), handles)...)
 	}
 
 	if numHandles == 0 {
