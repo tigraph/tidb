@@ -22,16 +22,22 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/distsql"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
+	"github.com/pingcap/tidb/statistics"
+	"github.com/pingcap/tidb/table/tables"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/hack"
+	"github.com/pingcap/tidb/util/ranger"
 	"github.com/pingcap/tidb/util/rowcodec"
+	"github.com/pingcap/tidb/util/timeutil"
+	"github.com/pingcap/tipb/go-tipb"
 	"go.uber.org/atomic"
 )
 
@@ -85,9 +91,11 @@ type GraphEdgeScanExecutor struct {
 	direction      ast.GraphEdgeDirection
 	edgeTableInfo  *model.TableInfo
 	edgeRowDecoder *rowcodec.ChunkDecoder
+	edgeRetFields  []*types.FieldType
 	edgeChunk      *chunk.Chunk
 	destTableInfo  *model.TableInfo
 	destRowDecoder *rowcodec.ChunkDecoder
+	destRetFields  []*types.FieldType
 	destChunk      *chunk.Chunk
 
 	pendingTasks sync.WaitGroup
@@ -140,14 +148,6 @@ func (e *GraphEdgeScanExecutor) runWorker(ctx context.Context) {
 	}
 }
 
-func (e *GraphEdgeScanExecutor) startWorkers(ctx context.Context) {
-	e.stats.concurrency = e.concurrency
-	e.workerWg.Add(e.concurrency)
-	for i := 0; i < e.concurrency; i++ {
-		go e.runWorker(ctx)
-	}
-}
-
 func mustEncodeKey(v ...types.Datum) []byte {
 	k, err := codec.EncodeKey(nil, nil, v...)
 	if err != nil {
@@ -168,7 +168,7 @@ func decodeSecondInt64(data []byte) (int64, error) {
 	return datum.GetInt64(), nil
 }
 
-func (e *GraphEdgeScanExecutor) iterInboundEdge(vid int64, idxInfo *model.IndexInfo, f func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error) error {
+func (e *GraphEdgeScanExecutor) iterInboundEdge(ctx context.Context, vid int64, idxInfo *model.IndexInfo, f func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error) error {
 	startKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idxInfo.ID, mustEncodeKey(types.NewIntDatum(vid)))
 	endKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idxInfo.ID, mustEncodeKey(types.NewIntDatum(vid+1)))
 	iter, err := e.snapshot.Iter(startKey, endKey)
@@ -194,7 +194,56 @@ func (e *GraphEdgeScanExecutor) iterInboundEdge(vid int64, idxInfo *model.IndexI
 	return nil
 }
 
-func (e *GraphEdgeScanExecutor) iterOutboundEdge(vid int64, f func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error) error {
+func (e *GraphEdgeScanExecutor) iterOutboundEdge(ctx context.Context, vid int64, f func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error) error {
+	ranges := []*ranger.Range{
+		{
+			LowVal:      []types.Datum{types.NewIntDatum(vid)},
+			HighVal:     []types.Datum{types.NewIntDatum(vid + 1)},
+			HighExclude: true,
+		},
+	}
+	kvRanges, err := distsql.TableHandleRangesToKVRanges(e.ctx.GetSessionVars().StmtCtx, []int64{e.edgeTableInfo.ID}, e.edgeTableInfo.IsCommonHandle, ranges, nil)
+	if err != nil {
+		return err
+	}
+	tsExec := tables.BuildTableScanFromInfos(e.edgeTableInfo, e.edgeTableInfo.Columns)
+	for _, keyRange := range kvRanges {
+		tsExec.Ranges = append(tsExec.Ranges, tipb.KeyRange{Low: keyRange.StartKey, High: keyRange.EndKey})
+	}
+	tableScan := &tipb.Executor{Tp: tipb.ExecType_TypeTableScan, TblScan: tsExec}
+	dagReq := &tipb.DAGRequest{
+		Executors: []*tipb.Executor{tableScan},
+	}
+	dagReq.TimeZoneName, dagReq.TimeZoneOffset = timeutil.Zone(e.ctx.GetSessionVars().Location())
+	sc := e.ctx.GetSessionVars().StmtCtx
+	if sc.RuntimeStatsColl != nil {
+		collExec := true
+		dagReq.CollectExecutionSummaries = &collExec
+	}
+	for i := 0; i < len(e.edgeTableInfo.Columns); i++ {
+		dagReq.OutputOffsets = append(dagReq.OutputOffsets, uint32(i))
+	}
+	distsql.SetEncodeType(e.ctx, dagReq)
+	var builder distsql.RequestBuilder
+	kvReq, err := builder.SetKeyRanges(kvRanges).
+		SetDAGRequest(dagReq).
+		SetStartTS(e.txn.StartTS()).
+		SetKeepOrder(true).
+		SetFromSessionVars(e.ctx.GetSessionVars()).
+		SetFromInfoSchema(e.ctx.GetInfoSchema()).
+		SetAllowBatchCop(true).
+		Build()
+	if err != nil {
+		return err
+	}
+
+	results, err := distsql.Select(ctx, e.ctx, kvReq, e.edgeRetFields, statistics.NewQueryFeedback(0, nil, 0, false))
+	if err != nil {
+		return err
+	}
+
+	_ = results
+
 	startKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID, mustEncodeKey(types.NewIntDatum(vid)))
 	endKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID, mustEncodeKey(types.NewIntDatum(vid+1)))
 	iter, err := e.snapshot.Iter(startKey, endKey)
@@ -231,16 +280,6 @@ type chunkBatch struct {
 	destChunk     *chunk.Chunk
 	resultChunk   *chunk.Chunk
 	resultChunkCh chan<- *chunk.Chunk
-}
-
-func newChunkBatch(e *GraphEdgeScanExecutor) *chunkBatch {
-	return &chunkBatch{
-		e:             e,
-		edgeChunk:     e.edgeChunk.CopyConstruct(),
-		destChunk:     e.destChunk.CopyConstruct(),
-		resultChunk:   chunk.New(e.base().retFieldTypes, chunkBatchSize, chunkBatchSize),
-		resultChunkCh: e.results,
-	}
 }
 
 func (b *chunkBatch) append(
@@ -289,6 +328,10 @@ func (b *chunkBatch) reset() {
 }
 
 func (b *chunkBatch) flush(ctx context.Context) error {
+	if b.rows() == 0 {
+		return nil
+	}
+
 	e := b.e
 	if len(b.edgeRowData) < len(b.edgeRowHandles) {
 		var keys []kv.Key
@@ -350,6 +393,16 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 	}
 }
 
+func (e *GraphEdgeScanExecutor) newChunkBatch() *chunkBatch {
+	return &chunkBatch{
+		e:             e,
+		edgeChunk:     e.edgeChunk.CopyConstruct(),
+		destChunk:     e.destChunk.CopyConstruct(),
+		resultChunk:   chunk.New(e.base().retFieldTypes, chunkBatchSize, chunkBatchSize),
+		resultChunkCh: e.results,
+	}
+}
+
 func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chunk.Chunk) error {
 	startTime := time.Now()
 	edgeScanRows := 0
@@ -373,8 +426,8 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 		}
 	}
 	idxInfo := e.edgeTableInfo.FindIndexByName(strings.ToLower(mysql.GraphEdgeKeyName))
-	inboundChunkBatch := newChunkBatch(e)
-	outboundChunkBatch := newChunkBatch(e)
+	inboundChunkBatch := e.newChunkBatch()
+	outboundChunkBatch := e.newChunkBatch()
 
 	for i := 0; i < childChunk.NumRows(); i++ {
 		childRow := childChunk.GetRow(i)
@@ -383,19 +436,19 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 		var iterErr error
 		switch e.direction {
 		case ast.GraphEdgeDirectionIn:
-			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
+			iterErr = e.iterInboundEdge(ctx, vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
 				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
 			})
 		case ast.GraphEdgeDirectionOut:
-			iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+			iterErr = e.iterOutboundEdge(ctx, vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
 				return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
 			})
 		case ast.GraphEdgeDirectionBoth:
-			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
+			iterErr = e.iterInboundEdge(ctx, vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
 				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
 			})
 			if iterErr == nil {
-				iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+				iterErr = e.iterOutboundEdge(ctx, vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
 					return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
 				})
 			}
@@ -404,15 +457,11 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 			return iterErr
 		}
 	}
-	if inboundChunkBatch.rows() > 0 {
-		if err := inboundChunkBatch.flush(ctx); err != nil {
-			return err
-		}
+	if err := inboundChunkBatch.flush(ctx); err != nil {
+		return err
 	}
-	if outboundChunkBatch.rows() > 0 {
-		if err := outboundChunkBatch.flush(ctx); err != nil {
-			return err
-		}
+	if err := outboundChunkBatch.flush(ctx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -453,9 +502,13 @@ func (e *GraphEdgeScanExecutor) pushTask(chk *chunk.Chunk) {
 
 func (e *GraphEdgeScanExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 	if !e.prepared {
-		e.startWorkers(ctx)
 		e.workerWg.Add(1)
 		go e.fetchFromChild(ctx)
+		e.stats.concurrency = e.concurrency
+		e.workerWg.Add(e.concurrency)
+		for i := 0; i < e.concurrency; i++ {
+			go e.runWorker(ctx)
+		}
 		e.prepared = true
 	}
 
