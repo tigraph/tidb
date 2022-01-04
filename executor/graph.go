@@ -17,6 +17,9 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/expression"
+	plannercore "github.com/pingcap/tidb/planner/core"
+	"github.com/pingcap/tidb/util"
 	"strings"
 	"sync"
 	"time"
@@ -90,9 +93,11 @@ type GraphEdgeScanExecutor struct {
 
 	direction      ast.GraphEdgeDirection
 	edgeTableInfo  *model.TableInfo
+	edgeSchema     *expression.Schema
 	edgeRowDecoder *rowcodec.ChunkDecoder
 	edgeRetFields  []*types.FieldType
 	edgeChunk      *chunk.Chunk
+	destSchema     *expression.Schema
 	destTableInfo  *model.TableInfo
 	destRowDecoder *rowcodec.ChunkDecoder
 	destRetFields  []*types.FieldType
@@ -169,6 +174,64 @@ func decodeSecondInt64(data []byte) (int64, error) {
 }
 
 func (e *GraphEdgeScanExecutor) iterInboundEdge(ctx context.Context, vid int64, idxInfo *model.IndexInfo, f func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error) error {
+	ranges := []*ranger.Range{
+		{
+			LowVal:      []types.Datum{types.NewIntDatum(vid)},
+			HighVal:     []types.Datum{types.NewIntDatum(vid + 1)},
+			HighExclude: true,
+		},
+	}
+	kvRanges, err := distsql.IndexRangesToKVRangesForTables(e.ctx.GetSessionVars().StmtCtx, []int64{e.edgeTableInfo.ID}, idxInfo.ID, ranges, nil)
+	if err != nil {
+		return err
+	}
+
+	columns := make([]*model.ColumnInfo, 0, len(idxInfo.Columns))
+	for _, col := range idxInfo.Columns {
+		columns = append(columns, e.edgeTableInfo.Columns[col.Offset])
+	}
+
+	unique := true
+	idxExec := &tipb.IndexScan{
+		TableId: e.edgeTableInfo.ID,
+		IndexId: idxInfo.ID,
+		Columns: util.ColumnsToProto(columns, e.edgeTableInfo.PKIsHandle),
+		Desc:    false,
+		Unique:  &unique,
+	}
+	dagReq := &tipb.DAGRequest{
+		Executors: []*tipb.Executor{
+			{Tp: tipb.ExecType_TypeIndexScan, IdxScan: idxExec},
+		},
+		Flags: e.ctx.GetSessionVars().StmtCtx.PushDownFlags(),
+	}
+	dagReq.TimeZoneName, dagReq.TimeZoneOffset = timeutil.Zone(e.ctx.GetSessionVars().Location())
+	sc := e.ctx.GetSessionVars().StmtCtx
+	if sc.RuntimeStatsColl != nil {
+		collExec := true
+		dagReq.CollectExecutionSummaries = &collExec
+	}
+	distsql.SetEncodeType(e.ctx, dagReq)
+	var builder distsql.RequestBuilder
+	kvReq, err := builder.SetKeyRanges(kvRanges).
+		SetDAGRequest(dagReq).
+		SetStartTS(e.txn.StartTS()).
+		SetKeepOrder(true).
+		SetFromSessionVars(e.ctx.GetSessionVars()).
+		SetFromInfoSchema(e.ctx.GetInfoSchema()).
+		SetAllowBatchCop(true).
+		Build()
+	if err != nil {
+		return err
+	}
+
+	results, err := distsql.Select(ctx, e.ctx, kvReq, e.edgeRetFields, statistics.NewQueryFeedback(0, nil, 0, false))
+	if err != nil {
+		return err
+	}
+
+	_ = results
+
 	startKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idxInfo.ID, mustEncodeKey(types.NewIntDatum(vid)))
 	endKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idxInfo.ID, mustEncodeKey(types.NewIntDatum(vid+1)))
 	iter, err := e.snapshot.Iter(startKey, endKey)
@@ -206,13 +269,20 @@ func (e *GraphEdgeScanExecutor) iterOutboundEdge(ctx context.Context, vid int64,
 	if err != nil {
 		return err
 	}
-	tsExec := tables.BuildTableScanFromInfos(e.edgeTableInfo, e.edgeTableInfo.Columns)
+
+	columns := make([]*model.ColumnInfo, 0, e.edgeSchema.Len())
+	for _, col := range e.edgeSchema.Columns {
+		columns = append(columns, plannercore.FindColumnInfoByID(e.edgeTableInfo.Columns, col.ID))
+	}
+
+	tsExec := tables.BuildTableScanFromInfos(e.edgeTableInfo, columns)
 	for _, keyRange := range kvRanges {
 		tsExec.Ranges = append(tsExec.Ranges, tipb.KeyRange{Low: keyRange.StartKey, High: keyRange.EndKey})
 	}
-	tableScan := &tipb.Executor{Tp: tipb.ExecType_TypeTableScan, TblScan: tsExec}
 	dagReq := &tipb.DAGRequest{
-		Executors: []*tipb.Executor{tableScan},
+		Flags: e.ctx.GetSessionVars().StmtCtx.PushDownFlags(),
+		Executors: []*tipb.Executor{
+			{Tp: tipb.ExecType_TypeTableScan, TblScan: tsExec}},
 	}
 	dagReq.TimeZoneName, dagReq.TimeZoneOffset = timeutil.Zone(e.ctx.GetSessionVars().Location())
 	sc := e.ctx.GetSessionVars().StmtCtx
@@ -220,7 +290,7 @@ func (e *GraphEdgeScanExecutor) iterOutboundEdge(ctx context.Context, vid int64,
 		collExec := true
 		dagReq.CollectExecutionSummaries = &collExec
 	}
-	for i := 0; i < len(e.edgeTableInfo.Columns); i++ {
+	for i := 0; i < len(e.edgeSchema.Columns); i++ {
 		dagReq.OutputOffsets = append(dagReq.OutputOffsets, uint32(i))
 	}
 	distsql.SetEncodeType(e.ctx, dagReq)
