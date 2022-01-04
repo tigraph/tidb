@@ -58,7 +58,7 @@ const (
 	prefixLen = 1 + idLen /*tableID*/ + 2
 	// RecordRowKeyLen is public for calculating avgerage row size.
 	RecordRowKeyLen       = prefixLen + idLen                         /*handle*/
-	GraphEdgeRowKyeLen    = prefixLen + idLen /*srcVertexID*/ + idLen /*dstVertexID*/
+	GraphEdgeRowKeyLen    = prefixLen + idLen /*srcVertexID*/ + idLen /*dstVertexID*/
 	tablePrefixLength     = 1
 	recordPrefixSepLength = 2
 	metaPrefixLength      = 1
@@ -110,10 +110,10 @@ func EncodeRecordKey(recordPrefix kv.Key, h kv.Handle) kv.Key {
 	return buf
 }
 func DecodeGraphEdgeDestID(key kv.Key) (id int64, err error) {
-	if len(key) != GraphEdgeRowKyeLen {
+	if len(key) != GraphEdgeRowKeyLen {
 		return 0, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
 	}
-	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[GraphEdgeRowKyeLen-8 : GraphEdgeRowKyeLen]))
+	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[GraphEdgeRowKeyLen-8 : GraphEdgeRowKeyLen]))
 	return id, errors.Trace(err)
 }
 

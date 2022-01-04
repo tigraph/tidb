@@ -4721,21 +4721,21 @@ func (b *executorBuilder) buildGraphEdgeScan(v *plannercore.PhysicalGraphEdgeSca
 
 	concurrency := runtime.NumCPU() * 60
 	return &GraphEdgeScanExecutor{
-		baseExecutor:     newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
-		concurrency:      concurrency,
-		workerWg:         new(sync.WaitGroup),
-		sourceVerticesCh: make(chan []int64, concurrency*1000),
-		childErr:         make(chan error),
-		results:          make(chan *chunk.Chunk, concurrency*10),
-		direction:        v.Direction,
-		edgeTableInfo:    v.EdgeTableInfo,
-		edgeRowDecoder:   edgeRowDecoder,
-		edgeChunk:        edgeChunk,
-		destTableInfo:    v.DestTableInfo,
-		destRowDecoder:   destRowDecoder,
-		destChunk:        destChunk,
-		startTS:          startTS,
-		die:              make(chan struct{}),
+		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		concurrency:    concurrency,
+		workerWg:       new(sync.WaitGroup),
+		childChunkCh:   make(chan *chunk.Chunk, concurrency*1000),
+		childErr:       make(chan error),
+		results:        make(chan *chunk.Chunk, concurrency*10),
+		direction:      v.Direction,
+		edgeTableInfo:  v.EdgeTableInfo,
+		edgeRowDecoder: edgeRowDecoder,
+		edgeChunk:      edgeChunk,
+		destTableInfo:  v.DestTableInfo,
+		destRowDecoder: destRowDecoder,
+		destChunk:      destChunk,
+		startTS:        startTS,
+		die:            make(chan struct{}),
 	}
 }
 

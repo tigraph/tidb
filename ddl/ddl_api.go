@@ -1997,19 +1997,19 @@ func handleEdgeOptions(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error 
 		State:  model.StatePublic,
 	}
 
-	for i, idx := range []int{srcIdx, dstIdx} {
+	for _, idx := range []int{srcIdx, dstIdx} {
 		tbInfo.Columns[idx].Flag |= mysql.PriKeyFlag
 		tbInfo.Columns[idx].Flag |= mysql.NotNullFlag
 		primaryKey.Columns = append(primaryKey.Columns, &model.IndexColumn{
 			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
-			Offset: i,
+			Offset: idx,
 			Length: types.UnspecifiedLength,
 		})
 	}
-	for i, idx := range []int{dstIdx, srcIdx} {
+	for _, idx := range []int{dstIdx, srcIdx} {
 		edgeKey.Columns = append(edgeKey.Columns, &model.IndexColumn{
 			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
-			Offset: i,
+			Offset: idx,
 			Length: types.UnspecifiedLength,
 		})
 	}

@@ -17,30 +17,27 @@ package executor
 import (
 	"context"
 	"fmt"
-	"github.com/pingcap/tidb/parser/ast"
-	"github.com/pingcap/tidb/util/codec"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/tablecodec"
+	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
+	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/hack"
 	"github.com/pingcap/tidb/util/rowcodec"
-	"go.uber.org/atomic"
 	goatomic "sync/atomic"
 )
 
+const chunkBatchSize = 1024
+
 var _ Executor = &GraphEdgeScanExecutor{}
-
-type DirType uint8
-
-const (
-	IN DirType = iota
-	OUT
-	BOTH
-)
 
 type GraphEdgeScanExecutorStats struct {
 	concurrency   int
@@ -84,16 +81,13 @@ type GraphEdgeScanExecutor struct {
 	destRowDecoder *rowcodec.ChunkDecoder
 	destChunk      *chunk.Chunk
 
-	codec *rowcodec.ChunkDecoder
-
-	childExhausted atomic.Bool
-	pendingTasks   atomic.Int64
+	pendingTasks sync.WaitGroup
 
 	// Channel to send vertex identifiers.
-	sourceVerticesCh chan []int64
-	childErr         chan error
-	results          chan *chunk.Chunk
-	die              chan struct{}
+	childChunkCh chan *chunk.Chunk
+	childErr     chan error
+	results      chan *chunk.Chunk
+	die          chan struct{}
 
 	stats GraphEdgeScanExecutorStats
 }
@@ -103,29 +97,6 @@ func (e *GraphEdgeScanExecutor) Open(ctx context.Context) error {
 	txnCtx := e.ctx.GetSessionVars().TxnCtx
 	snapshotTS := e.startTS
 	var err error
-
-	var (
-		pkCols []int64
-		cols   = make([]rowcodec.ColInfo, 0, len(e.schema.Columns))
-	)
-	for _, col := range e.schema.Columns {
-		col := rowcodec.ColInfo{
-			ID:         col.ID,
-			Ft:         col.GetType(),
-			IsPKHandle: mysql.HasPriKeyFlag(col.GetType().Flag),
-		}
-		if col.IsPKHandle {
-			pkCols = []int64{col.ID}
-		}
-		cols = append(cols, col)
-	}
-	def := func(i int, chk *chunk.Chunk) error {
-		// Assume that no default value.
-		chk.AppendNull(i)
-		return nil
-	}
-	e.codec = rowcodec.NewChunkDecoder(cols, pkCols, def, nil)
-
 	e.txn, err = e.ctx.Txn(false)
 	if err != nil {
 		return err
@@ -141,7 +112,6 @@ func (e *GraphEdgeScanExecutor) Open(ctx context.Context) error {
 		return err
 	}
 
-	e.startWorkers(ctx)
 	return nil
 }
 
@@ -150,11 +120,11 @@ func (e *GraphEdgeScanExecutor) runWorker(ctx context.Context) {
 
 	for {
 		select {
-		case sourceVertices, ok := <-e.sourceVerticesCh:
+		case childChunk, ok := <-e.childChunkCh:
 			if !ok {
 				return
 			}
-			err := e.handleTask(ctx, sourceVertices)
+			err := e.handleTask(ctx, childChunk)
 			if err != nil {
 				e.doneErr = err
 				return
@@ -175,7 +145,209 @@ func (e *GraphEdgeScanExecutor) startWorkers(ctx context.Context) {
 	}
 }
 
-func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, sourceVertices []int64) error {
+func mustEncodeKey(v ...types.Datum) []byte {
+	k, err := codec.EncodeKey(nil, nil, v...)
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
+
+func decodeSecondInt64(data []byte) (int64, error) {
+	remain, _, err := codec.DecodeOne(data)
+	if err != nil {
+		return 0, err
+	}
+	_, datum, err := codec.DecodeOne(remain)
+	if err != nil {
+		return 0, err
+	}
+	return datum.GetInt64(), nil
+}
+
+func (e *GraphEdgeScanExecutor) iterInboundEdge(vid int64, idxInfo *model.IndexInfo, f func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error) error {
+	startKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idxInfo.ID, mustEncodeKey(types.NewIntDatum(vid)))
+	endKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idxInfo.ID, mustEncodeKey(types.NewIntDatum(vid+1)))
+	iter, err := e.snapshot.Iter(startKey, endKey)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	for err = nil; err == nil && iter.Valid(); err = iter.Next() {
+		// Index key format is t{table_id}_i{index_id}{index_values}, this prefix length is equal with tablecodec.RecordRowKeyLen.
+		destVid, err := decodeSecondInt64(iter.Key()[tablecodec.RecordRowKeyLen:])
+		if err != nil {
+			return err
+		}
+		edgeRowHandle, err := tablecodec.DecodeHandleInUniqueIndexValue(iter.Value(), true)
+		if err != nil {
+			return err
+		}
+		if err := f(edgeRowHandle, kv.IntHandle(destVid)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *GraphEdgeScanExecutor) iterOutboundEdge(vid int64, f func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error) error {
+	startKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID, mustEncodeKey(types.NewIntDatum(vid)))
+	endKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID, mustEncodeKey(types.NewIntDatum(vid+1)))
+	iter, err := e.snapshot.Iter(startKey, endKey)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for err = nil; err == nil && iter.Valid(); err = iter.Next() {
+		edgeRowHandle, err := tablecodec.DecodeRowKey(iter.Key())
+		if err != nil {
+			return err
+		}
+		destVid, err := decodeSecondInt64(edgeRowHandle.Encoded())
+		if err != nil {
+			return err
+		}
+		if err := f(edgeRowHandle, iter.Value(), kv.IntHandle(destVid)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type chunkBatch struct {
+	childRows      []chunk.Row
+	edgeRowHandles []kv.Handle
+	edgeRowData    [][]byte
+	destRowHandles []kv.Handle
+	destRowData    [][]byte
+
+	e *GraphEdgeScanExecutor
+
+	edgeChunk     *chunk.Chunk
+	destChunk     *chunk.Chunk
+	resultChunk   *chunk.Chunk
+	resultChunkCh chan<- *chunk.Chunk
+}
+
+func newChunkBatch(e *GraphEdgeScanExecutor) *chunkBatch {
+	return &chunkBatch{
+		e:             e,
+		edgeChunk:     e.edgeChunk.CopyConstruct(),
+		destChunk:     e.destChunk.CopyConstruct(),
+		resultChunk:   chunk.New(e.base().retFieldTypes, chunkBatchSize, chunkBatchSize),
+		resultChunkCh: e.results,
+	}
+}
+
+func (b *chunkBatch) append(
+	ctx context.Context,
+	childRow chunk.Row,
+	edgeRowHandle kv.Handle,
+	destRowHandle kv.Handle,
+) error {
+	b.childRows = append(b.childRows, childRow)
+	b.edgeRowHandles = append(b.edgeRowHandles, edgeRowHandle)
+	b.destRowHandles = append(b.destRowHandles, destRowHandle)
+	if len(b.childRows) < chunkBatchSize {
+		return nil
+	}
+	return b.flush(ctx)
+}
+
+func (b *chunkBatch) appendWithEdgeRowData(
+	ctx context.Context,
+	childRow chunk.Row,
+	edgeRowHandle kv.Handle,
+	edgeRowData []byte,
+	destRowHandle kv.Handle,
+) error {
+	b.childRows = append(b.childRows, childRow)
+	b.edgeRowHandles = append(b.edgeRowHandles, edgeRowHandle)
+	b.edgeRowData = append(b.edgeRowData, edgeRowData)
+	b.destRowHandles = append(b.destRowHandles, destRowHandle)
+	if len(b.childRows) < chunkBatchSize {
+		return nil
+	}
+	return b.flush(ctx)
+}
+
+func (b *chunkBatch) rows() int {
+	return len(b.childRows)
+}
+
+func (b *chunkBatch) reset() {
+	b.resultChunk.Reset()
+	b.childRows = b.childRows[:0]
+	b.edgeRowHandles = b.edgeRowHandles[:0]
+	b.edgeRowData = b.edgeRowData[:0]
+	b.destRowHandles = b.destRowHandles[:0]
+	b.destRowData = b.destRowData[:0]
+}
+
+func (b *chunkBatch) flush(ctx context.Context) error {
+	e := b.e
+	if len(b.edgeRowData) < len(b.edgeRowHandles) {
+		var keys []kv.Key
+		for _, h := range b.edgeRowHandles {
+			keys = append(keys, tablecodec.EncodeRowKeyWithHandle(e.edgeTableInfo.ID, h))
+		}
+		values, err := b.e.snapshot.BatchGet(ctx, keys)
+		if err != nil {
+			return err
+		}
+		b.edgeRowData = b.edgeRowData[:0]
+		for _, key := range keys {
+			val, ok := values[string(hack.String(key))]
+			if !ok {
+				return errors.Errorf("value for key %#v not found", key)
+			}
+			b.edgeRowData = append(b.edgeRowData, val)
+		}
+	}
+	if len(b.destRowData) < len(b.destRowHandles) {
+		var keys []kv.Key
+		for _, h := range b.destRowHandles {
+			keys = append(keys, tablecodec.EncodeRowKeyWithHandle(e.destTableInfo.ID, h))
+		}
+		values, err := b.e.snapshot.BatchGet(ctx, keys)
+		if err != nil {
+			return err
+		}
+		b.destRowData = b.destRowData[:0]
+		for _, key := range keys {
+			val, ok := values[string(hack.String(key))]
+			if !ok {
+				return errors.Errorf("value for key %#v not found", key)
+			}
+			b.destRowData = append(b.destRowData, val)
+		}
+	}
+
+	childCols := b.childRows[0].Len()
+	for i := 0; i < len(b.childRows); i++ {
+		b.resultChunk.AppendPartialRow(0, b.childRows[i])
+
+		b.edgeChunk.Reset()
+		e.edgeRowDecoder.DecodeToChunk(b.edgeRowData[i], b.edgeRowHandles[i], b.edgeChunk)
+		b.resultChunk.AppendPartialRow(childCols, b.edgeChunk.GetRow(0))
+		edgeCols := b.edgeChunk.GetRow(0).Len()
+
+		b.destChunk.Reset()
+		e.destRowDecoder.DecodeToChunk(b.destRowData[i], b.destRowHandles[i], b.destChunk)
+		b.resultChunk.AppendPartialRow(childCols+edgeCols, b.destChunk.GetRow(0))
+	}
+
+	select {
+	case b.resultChunkCh <- b.resultChunk.CopyConstruct():
+		b.reset()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chunk.Chunk) error {
 	startTime := time.Now()
 	edgeScanRows := 0
 	defer func() {
@@ -185,70 +357,59 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, sourceVertices [
 		if goatomic.LoadInt64(&e.stats.maxTaskTime) < int64(cost) {
 			goatomic.StoreInt64(&e.stats.maxTaskTime, int64(cost))
 		}
+		e.pendingTasks.Done()
 	}()
 	goatomic.AddInt64(&e.stats.taskNum, 1)
 
-	batchSize := 1024
-	destVertices := make([]int64, 0, batchSize)
-	for _, vid := range sourceVertices {
-		var indices []*model.IndexInfo
-		switch e.direction {
-		case ast.GraphEdgeDirectionOut:
-			indices = append(indices, e.edgeTableInfo.FindIndexByName(mysql.PrimaryKeyName))
-		case ast.GraphEdgeDirectionIn:
-			indices = append(indices, e.edgeTableInfo.FindIndexByName(mysql.GraphEdgeKeyName))
-		case ast.GraphEdgeDirectionBoth:
-			indices = append(indices, e.edgeTableInfo.FindIndexByName(mysql.PrimaryKeyName))
-			indices = append(indices, e.edgeTableInfo.FindIndexByName(mysql.GraphEdgeKeyName))
-		}
-
-		for _, idx := range indices {
-			startKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idx.ID, codec.EncodeInt(nil, vid))
-			endKey := tablecodec.EncodeIndexSeekKey(e.edgeTableInfo.ID, idx.ID, codec.EncodeInt(nil, vid+1))
-			// TODO: coprocessor index scanner
-			iter, err := e.snapshot.Iter(startKey, endKey)
-			if err != nil {
-				return err
-			}
-			for err = nil; iter.Valid(); err = iter.Next() {
-				edgeScanRows++
-				if err != nil {
-					return err
-				}
-				key := iter.Key()
-				destVertexID, err := tablecodec.DecodeGraphEdgeDestID(key)
-				if err != nil {
-					return err
-				}
-				destVertices = append(destVertices, destVertexID)
-			}
+	lastVidIdx := 0
+	childColLen := len(e.schema.Columns) - len(e.edgeTableInfo.Columns) - len(e.destTableInfo.Columns)
+	for i := 0; i < childColLen; i++ {
+		if mysql.HasPriKeyFlag(e.schema.Columns[i].GetType().Flag) {
+			lastVidIdx = i
 		}
 	}
+	idxInfo := e.edgeTableInfo.FindIndexByName(strings.ToLower(mysql.GraphEdgeKeyName))
+	inboundChunkBatch := newChunkBatch(e)
+	outboundChunkBatch := newChunkBatch(e)
 
-	// Fetch all vertex information
-	for verticesLen := len(destVertices); verticesLen > 0; {
-		count := batchSize
-		if verticesLen < batchSize {
-			count = verticesLen
+	for i := 0; i < childChunk.NumRows(); i++ {
+		childRow := childChunk.GetRow(i)
+		vid := childRow.GetInt64(lastVidIdx)
+
+		var iterErr error
+		switch e.direction {
+		case ast.GraphEdgeDirectionIn:
+			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
+				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
+			})
+		case ast.GraphEdgeDirectionOut:
+			iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+				return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
+			})
+		case ast.GraphEdgeDirectionBoth:
+			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
+				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
+			})
+			if iterErr == nil {
+				iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+					return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
+				})
+			}
 		}
-		chk, err := e.batchFillChunk(ctx, destVertices[:count])
-		if err != nil {
+		if iterErr != nil {
+			return iterErr
+		}
+	}
+	if inboundChunkBatch.rows() > 0 {
+		if err := inboundChunkBatch.flush(ctx); err != nil {
 			return err
 		}
-		if chk.NumRows() > 0 {
-			e.results <- chk
+	}
+	if outboundChunkBatch.rows() > 0 {
+		if err := outboundChunkBatch.flush(ctx); err != nil {
+			return err
 		}
-		destVertices = destVertices[count:]
 	}
-
-	e.pendingTasks.Sub(1)
-
-	// All workers should be closed if the child exhausted and all pending traverse tasks finished.
-	if e.childExhausted.Load() && e.pendingTasks.Load() == 0 {
-		close(e.results)
-		close(e.sourceVerticesCh)
-	}
-
 	return nil
 }
 
@@ -256,18 +417,17 @@ func (e *GraphEdgeScanExecutor) fetchFromChild(ctx context.Context) {
 	start := time.Now()
 	defer func() {
 		e.workerWg.Done()
-		e.childExhausted.Store(true)
+		e.pendingTasks.Wait()
+		close(e.results)
 		goatomic.AddInt64(&e.stats.fetchRootTime, int64(time.Since(start)))
 	}()
-
-	chk := newFirstChunk(e.children[0])
 
 	for {
 		select {
 		case <-e.die:
 			return
 		default:
-			chk.Reset()
+			chk := newFirstChunk(e.children[0])
 			if err := Next(ctx, e.children[0], chk); err != nil {
 				e.childErr <- err
 				return
@@ -275,65 +435,21 @@ func (e *GraphEdgeScanExecutor) fetchFromChild(ctx context.Context) {
 			if chk.NumRows() == 0 {
 				return
 			}
-
-			var vertices []int64
-			for i := 0; i < chk.NumRows(); i++ {
-				// FIXME: use correct child primary key offset
-				vid := chk.GetRow(i).GetInt64(0)
-				vertices = append(vertices, vid)
-			}
-			e.pushTask(vertices)
+			e.pushTask(chk)
 		}
 	}
 }
 
-func (e *GraphEdgeScanExecutor) pushTask(vertices []int64) {
+func (e *GraphEdgeScanExecutor) pushTask(chk *chunk.Chunk) {
 	start := time.Now()
-	e.sourceVerticesCh <- vertices
 	e.pendingTasks.Add(1)
+	e.childChunkCh <- chk
 	goatomic.AddInt64(&e.stats.pushTaskTime, int64(time.Since(start)))
-}
-
-func (e *GraphEdgeScanExecutor) batchFillChunk(ctx context.Context, destVertices []int64) (*chunk.Chunk, error) {
-	base := e.base()
-	chk := chunk.New(base.retFieldTypes, len(destVertices), len(destVertices))
-
-	cacheKeys := make([]kv.Key, 0, len(destVertices))
-	for _, vid := range destVertices {
-		key := tablecodec.EncodeRowKey(e.destTableInfo.ID, codec.EncodeInt(nil, vid))
-		cacheKeys = append(cacheKeys, key)
-	}
-	start := time.Now()
-	values, err := e.snapshot.BatchGet(ctx, cacheKeys)
-
-	goatomic.AddInt64(&e.stats.batchGet, int64(time.Since(start)))
-	goatomic.AddInt64(&e.stats.batchGetExecCount, 1)
-	goatomic.AddInt64(&e.stats.batchGetTotalKey, int64(len(cacheKeys)))
-	goatomic.AddInt64(&e.stats.batchGetTotalResult, int64(len(values)))
-
-	if err != nil {
-		if kv.ErrNotExist.Equal(err) {
-			return chk, nil
-		}
-		return chk, err
-	}
-	// keep order
-	for idx, key := range cacheKeys {
-		value, ok := values[string(key)]
-		if !ok {
-			continue
-		}
-		err = e.destRowDecoder.DecodeToChunk(value, kv.IntHandle(destVertices[idx]), chk)
-		if err != nil {
-			return chk, err
-		}
-	}
-
-	return chk, nil
 }
 
 func (e *GraphEdgeScanExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 	if !e.prepared {
+		e.startWorkers(ctx)
 		e.workerWg.Add(1)
 		go e.fetchFromChild(ctx)
 		e.prepared = true
