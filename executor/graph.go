@@ -32,7 +32,7 @@ import (
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/hack"
 	"github.com/pingcap/tidb/util/rowcodec"
-	goatomic "sync/atomic"
+	"go.uber.org/atomic"
 )
 
 const chunkBatchSize = 1024
@@ -41,24 +41,33 @@ var _ Executor = &GraphEdgeScanExecutor{}
 
 type GraphEdgeScanExecutorStats struct {
 	concurrency   int
-	taskNum       int64
-	edgeScanRows  int64
-	totalTaskTime int64
-	maxTaskTime   int64
-	pushTaskTime  int64
-	fetchRootTime int64
+	taskNum       atomic.Int64
+	edgeScanRows  atomic.Int64
+	totalTaskTime atomic.Int64
+	maxTaskTime   atomic.Int64
+	pushTaskTime  atomic.Int64
+	fetchRootTime atomic.Int64
 
-	batchGet            int64
-	batchGetTotalKey    int64
-	batchGetTotalResult int64
-	batchGetExecCount   int64
+	batchGet            atomic.Int64
+	batchGetTotalKey    atomic.Int64
+	batchGetTotalResult atomic.Int64
+	batchGetExecCount   atomic.Int64
 }
 
 func (s *GraphEdgeScanExecutorStats) String() string {
-	return fmt.Sprintf("concur: %v, fetch_root: %v, task:{num: %v, time: %v,avg: %v, max: %v, push_wait: %v, batch_get: %v, edge_scan_rows: %v, batch_get:{total_key: %v,total_result: %v, exec_count: %v, avg_get_keys: %v}}", s.concurrency,
-		time.Duration(s.fetchRootTime), s.taskNum, time.Duration(s.totalTaskTime), time.Duration(float64(s.totalTaskTime)/float64(s.taskNum)),
-		time.Duration(s.maxTaskTime), time.Duration(s.pushTaskTime), time.Duration(float64(s.batchGet)/float64(s.batchGetExecCount)), s.edgeScanRows,
-		s.batchGetTotalKey, s.batchGetTotalResult, s.batchGetExecCount, s.batchGetTotalKey/s.batchGetExecCount)
+	return fmt.Sprintf("concur: %v, fetch_root: %v, task:{num: %v, time: %v,avg: %v, max: %v, push_wait: %v, batch_get: %v, edge_scan_rows: %v, batch_get:{total_key: %v,total_result: %v, exec_count: %v, avg_get_keys: %v}}",
+		s.concurrency,
+		time.Duration(s.fetchRootTime.Load()),
+		s.taskNum,
+		time.Duration(s.totalTaskTime.Load()),
+		time.Duration(float64(s.totalTaskTime.Load())/float64(s.taskNum.Load())),
+		time.Duration(s.maxTaskTime.Load()),
+		time.Duration(s.pushTaskTime.Load()), time.Duration(float64(s.batchGet.Load())/float64(s.batchGetExecCount.Load())),
+		s.edgeScanRows,
+		s.batchGetTotalKey,
+		s.batchGetTotalResult,
+		s.batchGetExecCount,
+		s.batchGetTotalKey.Load()/s.batchGetExecCount.Load())
 }
 
 type GraphEdgeScanExecutor struct {
@@ -106,13 +115,7 @@ func (e *GraphEdgeScanExecutor) Open(ctx context.Context) error {
 	} else {
 		e.snapshot = e.ctx.GetStore().GetSnapshot(kv.Version{Ver: snapshotTS})
 	}
-
-	err = e.children[0].Open(ctx)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return e.children[0].Open(ctx)
 }
 
 func (e *GraphEdgeScanExecutor) runWorker(ctx context.Context) {
@@ -352,14 +355,15 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 	edgeScanRows := 0
 	defer func() {
 		cost := time.Since(startTime)
-		goatomic.AddInt64(&e.stats.totalTaskTime, int64(cost))
-		goatomic.AddInt64(&e.stats.edgeScanRows, int64(edgeScanRows))
-		if goatomic.LoadInt64(&e.stats.maxTaskTime) < int64(cost) {
-			goatomic.StoreInt64(&e.stats.maxTaskTime, int64(cost))
+		e.stats.totalTaskTime.Add(int64(cost))
+		e.stats.edgeScanRows.Add(int64(edgeScanRows))
+		if e.stats.maxTaskTime.Load() < int64(cost) {
+			e.stats.maxTaskTime.Add(int64(cost))
 		}
 		e.pendingTasks.Done()
 	}()
-	goatomic.AddInt64(&e.stats.taskNum, 1)
+
+	e.stats.taskNum.Inc()
 
 	lastVidIdx := 0
 	childColLen := len(e.schema.Columns) - len(e.edgeTableInfo.Columns) - len(e.destTableInfo.Columns)
@@ -419,7 +423,7 @@ func (e *GraphEdgeScanExecutor) fetchFromChild(ctx context.Context) {
 		e.workerWg.Done()
 		e.pendingTasks.Wait()
 		close(e.results)
-		goatomic.AddInt64(&e.stats.fetchRootTime, int64(time.Since(start)))
+		e.stats.fetchRootTime.Add(int64(time.Since(start)))
 	}()
 
 	for {
@@ -444,7 +448,7 @@ func (e *GraphEdgeScanExecutor) pushTask(chk *chunk.Chunk) {
 	start := time.Now()
 	e.pendingTasks.Add(1)
 	e.childChunkCh <- chk
-	goatomic.AddInt64(&e.stats.pushTaskTime, int64(time.Since(start)))
+	e.stats.pushTaskTime.Add(int64(time.Since(start)))
 }
 
 func (e *GraphEdgeScanExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
