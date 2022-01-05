@@ -379,7 +379,7 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 	e.stats.taskNum.Inc()
 
 	lastVidIdx := 0
-	childColLen := len(e.schema.Columns) - len(e.edgeTableInfo.Columns) - len(e.destTableInfo.Columns)
+	childColLen := len(e.schema.Columns) - len(e.edgeSchema.Columns) - len(e.destSchema.Columns)
 	for i := 0; i < childColLen; i++ {
 		if mysql.HasPriKeyFlag(e.schema.Columns[i].GetType().Flag) {
 			lastVidIdx = i
