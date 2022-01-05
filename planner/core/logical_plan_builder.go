@@ -6505,7 +6505,7 @@ func (b *PlanBuilder) buildGraph(ctx context.Context, graphPattern *ast.GraphPat
 	return unionAll, nil
 }
 
-func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, hidden ...bool) (*expression.Schema, *model.TableInfo, error) {
+func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, *model.TableInfo, error) {
 	sessionVars := b.ctx.GetSessionVars()
 
 	// Source vertices
@@ -6548,7 +6548,6 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr, 
 			ColName:     col.Name,
 			OrigTblName: tableInfo.Name,
 			OrigColName: col.Name,
-			Hidden:      len(hidden) > 0 && hidden[0],
 			// For update statement and delete statement, internal version should see the special middle state column, while user doesn't.
 			NotExplicitUsable: col.State != model.StatePublic,
 		}
@@ -6624,7 +6623,7 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edge.Destination.Name.Name)
 		} else {
 			destDBName = dbNameOrDefault(edgeTableInfo.EdgeOptions.Destination.Schema)
-			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.EdgeOptions.Destination.Table, true)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.EdgeOptions.Destination.Table)
 		}
 		if err != nil {
 			return nil, err
@@ -6640,8 +6639,6 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		for _, c := range edgeTableInfo.Columns {
 			names = append(names, &types.FieldName{DBName: es.EdgeDBName, TblName: tblName, ColName: c.Name})
 		}
-
-		var hidden bool
 		if edge.Destination != nil {
 			if edge.Destination.AsName.O != "" {
 				tblName = edge.Destination.AsName
@@ -6649,11 +6646,10 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 				tblName = edge.Destination.Name.Name
 			}
 		} else {
-			hidden = true
 			tblName = model.NewCIStr(fmt.Sprintf("_dest_%d", i))
 		}
 		for _, c := range destTableInfo.Columns {
-			names = append(names, &types.FieldName{DBName: es.DestDBName, TblName: tblName, ColName: c.Name, Hidden: hidden})
+			names = append(names, &types.FieldName{DBName: es.DestDBName, TblName: tblName, ColName: c.Name})
 		}
 
 		// The new columns added by edge scan executor.

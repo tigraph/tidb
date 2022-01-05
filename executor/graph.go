@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
@@ -32,7 +33,7 @@ import (
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/hack"
 	"github.com/pingcap/tidb/util/rowcodec"
-	goatomic "sync/atomic"
+	"go.uber.org/atomic"
 )
 
 const chunkBatchSize = 1024
@@ -41,24 +42,33 @@ var _ Executor = &GraphEdgeScanExecutor{}
 
 type GraphEdgeScanExecutorStats struct {
 	concurrency   int
-	taskNum       int64
-	edgeScanRows  int64
-	totalTaskTime int64
-	maxTaskTime   int64
-	pushTaskTime  int64
-	fetchRootTime int64
+	taskNum       atomic.Int64
+	edgeScanRows  atomic.Int64
+	totalTaskTime atomic.Int64
+	maxTaskTime   atomic.Int64
+	pushTaskTime  atomic.Int64
+	fetchRootTime atomic.Int64
 
-	batchGet            int64
-	batchGetTotalKey    int64
-	batchGetTotalResult int64
-	batchGetExecCount   int64
+	batchGet            atomic.Int64
+	batchGetTotalKey    atomic.Int64
+	batchGetTotalResult atomic.Int64
+	batchGetExecCount   atomic.Int64
 }
 
 func (s *GraphEdgeScanExecutorStats) String() string {
-	return fmt.Sprintf("concur: %v, fetch_root: %v, task:{num: %v, time: %v,avg: %v, max: %v, push_wait: %v, batch_get: %v, edge_scan_rows: %v, batch_get:{total_key: %v,total_result: %v, exec_count: %v, avg_get_keys: %v}}", s.concurrency,
-		time.Duration(s.fetchRootTime), s.taskNum, time.Duration(s.totalTaskTime), time.Duration(float64(s.totalTaskTime)/float64(s.taskNum)),
-		time.Duration(s.maxTaskTime), time.Duration(s.pushTaskTime), time.Duration(float64(s.batchGet)/float64(s.batchGetExecCount)), s.edgeScanRows,
-		s.batchGetTotalKey, s.batchGetTotalResult, s.batchGetExecCount, s.batchGetTotalKey/s.batchGetExecCount)
+	return fmt.Sprintf("concur: %v, fetch_root: %v, task:{num: %v, time: %v,avg: %v, max: %v, push_wait: %v, batch_get: %v, edge_scan_rows: %v, batch_get:{total_key: %v,total_result: %v, exec_count: %v, avg_get_keys: %v}}",
+		s.concurrency,
+		time.Duration(s.fetchRootTime.Load()),
+		s.taskNum,
+		time.Duration(s.totalTaskTime.Load()),
+		time.Duration(float64(s.totalTaskTime.Load())/float64(s.taskNum.Load())),
+		time.Duration(s.maxTaskTime.Load()),
+		time.Duration(s.pushTaskTime.Load()), time.Duration(float64(s.batchGet.Load())/float64(s.batchGetExecCount.Load())),
+		s.edgeScanRows,
+		s.batchGetTotalKey,
+		s.batchGetTotalResult,
+		s.batchGetExecCount,
+		s.batchGetTotalKey.Load()/s.batchGetExecCount.Load())
 }
 
 type GraphEdgeScanExecutor struct {
@@ -75,11 +85,18 @@ type GraphEdgeScanExecutor struct {
 
 	direction      ast.GraphEdgeDirection
 	edgeTableInfo  *model.TableInfo
+	edgeSchema     *expression.Schema
 	edgeRowDecoder *rowcodec.ChunkDecoder
+	edgeRetFields  []*types.FieldType
 	edgeChunk      *chunk.Chunk
+	eliminateEdge  bool
+	destSchema     *expression.Schema
 	destTableInfo  *model.TableInfo
 	destRowDecoder *rowcodec.ChunkDecoder
+	destRetFields  []*types.FieldType
 	destChunk      *chunk.Chunk
+	eliminateDest  bool
+	childOffset    []int
 
 	pendingTasks sync.WaitGroup
 
@@ -107,12 +124,19 @@ func (e *GraphEdgeScanExecutor) Open(ctx context.Context) error {
 		e.snapshot = e.ctx.GetStore().GetSnapshot(kv.Version{Ver: snapshotTS})
 	}
 
-	err = e.children[0].Open(ctx)
-	if err != nil {
-		return err
+	e.eliminateEdge = e.edgeSchema.Len() == 0
+	e.eliminateDest = e.destSchema.Len() == 1 && mysql.HasPriKeyFlag(e.destSchema.Columns[0].RetType.Flag)
+
+	childChunkLen := e.schema.Len() - e.edgeSchema.Len() - e.destSchema.Len()
+	for i := 0; i < childChunkLen; i++ {
+		index := e.children[0].Schema().ColumnIndex(e.schema.Columns[i])
+		if index == -1 {
+			continue
+		}
+		e.childOffset = append(e.childOffset, index)
 	}
 
-	return nil
+	return e.children[0].Open(ctx)
 }
 
 func (e *GraphEdgeScanExecutor) runWorker(ctx context.Context) {
@@ -134,14 +158,6 @@ func (e *GraphEdgeScanExecutor) runWorker(ctx context.Context) {
 		case <-e.die:
 			return
 		}
-	}
-}
-
-func (e *GraphEdgeScanExecutor) startWorkers(ctx context.Context) {
-	e.stats.concurrency = e.concurrency
-	e.workerWg.Add(e.concurrency)
-	for i := 0; i < e.concurrency; i++ {
-		go e.runWorker(ctx)
 	}
 }
 
@@ -230,16 +246,6 @@ type chunkBatch struct {
 	resultChunkCh chan<- *chunk.Chunk
 }
 
-func newChunkBatch(e *GraphEdgeScanExecutor) *chunkBatch {
-	return &chunkBatch{
-		e:             e,
-		edgeChunk:     e.edgeChunk.CopyConstruct(),
-		destChunk:     e.destChunk.CopyConstruct(),
-		resultChunk:   chunk.New(e.base().retFieldTypes, chunkBatchSize, chunkBatchSize),
-		resultChunkCh: e.results,
-	}
-}
-
 func (b *chunkBatch) append(
 	ctx context.Context,
 	childRow chunk.Row,
@@ -286,8 +292,12 @@ func (b *chunkBatch) reset() {
 }
 
 func (b *chunkBatch) flush(ctx context.Context) error {
+	if b.rows() == 0 {
+		return nil
+	}
+
 	e := b.e
-	if len(b.edgeRowData) < len(b.edgeRowHandles) {
+	if !e.eliminateEdge && len(b.edgeRowData) < len(b.edgeRowHandles) {
 		var keys []kv.Key
 		for _, h := range b.edgeRowHandles {
 			keys = append(keys, tablecodec.EncodeRowKeyWithHandle(e.edgeTableInfo.ID, h))
@@ -305,7 +315,7 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 			b.edgeRowData = append(b.edgeRowData, val)
 		}
 	}
-	if len(b.destRowData) < len(b.destRowHandles) {
+	if !e.eliminateDest && len(b.destRowData) < len(b.destRowHandles) {
 		var keys []kv.Key
 		for _, h := range b.destRowHandles {
 			keys = append(keys, tablecodec.EncodeRowKeyWithHandle(e.destTableInfo.ID, h))
@@ -324,18 +334,25 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 		}
 	}
 
-	childCols := b.childRows[0].Len()
+	childCols := len(e.childOffset)
 	for i := 0; i < len(b.childRows); i++ {
-		b.resultChunk.AppendPartialRow(0, b.childRows[i])
+		b.resultChunk.AppendRowByColIdxs(b.childRows[i], e.childOffset)
 
-		b.edgeChunk.Reset()
-		e.edgeRowDecoder.DecodeToChunk(b.edgeRowData[i], b.edgeRowHandles[i], b.edgeChunk)
-		b.resultChunk.AppendPartialRow(childCols, b.edgeChunk.GetRow(0))
-		edgeCols := b.edgeChunk.GetRow(0).Len()
+		edgeCols := 0
+		if !e.eliminateEdge {
+			b.edgeChunk.Reset()
+			e.edgeRowDecoder.DecodeToChunk(b.edgeRowData[i], b.edgeRowHandles[i], b.edgeChunk)
+			b.resultChunk.AppendPartialRow(childCols, b.edgeChunk.GetRow(0))
+			edgeCols = b.edgeChunk.GetRow(0).Len()
+		}
 
-		b.destChunk.Reset()
-		e.destRowDecoder.DecodeToChunk(b.destRowData[i], b.destRowHandles[i], b.destChunk)
-		b.resultChunk.AppendPartialRow(childCols+edgeCols, b.destChunk.GetRow(0))
+		if !e.eliminateDest {
+			b.destChunk.Reset()
+			e.destRowDecoder.DecodeToChunk(b.destRowData[i], b.destRowHandles[i], b.destChunk)
+			b.resultChunk.AppendPartialRow(childCols+edgeCols, b.destChunk.GetRow(0))
+		} else {
+			b.resultChunk.AppendInt64(childCols+edgeCols, b.destRowHandles[i].IntValue())
+		}
 	}
 
 	select {
@@ -347,34 +364,46 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 	}
 }
 
+func (e *GraphEdgeScanExecutor) newChunkBatch() *chunkBatch {
+	return &chunkBatch{
+		e:             e,
+		edgeChunk:     e.edgeChunk.CopyConstruct(),
+		destChunk:     e.destChunk.CopyConstruct(),
+		resultChunk:   chunk.New(e.base().retFieldTypes, chunkBatchSize, chunkBatchSize),
+		resultChunkCh: e.results,
+	}
+}
+
 func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chunk.Chunk) error {
 	startTime := time.Now()
 	edgeScanRows := 0
 	defer func() {
 		cost := time.Since(startTime)
-		goatomic.AddInt64(&e.stats.totalTaskTime, int64(cost))
-		goatomic.AddInt64(&e.stats.edgeScanRows, int64(edgeScanRows))
-		if goatomic.LoadInt64(&e.stats.maxTaskTime) < int64(cost) {
-			goatomic.StoreInt64(&e.stats.maxTaskTime, int64(cost))
+		e.stats.totalTaskTime.Add(int64(cost))
+		e.stats.edgeScanRows.Add(int64(edgeScanRows))
+		if e.stats.maxTaskTime.Load() < int64(cost) {
+			e.stats.maxTaskTime.Add(int64(cost))
 		}
 		e.pendingTasks.Done()
 	}()
-	goatomic.AddInt64(&e.stats.taskNum, 1)
 
-	lastVidIdx := 0
-	childColLen := len(e.schema.Columns) - len(e.edgeTableInfo.Columns) - len(e.destTableInfo.Columns)
-	for i := 0; i < childColLen; i++ {
-		if mysql.HasPriKeyFlag(e.schema.Columns[i].GetType().Flag) {
-			lastVidIdx = i
+	e.stats.taskNum.Inc()
+
+	childVidIdx := 0
+	childSchema := e.children[0].Schema()
+	for i := childSchema.Len() - 1; i >= 0; i-- {
+		if mysql.HasPriKeyFlag(childSchema.Columns[i].GetType().Flag) {
+			childVidIdx = i
 		}
 	}
+
 	idxInfo := e.edgeTableInfo.FindIndexByName(strings.ToLower(mysql.GraphEdgeKeyName))
-	inboundChunkBatch := newChunkBatch(e)
-	outboundChunkBatch := newChunkBatch(e)
+	inboundChunkBatch := e.newChunkBatch()
+	outboundChunkBatch := e.newChunkBatch()
 
 	for i := 0; i < childChunk.NumRows(); i++ {
 		childRow := childChunk.GetRow(i)
-		vid := childRow.GetInt64(lastVidIdx)
+		vid := childRow.GetInt64(childVidIdx)
 
 		var iterErr error
 		switch e.direction {
@@ -400,15 +429,11 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 			return iterErr
 		}
 	}
-	if inboundChunkBatch.rows() > 0 {
-		if err := inboundChunkBatch.flush(ctx); err != nil {
-			return err
-		}
+	if err := inboundChunkBatch.flush(ctx); err != nil {
+		return err
 	}
-	if outboundChunkBatch.rows() > 0 {
-		if err := outboundChunkBatch.flush(ctx); err != nil {
-			return err
-		}
+	if err := outboundChunkBatch.flush(ctx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -419,7 +444,7 @@ func (e *GraphEdgeScanExecutor) fetchFromChild(ctx context.Context) {
 		e.workerWg.Done()
 		e.pendingTasks.Wait()
 		close(e.results)
-		goatomic.AddInt64(&e.stats.fetchRootTime, int64(time.Since(start)))
+		e.stats.fetchRootTime.Add(int64(time.Since(start)))
 	}()
 
 	for {
@@ -444,14 +469,18 @@ func (e *GraphEdgeScanExecutor) pushTask(chk *chunk.Chunk) {
 	start := time.Now()
 	e.pendingTasks.Add(1)
 	e.childChunkCh <- chk
-	goatomic.AddInt64(&e.stats.pushTaskTime, int64(time.Since(start)))
+	e.stats.pushTaskTime.Add(int64(time.Since(start)))
 }
 
 func (e *GraphEdgeScanExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 	if !e.prepared {
-		e.startWorkers(ctx)
 		e.workerWg.Add(1)
 		go e.fetchFromChild(ctx)
+		e.stats.concurrency = e.concurrency
+		e.workerWg.Add(e.concurrency)
+		for i := 0; i < e.concurrency; i++ {
+			go e.runWorker(ctx)
+		}
 		e.prepared = true
 	}
 
