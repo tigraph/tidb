@@ -514,6 +514,33 @@ func (p *LogicalLimit) PruneColumns(parentUsedCols []*expression.Column) error {
 	return nil
 }
 
+// PruneColumns implements LogicalPlan interface.
+func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column) error {
+	child := p.children[0]
+	used := expression.GetUsedList(parentUsedCols, p.schema)
+	for i := len(used) - 1; i >= 0; i-- {
+		if used[i] {
+			continue
+		}
+		// Retain the destination vertex id column
+		if mysql.HasPriKeyFlag(p.schema.Columns[i].RetType.Flag) &&
+			p.DestSchema.Contains(p.schema.Columns[i]) {
+			continue
+		}
+		p.schema.Columns = append(p.schema.Columns[:i], p.schema.Columns[i+1:]...)
+		p.names = append(p.names[:i], p.names[i+1:]...)
+	}
+	// Prune edge/destination schema
+	for _, schema := range []*expression.Schema{p.EdgeSchema, p.DestSchema} {
+		for i := schema.Len() - 1; i >= 0; i-- {
+			if !p.schema.Contains(schema.Columns[i]) {
+				schema.Columns = append(schema.Columns[:i], schema.Columns[i+1:]...)
+			}
+		}
+	}
+	return child.PruneColumns(parentUsedCols)
+}
+
 func (*columnPruner) name() string {
 	return "column_prune"
 }

@@ -89,11 +89,13 @@ type GraphEdgeScanExecutor struct {
 	edgeRowDecoder *rowcodec.ChunkDecoder
 	edgeRetFields  []*types.FieldType
 	edgeChunk      *chunk.Chunk
+	eliminateEdge  bool
 	destSchema     *expression.Schema
 	destTableInfo  *model.TableInfo
 	destRowDecoder *rowcodec.ChunkDecoder
 	destRetFields  []*types.FieldType
 	destChunk      *chunk.Chunk
+	eliminateDest  bool
 
 	pendingTasks sync.WaitGroup
 
@@ -120,6 +122,10 @@ func (e *GraphEdgeScanExecutor) Open(ctx context.Context) error {
 	} else {
 		e.snapshot = e.ctx.GetStore().GetSnapshot(kv.Version{Ver: snapshotTS})
 	}
+
+	e.eliminateEdge = e.edgeSchema.Len() == 0
+	e.eliminateDest = e.destSchema.Len() == 1 && mysql.HasPriKeyFlag(e.destSchema.Columns[0].RetType.Flag)
+
 	return e.children[0].Open(ctx)
 }
 
@@ -281,7 +287,7 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 	}
 
 	e := b.e
-	if len(b.edgeRowData) < len(b.edgeRowHandles) {
+	if !e.eliminateEdge && len(b.edgeRowData) < len(b.edgeRowHandles) {
 		var keys []kv.Key
 		for _, h := range b.edgeRowHandles {
 			keys = append(keys, tablecodec.EncodeRowKeyWithHandle(e.edgeTableInfo.ID, h))
@@ -299,7 +305,7 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 			b.edgeRowData = append(b.edgeRowData, val)
 		}
 	}
-	if len(b.destRowData) < len(b.destRowHandles) {
+	if !e.eliminateDest && len(b.destRowData) < len(b.destRowHandles) {
 		var keys []kv.Key
 		for _, h := range b.destRowHandles {
 			keys = append(keys, tablecodec.EncodeRowKeyWithHandle(e.destTableInfo.ID, h))
@@ -319,17 +325,23 @@ func (b *chunkBatch) flush(ctx context.Context) error {
 	}
 
 	childCols := b.childRows[0].Len()
+	edgeCols := b.e.edgeSchema.Len()
 	for i := 0; i < len(b.childRows); i++ {
 		b.resultChunk.AppendPartialRow(0, b.childRows[i])
 
-		b.edgeChunk.Reset()
-		e.edgeRowDecoder.DecodeToChunk(b.edgeRowData[i], b.edgeRowHandles[i], b.edgeChunk)
-		b.resultChunk.AppendPartialRow(childCols, b.edgeChunk.GetRow(0))
-		edgeCols := b.edgeChunk.GetRow(0).Len()
+		if !e.eliminateEdge {
+			b.edgeChunk.Reset()
+			e.edgeRowDecoder.DecodeToChunk(b.edgeRowData[i], b.edgeRowHandles[i], b.edgeChunk)
+			b.resultChunk.AppendPartialRow(childCols, b.edgeChunk.GetRow(0))
+		}
 
-		b.destChunk.Reset()
-		e.destRowDecoder.DecodeToChunk(b.destRowData[i], b.destRowHandles[i], b.destChunk)
-		b.resultChunk.AppendPartialRow(childCols+edgeCols, b.destChunk.GetRow(0))
+		if !e.eliminateDest {
+			b.destChunk.Reset()
+			e.destRowDecoder.DecodeToChunk(b.destRowData[i], b.destRowHandles[i], b.destChunk)
+			b.resultChunk.AppendPartialRow(childCols+edgeCols, b.destChunk.GetRow(0))
+		} else {
+			b.resultChunk.AppendInt64(childCols+edgeCols, b.destRowHandles[i].IntValue())
+		}
 	}
 
 	select {
