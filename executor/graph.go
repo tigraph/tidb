@@ -384,19 +384,19 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 		var iterErr error
 		switch e.direction {
 		case ast.GraphEdgeDirectionIn:
-			iterErr = e.iterInboundEdge(ctx, vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
+			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
 				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
 			})
 		case ast.GraphEdgeDirectionOut:
-			iterErr = e.iterOutboundEdge(ctx, vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+			iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
 				return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
 			})
 		case ast.GraphEdgeDirectionBoth:
-			iterErr = e.iterInboundEdge(ctx, vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
+			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
 				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
 			})
 			if iterErr == nil {
-				iterErr = e.iterOutboundEdge(ctx, vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+				iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
 					return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
 				})
 			}
