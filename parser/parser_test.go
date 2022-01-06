@@ -6447,8 +6447,8 @@ func TestGraph(t *testing.T) {
 	p := parser.New()
 
 	ddls := []string{
-		`create table e1(a int source key references v2, b int destination key references v3)`,
-		`create table e2(a int not null source key references v2, b int not null destination key references v3)`,
+		"CREATE TABLE `e1` (`a` INT SOURCE KEY REFERENCES `v2`,`b` INT DESTINATION KEY REFERENCES `v3`)",
+		"CREATE TABLE `e2` (`a` INT NOT NULL SOURCE KEY REFERENCES `v2`,`b` INT NOT NULL DESTINATION KEY REFERENCES `v3`)",
 	}
 
 	for _, ddl := range ddls {
@@ -6456,13 +6456,20 @@ func TestGraph(t *testing.T) {
 		require.Nil(t, err, ddl)
 		require.Equal(t, 1, len(stmts))
 		stmt := stmts[0].(*ast.CreateTableStmt)
-		if strings.Contains(ddl, "not null") {
+		if strings.Contains(ddl, "NOT NULL") {
 			require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[1].Tp)
 			require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[1].Tp)
 		} else {
 			require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[0].Tp)
 			require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[0].Tp)
 		}
+
+		var sb strings.Builder
+		err = stmt.Restore(NewRestoreCtx(DefaultRestoreFlags, &sb))
+		require.NoError(t, err, ddl)
+		restoreSQL := sb.String()
+		comment := fmt.Sprintf("source %v; restore %v", ddl, restoreSQL)
+		require.Equal(t, ddl, restoreSQL, comment)
 	}
 
 	// graph query

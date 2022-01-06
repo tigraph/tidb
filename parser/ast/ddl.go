@@ -533,12 +533,12 @@ func (n *ColumnOption) Restore(ctx *format.RestoreCtx) error {
 			})
 		}
 	case ColumnOptionSourceKey:
-		ctx.WriteKeyWord("SOURCE KEY")
+		ctx.WriteKeyWord("SOURCE KEY ")
 		if err := n.Refer.Restore(ctx); err != nil {
 			return errors.Annotate(err, "An error occurred while splicing ColumnOption ReferenceDef")
 		}
 	case ColumnOptionDestinationKey:
-		ctx.WriteKeyWord("DESTINATION KEY")
+		ctx.WriteKeyWord("DESTINATION KEY ")
 		if err := n.Refer.Restore(ctx); err != nil {
 			return errors.Annotate(err, "An error occurred while splicing ColumnOption ReferenceDef")
 		}
