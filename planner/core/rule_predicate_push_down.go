@@ -635,6 +635,12 @@ func (p *LogicalMemTable) PredicatePushDown(predicates []expression.Expression) 
 	return predicates, p.self
 }
 
+// PredicatePushDown implements LogicalPlan PredicatePushDown interface.
+func (p *LogicalGraphEdgeScan) PredicatePushDown(predicates []expression.Expression) ([]expression.Expression, LogicalPlan) {
+	p.baseLogicalPlan.PredicatePushDown(nil)
+	return predicates, p
+}
+
 func (*ppdSolver) name() string {
 	return "predicate_push_down"
 }
