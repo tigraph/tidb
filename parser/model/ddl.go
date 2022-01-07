@@ -94,6 +94,7 @@ const (
 	ActionAlterCacheTable               ActionType = 57
 	ActionAlterTableStatsOptions        ActionType = 58
 	ActionAlterNoCacheTable             ActionType = 59
+	ActionModifyColumnAddGraphOption    ActionType = 60
 )
 
 var actionMap = map[ActionType]string{
@@ -155,6 +156,7 @@ var actionMap = map[ActionType]string{
 	ActionAlterCacheTable:               "alter table cache",
 	ActionAlterNoCacheTable:             "alter table nocache",
 	ActionAlterTableStatsOptions:        "alter table statistics options",
+	ActionModifyColumnAddGraphOption:    "alter table add graph option",
 
 	// `ActionAlterTableAlterPartition` is removed and will never be used.
 	// Just left a tombstone here for compatibility.
