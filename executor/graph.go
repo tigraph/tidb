@@ -231,6 +231,39 @@ func (e *GraphEdgeScanExecutor) iterOutboundEdge(vid int64, f func(edgeRowHandle
 	return nil
 }
 
+func (e *GraphEdgeScanExecutor) iterBidirectionalEdge(vid int64, f func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error) error {
+	startKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID, mustEncodeKey(types.NewIntDatum(vid)))
+	endKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID, mustEncodeKey(types.NewIntDatum(vid+1)))
+	iter, err := e.snapshot.Iter(startKey, endKey)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	for err = nil; err == nil && iter.Valid(); err = iter.Next() {
+		edgeRowHandle, err := tablecodec.DecodeRowKey(iter.Key())
+		if err != nil {
+			return err
+		}
+		destVid, err := decodeSecondInt64(edgeRowHandle.Encoded())
+		if err != nil {
+			return err
+		}
+		revEdgeRowKey := tablecodec.EncodeRowKey(e.edgeTableInfo.ID,
+			mustEncodeKey(types.NewIntDatum(destVid), types.NewIntDatum(vid)))
+		_, err = e.snapshot.Get(context.TODO(), revEdgeRowKey)
+		if err == kv.ErrNotExist {
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		if err := f(edgeRowHandle, iter.Value(), kv.IntHandle(destVid)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type chunkBatch struct {
 	childRows      []chunk.Row
 	edgeRowHandles []kv.Handle
@@ -417,14 +450,9 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 				return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
 			})
 		case ast.GraphEdgeDirectionBoth:
-			iterErr = e.iterInboundEdge(vid, idxInfo, func(edgeRowHandle kv.Handle, destRowHandle kv.Handle) error {
-				return inboundChunkBatch.append(ctx, childRow, edgeRowHandle, destRowHandle)
+			iterErr = e.iterBidirectionalEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
+				return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
 			})
-			if iterErr == nil {
-				iterErr = e.iterOutboundEdge(vid, func(edgeRowHandle kv.Handle, edgeRowData []byte, destRowHandle kv.Handle) error {
-					return outboundChunkBatch.appendWithEdgeRowData(ctx, childRow, edgeRowHandle, edgeRowData, destRowHandle)
-				})
-			}
 		}
 		if iterErr != nil {
 			return iterErr
