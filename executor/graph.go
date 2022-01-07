@@ -394,6 +394,7 @@ func (e *GraphEdgeScanExecutor) handleTask(ctx context.Context, childChunk *chun
 	for i := childSchema.Len() - 1; i >= 0; i-- {
 		if mysql.HasPriKeyFlag(childSchema.Columns[i].GetType().Flag) {
 			childVidIdx = i
+			break
 		}
 	}
 

@@ -519,9 +519,11 @@ func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column)
 	child := p.children[0]
 	used := expression.GetUsedList(parentUsedCols, p.schema)
 
+	usedCols := 0
 	// Retain the last primary key column of child executor to retrieve the vertex identifier.
 	for i := child.Schema().Len() - 1; i >= 0; i-- {
 		if used[i] {
+			usedCols++
 			continue
 		}
 		if mysql.HasPriKeyFlag(child.Schema().Columns[i].RetType.Flag) {
@@ -530,17 +532,16 @@ func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column)
 			break
 		}
 	}
-	for i := len(used) - 1; i >= 0; i-- {
+	for i, j := 0, 0; i < len(used); i++ {
 		if used[i] {
-			continue
+			p.schema.Columns[j] = p.schema.Columns[i]
+			p.names[j] = p.names[i]
+			j++
 		}
-		// Retain the destination vertex id column
-		if mysql.HasPriKeyFlag(p.schema.Columns[i].RetType.Flag) && p.DestSchema.Contains(p.schema.Columns[i]) {
-			continue
-		}
-		p.schema.Columns = append(p.schema.Columns[:i], p.schema.Columns[i+1:]...)
-		p.names = append(p.names[:i], p.names[i+1:]...)
 	}
+	p.schema.Columns = p.schema.Columns[:usedCols]
+	p.names = p.names[:usedCols]
+
 	// Prune edge/destination schema
 	for _, schema := range []*expression.Schema{p.EdgeSchema, p.DestSchema} {
 		for i := schema.Len() - 1; i >= 0; i-- {

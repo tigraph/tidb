@@ -6578,9 +6578,18 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		return dbName
 	}
 
-	p, err := b.buildDataSource(ctx, pathPattern.Source.Name, &pathPattern.Source.AsName)
+	sourceAsName := &pathPattern.Source.AsName
+	p, err := b.buildDataSource(ctx, pathPattern.Source.Name, sourceAsName)
 	if err != nil {
 		return nil, err
+	}
+	for _, name := range p.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		if sourceAsName.L != "" {
+			name.TblName = *sourceAsName
+		}
 	}
 
 	if where := pathPattern.Source.Where; where != nil {
@@ -6624,6 +6633,9 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 		} else {
 			destDBName = dbNameOrDefault(edgeTableInfo.EdgeOptions.Destination.Schema)
 			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.EdgeOptions.Destination.Table)
+			for _, col := range destSchema.Columns {
+				col.IsHidden = true
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -6649,7 +6661,12 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 			tblName = model.NewCIStr(fmt.Sprintf("_dest_%d", i))
 		}
 		for _, c := range destTableInfo.Columns {
-			names = append(names, &types.FieldName{DBName: es.DestDBName, TblName: tblName, ColName: c.Name})
+			names = append(names, &types.FieldName{
+				DBName:  es.DestDBName,
+				TblName: tblName,
+				ColName: c.Name,
+				Hidden:  edge.Destination == nil,
+			})
 		}
 
 		// The new columns added by edge scan executor.
