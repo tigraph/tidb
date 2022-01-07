@@ -917,6 +917,14 @@ func ConstructResultOfShowCreateTable(ctx sessionctx.Context, tableInfo *model.T
 		if ddl.IsAutoRandomColumnID(tableInfo, col.ID) {
 			buf.WriteString(fmt.Sprintf(" /*T![auto_rand] AUTO_RANDOM(%d) */", tableInfo.AutoRandomBits))
 		}
+		if mysql.HasSourceKeyFlag(col.Flag) {
+			target := tableInfo.EdgeOptions.Source.Table.String()
+			buf.WriteString(" SOURCE KEY REFERENCES " + target)
+		}
+		if mysql.HasDestinationKeyFlag(col.Flag) {
+			target := tableInfo.EdgeOptions.Destination.Table.String()
+			buf.WriteString(" DESTINATION KEY REFERENCES " + target)
+		}
 		if len(col.Comment) > 0 {
 			buf.WriteString(fmt.Sprintf(" COMMENT '%s'", format.OutputFormat(col.Comment)))
 		}
