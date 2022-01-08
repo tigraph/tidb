@@ -16,6 +16,7 @@ package core
 
 import (
 	"context"
+	"github.com/pingcap/tidb/types"
 
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/expression/aggregation"
@@ -517,30 +518,37 @@ func (p *LogicalLimit) PruneColumns(parentUsedCols []*expression.Column) error {
 // PruneColumns implements LogicalPlan interface.
 func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column) error {
 	child := p.children[0]
-	used := expression.GetUsedList(parentUsedCols, p.schema)
+	parentCols := p.schema.Columns[child.Schema().Len():]
+	parentNames := p.names[child.Schema().Len():]
 
 	// Retain the last primary key column of child executor to retrieve the vertex identifier.
+	usedSchema := expression.NewSchema(parentUsedCols...)
 	for i := child.Schema().Len() - 1; i >= 0; i-- {
-		if used[i] {
-			continue
-		}
-		if mysql.HasPriKeyFlag(child.Schema().Columns[i].RetType.Flag) {
-			parentUsedCols = append(parentUsedCols, p.schema.Columns[i])
-			used[i] = true
+		childCol := child.Schema().Columns[i]
+		if mysql.HasPriKeyFlag(childCol.RetType.Flag) {
+			if !usedSchema.Contains(childCol) {
+				parentUsedCols = append(parentUsedCols, childCol)
+			}
 			break
 		}
 	}
+	if err := child.PruneColumns(parentUsedCols); err != nil {
+		return err
+	}
 
+	// Merge child schemas.
 	usedCols := 0
-	for i := 0; i < len(used); i++ {
-		if used[i] {
-			p.schema.Columns[usedCols] = p.schema.Columns[i]
-			p.names[usedCols] = p.names[i]
+	for i := 0; i < len(parentCols); i++ {
+		if usedSchema.Contains(parentCols[i]) {
+			parentCols[usedCols] = parentCols[i]
+			parentNames[usedCols] = parentNames[i]
 			usedCols++
 		}
 	}
-	p.schema.Columns = p.schema.Columns[:usedCols]
-	p.names = p.names[:usedCols]
+	parentCols = parentCols[:usedCols]
+	parentNames = parentNames[:usedCols]
+	p.schema.Columns = append(append([]*expression.Column(nil), child.Schema().Columns...), parentCols...)
+	p.names = append(append(types.NameSlice(nil), child.OutputNames()...), parentNames...)
 
 	// Prune edge/destination schema
 	for _, schema := range []*expression.Schema{p.EdgeSchema, p.DestSchema} {
@@ -550,7 +558,7 @@ func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column)
 			}
 		}
 	}
-	return child.PruneColumns(parentUsedCols)
+	return nil
 }
 
 func (*columnPruner) name() string {

@@ -2730,6 +2730,39 @@ func (d *ddl) AlterTable(ctx context.Context, sctx sessionctx.Context, ident ast
 		return ErrWrongObject.GenWithStackByArgs(ident.Schema, ident.Name, "BASE TABLE")
 	}
 
+	var s0, s1 *ast.AlterTableSpec
+	if func() bool {
+		if len(validSpecs) != 2 {
+			return false
+		}
+		s0, s1 = validSpecs[0], validSpecs[1]
+		if len(s0.NewColumns) != 1 || len(s1.NewColumns) != 1 {
+			return false
+		}
+		col0 := s0.NewColumns[0]
+		col1 := s1.NewColumns[0]
+		if len(col0.Options) != 1 || len(col1.Options) != 1 {
+			return false
+		}
+		opt0 := col0.Options[0]
+		opt1 := col1.Options[0]
+		if opt0.Tp == ast.ColumnOptionDestinationKey {
+			opt0, opt1 = opt1, opt0
+			s0, s1 = s1, s0
+		}
+		return opt0.Tp == ast.ColumnOptionSourceKey && opt1.Tp == ast.ColumnOptionDestinationKey
+	}() {
+		if err := d.ModifyColumnAddGraphOption(sctx, ident, s0, s1); err != nil {
+			return err
+		}
+		keys := []*ast.IndexPartSpecification{
+			{Column: s1.NewColumns[0].Name, Length: -1},
+			{Column: s0.NewColumns[0].Name, Length: -1},
+		}
+		return d.CreateIndex(sctx, ident, ast.IndexKeyTypeUnique, model.NewCIStr(fmt.Sprintf(mysql.GraphEdgeKeyName)),
+			keys, nil, false)
+	}
+
 	err = checkMultiSpecs(sctx, validSpecs)
 	if err != nil {
 		return err
@@ -4607,6 +4640,34 @@ func (d *ddl) ModifyColumn(ctx context.Context, sctx sessionctx.Context, ident a
 		sctx.GetSessionVars().StmtCtx.AppendNote(err)
 		return nil
 	}
+	err = d.callHookOnChanged(err)
+	return errors.Trace(err)
+}
+
+func (d *ddl) ModifyColumnAddGraphOption(
+	ctx sessionctx.Context,
+	ident ast.Ident,
+	srcSpec, destSpec *ast.AlterTableSpec,
+) error {
+	is := d.infoCache.GetLatest()
+	schema, ok := is.SchemaByName(ident.Schema)
+	if !ok {
+		return infoschema.ErrDatabaseNotExists.GenWithStackByArgs(ident.Schema)
+	}
+
+	tb, err := is.TableByName(ident.Schema, ident.Name)
+	if err != nil {
+		return errors.Trace(infoschema.ErrTableNotExists.GenWithStackByArgs(ident.Schema, ident.Name))
+	}
+	job := &model.Job{
+		SchemaID:   schema.ID,
+		TableID:    tb.Meta().ID,
+		SchemaName: schema.Name.L,
+		Type:       model.ActionModifyColumnAddGraphOption,
+		BinlogInfo: &model.HistoryInfo{},
+		Args:       []interface{}{srcSpec.NewColumns[0], destSpec.NewColumns[0]},
+	}
+	err = d.doDDLJob(ctx, job)
 	err = d.callHookOnChanged(err)
 	return errors.Trace(err)
 }
