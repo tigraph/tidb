@@ -448,12 +448,13 @@ func (dc *ddlCtx) buildDescTableScan(ctx context.Context, startTS uint64, tbl ta
 	var b distsql.RequestBuilder
 	var builder *distsql.RequestBuilder
 	var ranges []*ranger.Range
-	if tbl.Meta().IsCommonHandle {
+	tableInfo := tbl.Meta()
+	if tableInfo.IsCommonHandle {
 		ranges = ranger.FullNotNullRange()
 	} else {
 		ranges = ranger.FullIntRange(false)
 	}
-	builder = b.SetHandleRanges(sctx.GetSessionVars().StmtCtx, tbl.GetPhysicalID(), tbl.Meta().IsCommonHandle, ranges, nil)
+	builder = b.SetHandleRanges(sctx.GetSessionVars().StmtCtx, tbl.GetPhysicalID(), tableInfo.IsCommonHandle, ranges, nil)
 	builder.SetDAGRequest(dagPB).
 		SetStartTS(startTS).
 		SetKeepOrder(true).

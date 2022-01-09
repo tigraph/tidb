@@ -555,3 +555,28 @@ func (p PhysicalCTETable) Init(ctx sessionctx.Context, stats *property.StatsInfo
 	p.stats = stats
 	return &p
 }
+
+func (p LogicalGraphEdgeScan) Init(ctx sessionctx.Context) *LogicalGraphEdgeScan {
+	p.baseLogicalPlan = newBaseLogicalPlan(ctx, plancodec.TypeSel, &p, 0)
+	return &p
+}
+
+func (p LogicalGraphAnyShortest) Init(ctx sessionctx.Context) *LogicalGraphAnyShortest {
+	p.baseLogicalPlan = newBaseLogicalPlan(ctx, plancodec.TypeSel, &p, 0)
+	return &p
+}
+
+// Init initializes PhysicalMaxOneRow.
+func (p PhysicalGraphEdgeScan) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int, props ...*property.PhysicalProperty) *PhysicalGraphEdgeScan {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeGraphEdgeScan, &p, offset)
+	p.childrenReqProps = props
+	p.stats = stats
+	return &p
+}
+
+func (p PhysicalGraphAnyShortest) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int, props ...*property.PhysicalProperty) *PhysicalGraphAnyShortest {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeGraphAnyShortest, &p, offset)
+	p.childrenReqProps = props
+	p.stats = stats
+	return &p
+}

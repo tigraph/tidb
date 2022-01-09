@@ -17,6 +17,7 @@ package tablecodec
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -56,7 +57,8 @@ const (
 	idLen     = 8
 	prefixLen = 1 + idLen /*tableID*/ + 2
 	// RecordRowKeyLen is public for calculating avgerage row size.
-	RecordRowKeyLen       = prefixLen + idLen /*handle*/
+	RecordRowKeyLen       = prefixLen + idLen                         /*handle*/
+	GraphEdgeRowKeyLen    = prefixLen + idLen /*srcVertexID*/ + idLen /*dstVertexID*/
 	tablePrefixLength     = 1
 	recordPrefixSepLength = 2
 	metaPrefixLength      = 1
@@ -106,6 +108,13 @@ func EncodeRecordKey(recordPrefix kv.Key, h kv.Handle) kv.Key {
 	buf = append(buf, recordPrefix...)
 	buf = append(buf, h.Encoded()...)
 	return buf
+}
+func DecodeGraphEdgeDestID(key kv.Key) (id int64, err error) {
+	if len(key) != GraphEdgeRowKeyLen {
+		return 0, errors.New(fmt.Sprintf("Wrong key, len: %d", len(key)))
+	}
+	id = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[GraphEdgeRowKeyLen-8 : GraphEdgeRowKeyLen]))
+	return id, errors.Trace(err)
 }
 
 func hasTablePrefix(key kv.Key) bool {

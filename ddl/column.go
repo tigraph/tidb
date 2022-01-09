@@ -935,6 +935,40 @@ func (w *worker) onModifyColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver in
 	return w.doModifyColumnTypeWithData(d, t, job, dbInfo, tblInfo, jobParam.changingCol, oldCol, jobParam.newCol.Name, jobParam.pos, jobParam.changingIdxs)
 }
 
+func onModifyColumnAddGraphOption(t *meta.Meta, job *model.Job) (ver int64, _ error) {
+	var srcCol, dstCol ast.ColumnDef
+	if err := job.DecodeArgs(&srcCol, &dstCol); err != nil {
+		job.State = model.JobStateCancelled
+		return ver, errors.Trace(err)
+	}
+
+	tblInfo, err := getTableInfoAndCancelFaultJob(t, job, job.SchemaID)
+	if err != nil {
+		return ver, errors.Trace(err)
+	}
+	for _, col := range tblInfo.Columns {
+		if col.Name.L == srcCol.Name.Name.L {
+			col.Flag |= mysql.SrcKeyFlag
+		}
+		if col.Name.L == dstCol.Name.Name.L {
+			col.Flag |= mysql.DstKeyFlag
+		}
+	}
+	srcRefTable := srcCol.Options[0].Refer.Table
+	dstRefTable := dstCol.Options[0].Refer.Table
+	tblInfo.EdgeOptions = &model.EdgeOptions{
+		Source:      &model.EdgeReference{Schema: srcRefTable.Schema, Table: srcRefTable.Name},
+		Destination: &model.EdgeReference{Schema: dstRefTable.Schema, Table: dstRefTable.Name},
+	}
+
+	ver, err = updateVersionAndTableInfo(t, job, tblInfo, true)
+	if err != nil {
+		return ver, errors.Trace(err)
+	}
+	job.FinishTableJob(model.JobStateDone, model.StatePublic, ver, tblInfo)
+	return ver, nil
+}
+
 // rollbackModifyColumnJobWithData is used to rollback modify-column job which need to reorg the data.
 func rollbackModifyColumnJobWithData(t *meta.Meta, tblInfo *model.TableInfo, job *model.Job, oldCol *model.ColumnInfo, jobParam *modifyColumnJobParameter) (ver int64, err error) {
 	// If the not-null change is included, we should clean the flag info in oldCol.

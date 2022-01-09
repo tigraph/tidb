@@ -527,6 +527,7 @@ var %[1]sDebug = 0
 type %[1]sLexer interface {
 	Lex(lval *%[1]sSymType) int
 	Errorf(format string, a ...interface{}) error
+	ErrorfAt(pos int, format string, a ...interface{}) (err error)
 	AppendError(err error)
 	AppendWarn(err error)
 	Errors() (warns []error, errs []error)

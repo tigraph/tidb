@@ -123,8 +123,23 @@ func (s *Scanner) Errorf(format string, a ...interface{}) (err error) {
 		lenStr = "(total length " + strconv.Itoa(len(val)) + ")"
 		val = val[:2048]
 	}
-	err = fmt.Errorf("line %d column %d near \"%s\"%s %s",
+	err = fmt.Errorf("line %d column %d near \"%s\" %s%s",
 		s.r.p.Line, s.r.p.Col, val, str, lenStr)
+	return
+}
+
+// ErrorfAt tells scanner something is wrong and left shift the cursor while reporting the error message.
+//// Scanner satisfies yyLexer interface which need this function.
+func (s *Scanner) ErrorfAt(pos int, format string, a ...interface{}) (err error) {
+	str := fmt.Sprintf(format, a...)
+	val := s.r.s[pos:]
+	var lenStr = ""
+	if len(val) > 2048 {
+		lenStr = "(total length " + strconv.Itoa(len(val)) + ")"
+		val = val[:2048]
+	}
+	err = fmt.Errorf("line %d column %d near \"%s\" %s %s",
+		s.r.p.Line, pos, val, str, lenStr)
 	return
 }
 

@@ -7641,3 +7641,29 @@ func (s *testDBSuite8) TestCreateTextAdjustLen(c *C) {
 		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"))
 	tk.MustExec("drop table if exists t")
 }
+
+func (s *testSerialDBSuite) TestCreateGraph(c *C) {
+	tk := testkit.NewTestKit(c, s.store)
+	defer config.RestoreFunc()()
+	config.UpdateGlobal(func(conf *config.Config) {
+		conf.AlterPrimaryKey = false
+	})
+
+	tk.MustExec("drop database if exists test_graph")
+	defer tk.MustExec("drop database if exists test_graph")
+	tk.MustExec("create database test_graph")
+	tk.MustExec("set @@tidb_enable_clustered_index=0")
+	tk.MustExec("use test_graph")
+	tk.MustExec("create table  people1 (id bigint)")
+	tk.MustExec("create table  people2 (id bigint, name varchar(32), uid int)")
+	people1 := testGetTableByName(c, tk.Se, "test_graph", "people1")
+	c.Assert(people1.Meta().EdgeOptions, IsNil)
+
+	tk.MustExec("create table friend1 (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1)")
+	tk.MustExec("create table friend2 (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1, description varchar(32), start timestamp)")
+	friend1 := testGetTableByName(c, tk.Se, "test_graph", "friend1")
+
+	c.Assert(friend1.Meta().EdgeOptions, NotNil)
+	c.Assert(friend1.Meta().EdgeOptions.Source.Table.O, Equals, "people1")
+	c.Assert(friend1.Meta().EdgeOptions.Destination.Table.O, Equals, "people1")
+}

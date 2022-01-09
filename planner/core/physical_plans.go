@@ -1503,3 +1503,52 @@ func (p *CTEDefinition) ExplainID() fmt.Stringer {
 		return "CTE_" + strconv.Itoa(p.CTE.IDForStorage)
 	})
 }
+
+// PhysicalGraphEdgeScan represents a scanner of graph edge.
+type PhysicalGraphEdgeScan struct {
+	physicalSchemaProducer
+
+	Direction     ast.GraphEdgeDirection
+	EdgeDBName    model.CIStr
+	EdgeTableInfo *model.TableInfo
+	EdgeSchema    *expression.Schema
+	DestDBName    model.CIStr
+	DestTableInfo *model.TableInfo
+	DestSchema    *expression.Schema
+}
+
+// Clone implements PhysicalPlan interface.
+func (p *PhysicalGraphEdgeScan) Clone() (PhysicalPlan, error) {
+	cloned := new(PhysicalGraphEdgeScan)
+	base, err := p.basePhysicalPlan.cloneWithSelf(cloned)
+	if err != nil {
+		return nil, err
+	}
+	cloned.basePhysicalPlan = *base
+	cloned.EdgeDBName = p.EdgeDBName
+	cloned.EdgeTableInfo = p.EdgeTableInfo.Clone()
+	cloned.DestDBName = p.DestDBName
+	cloned.DestTableInfo = p.DestTableInfo.Clone()
+	return cloned, nil
+}
+
+type PhysicalGraphAnyShortest struct {
+	physicalSchemaProducer
+
+	SrcTableInfo  *model.TableInfo
+	DstTableInfo  *model.TableInfo
+	EdgeTableInfo *model.TableInfo
+}
+
+func (p *PhysicalGraphAnyShortest) Clone() (PhysicalPlan, error) {
+	cloned := new(PhysicalGraphAnyShortest)
+	base, err := p.basePhysicalPlan.cloneWithSelf(cloned)
+	if err != nil {
+		return nil, err
+	}
+	cloned.basePhysicalPlan = *base
+	cloned.SrcTableInfo = p.SrcTableInfo.Clone()
+	cloned.DstTableInfo = p.DstTableInfo.Clone()
+	cloned.EdgeTableInfo = p.EdgeTableInfo.Clone()
+	return cloned, nil
+}

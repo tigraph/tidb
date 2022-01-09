@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -285,6 +286,10 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildCTE(v)
 	case *plannercore.PhysicalCTETable:
 		return b.buildCTETableReader(v)
+	case *plannercore.PhysicalGraphEdgeScan:
+		return b.buildGraphEdgeScan(v)
+	case *plannercore.PhysicalGraphAnyShortest:
+		return b.buildGraphAnyShortestPath(v)
 	default:
 		if mp, ok := p.(MockPhysicalPlan); ok {
 			return mp.GetExecutor()
@@ -4689,6 +4694,77 @@ func (b *executorBuilder) buildCTETableReader(v *plannercore.PhysicalCTETable) E
 		chkIdx:       0,
 	}
 }
+
+func (b *executorBuilder) buildGraphEdgeScan(v *plannercore.PhysicalGraphEdgeScan) Executor {
+	childExec := b.build(v.Children()[0])
+	if b.err != nil {
+		return nil
+	}
+
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		b.err = err
+		return nil
+	}
+
+	edgeRowDecoder := NewRowDecoder(b.ctx, v.EdgeSchema, v.EdgeTableInfo)
+	edgeRetFieldTypes := make([]*types.FieldType, len(v.EdgeSchema.Columns))
+	for i := range v.EdgeSchema.Columns {
+		edgeRetFieldTypes[i] = v.EdgeSchema.Columns[i].RetType
+	}
+	edgeChunk := chunk.New(edgeRetFieldTypes, 1, 1)
+
+	destRowDecoder := NewRowDecoder(b.ctx, v.DestSchema, v.DestTableInfo)
+	destRetFieldTypes := make([]*types.FieldType, len(v.DestSchema.Columns))
+	for i := range v.DestSchema.Columns {
+		destRetFieldTypes[i] = v.DestSchema.Columns[i].RetType
+	}
+	destChunk := chunk.New(destRetFieldTypes, 1, 1)
+
+	concurrency := runtime.NumCPU() * 60
+	return &GraphEdgeScanExecutor{
+		baseExecutor:   newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		concurrency:    concurrency,
+		workerWg:       new(sync.WaitGroup),
+		childChunkCh:   make(chan *chunk.Chunk, concurrency*1000),
+		childErr:       make(chan error),
+		results:        make(chan *chunk.Chunk, concurrency*10),
+		direction:      v.Direction,
+		edgeSchema:     v.EdgeSchema,
+		edgeTableInfo:  v.EdgeTableInfo,
+		edgeRowDecoder: edgeRowDecoder,
+		edgeRetFields:  edgeRetFieldTypes,
+		edgeChunk:      edgeChunk,
+		destSchema:     v.DestSchema,
+		destTableInfo:  v.DestTableInfo,
+		destRowDecoder: destRowDecoder,
+		destRetFields:  destRetFieldTypes,
+		destChunk:      destChunk,
+		startTS:        startTS,
+		die:            make(chan struct{}),
+	}
+}
+
+func (b *executorBuilder) buildGraphAnyShortestPath(v *plannercore.PhysicalGraphAnyShortest) Executor {
+	srcExec := b.build(v.Children()[0])
+	dstExec := b.build(v.Children()[1])
+	if b.err != nil {
+		return nil
+	}
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		b.err = err
+		return nil
+	}
+	return &GraphAnyShortestExec{
+		baseExecutor:  newBaseExecutor(b.ctx, v.Schema(), v.ID(), srcExec, dstExec),
+		srcTableInfo:  v.SrcTableInfo,
+		dstTableInfo:  v.DstTableInfo,
+		edgeTableInfo: v.EdgeTableInfo,
+		startTS:       startTS,
+	}
+}
+
 func (b *executorBuilder) validCanReadTemporaryOrCacheTable(tbl *model.TableInfo) error {
 	err := b.validCanReadTemporaryTable(tbl)
 	if err != nil {

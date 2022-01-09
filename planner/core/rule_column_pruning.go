@@ -16,6 +16,7 @@ package core
 
 import (
 	"context"
+	"github.com/pingcap/tidb/types"
 
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/expression/aggregation"
@@ -511,6 +512,57 @@ func (p *LogicalLimit) PruneColumns(parentUsedCols []*expression.Column) error {
 	}
 	p.schema = nil
 	p.inlineProjection(savedUsedCols)
+	return nil
+}
+
+// PruneColumns implements LogicalPlan interface.
+func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column) error {
+	child := p.children[0]
+	parentCols := p.schema.Columns[child.Schema().Len():]
+	parentNames := p.names[child.Schema().Len():]
+
+	// Retain the last primary key column of child executor to retrieve the vertex identifier.
+	usedSchema := expression.NewSchema(parentUsedCols...)
+	for i := child.Schema().Len() - 1; i >= 0; i-- {
+		childCol := child.Schema().Columns[i]
+		if mysql.HasPriKeyFlag(childCol.RetType.Flag) {
+			if !usedSchema.Contains(childCol) {
+				parentUsedCols = append(parentUsedCols, childCol)
+			}
+			break
+		}
+	}
+	if err := child.PruneColumns(parentUsedCols); err != nil {
+		return err
+	}
+
+	// Merge child schemas.
+	usedCols := 0
+	for i := 0; i < len(parentCols); i++ {
+		if usedSchema.Contains(parentCols[i]) {
+			parentCols[usedCols] = parentCols[i]
+			parentNames[usedCols] = parentNames[i]
+			usedCols++
+		}
+	}
+	parentCols = parentCols[:usedCols]
+	parentNames = parentNames[:usedCols]
+	p.schema.Columns = append(append([]*expression.Column(nil), child.Schema().Columns...), parentCols...)
+	p.names = append(append(types.NameSlice(nil), child.OutputNames()...), parentNames...)
+
+	// Prune edge/destination schema
+	for _, schema := range []*expression.Schema{p.EdgeSchema, p.DestSchema} {
+		for i := schema.Len() - 1; i >= 0; i-- {
+			if !p.schema.Contains(schema.Columns[i]) {
+				schema.Columns = append(schema.Columns[:i], schema.Columns[i+1:]...)
+			}
+		}
+	}
+	return nil
+}
+
+func (p *LogicalGraphAnyShortest) PruneColumns(parentUsedCols []*expression.Column) error {
+	// Do nothing.
 	return nil
 }
 

@@ -6442,3 +6442,151 @@ func (g *gbkEncodingChecker) Enter(n ast.Node) (node ast.Node, skipChildren bool
 func (g *gbkEncodingChecker) Leave(n ast.Node) (node ast.Node, ok bool) {
 	return n, true
 }
+
+func TestGraph(t *testing.T) {
+	p := parser.New()
+
+	ddls := []string{
+		"CREATE TABLE `e1` (`a` INT SOURCE KEY REFERENCES `v2`,`b` INT DESTINATION KEY REFERENCES `v3`)",
+		"CREATE TABLE `e2` (`a` INT NOT NULL SOURCE KEY REFERENCES `v2`,`b` INT NOT NULL DESTINATION KEY REFERENCES `v3`)",
+	}
+
+	for _, ddl := range ddls {
+		stmts, _, err := p.Parse(ddl, "", "")
+		require.Nil(t, err, ddl)
+		require.Equal(t, 1, len(stmts))
+		stmt := stmts[0].(*ast.CreateTableStmt)
+		if strings.Contains(ddl, "NOT NULL") {
+			require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[1].Tp)
+			require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[1].Tp)
+		} else {
+			require.Equal(t, ast.ColumnOptionSourceKey, stmt.Cols[0].Options[0].Tp)
+			require.Equal(t, ast.ColumnOptionDestinationKey, stmt.Cols[1].Options[0].Tp)
+		}
+
+		var sb strings.Builder
+		err = stmt.Restore(NewRestoreCtx(DefaultRestoreFlags, &sb))
+		require.NoError(t, err, ddl)
+		restoreSQL := sb.String()
+		comment := fmt.Sprintf("source %v; restore %v", ddl, restoreSQL)
+		require.Equal(t, ddl, restoreSQL, comment)
+	}
+
+	// graph query
+	cases := []struct {
+		query  string
+		error  string
+		assert func(*ast.SelectStmt)
+	}{
+		{
+			query: "select * from match (students) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, 0, len(match.Paths[0].Edges))
+			},
+		},
+		{
+			query: "select * from match (students as s1) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, "s1", match.Paths[0].Source.AsName.O)
+				require.Equal(t, 0, len(match.Paths[0].Edges))
+			},
+		},
+		{
+			query: "select * from match (students as s1).out(student_of) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, "s1", match.Paths[0].Source.AsName.O)
+				require.Equal(t, 1, len(match.Paths[0].Edges))
+				require.Nil(t, match.Paths[0].Edges[0].Destination)
+			},
+		},
+		{
+			query: "select * from match (students as s1).out(student_of).out(face_to_face).(person as p) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, "s1", match.Paths[0].Source.AsName.O)
+				require.Equal(t, 2, len(match.Paths[0].Edges))
+				require.Nil(t, match.Paths[0].Edges[0].Destination)
+			},
+		},
+		{
+			query: "select * from match (students as s1 where s1.age > 100) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, "s1", match.Paths[0].Source.AsName.O)
+				require.NotNil(t, match.Paths[0].Source.Where)
+			},
+		},
+		{
+			query: "select * from match (students as s1 where s1.age > 100), (students as s3 where s1.age < 10) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 2, len(match.Paths))
+				require.Equal(t, "s1", match.Paths[0].Source.AsName.O)
+				require.Equal(t, "s3", match.Paths[1].Source.AsName.O)
+				require.NotNil(t, match.Paths[0].Source.Where)
+				require.NotNil(t, match.Paths[1].Source.Where)
+			},
+		},
+		{
+			query: "select * from match (students).in(a).(high_school as hs).out(b).(university) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, 2, len(match.Paths[0].Edges))
+				require.Equal(t, "a", match.Paths[0].Edges[0].Edge.Name.Name.O)
+				require.Equal(t, "high_school", match.Paths[0].Edges[0].Destination.Name.Name.O)
+				require.Equal(t, "hs", match.Paths[0].Edges[0].Destination.AsName.O)
+			},
+		},
+		{
+			query: "select * from match (students).in(a).(high_school as hs).out(b).(university as u1).both(c).(university as u2) where x=10",
+			assert: func(stmt *ast.SelectStmt) {
+				match, ok := stmt.From.TableRefs.Left.(*ast.GraphPattern)
+				require.True(t, ok)
+				require.Equal(t, 1, len(match.Paths))
+				require.Equal(t, 3, len(match.Paths[0].Edges))
+				require.Equal(t, "a", match.Paths[0].Edges[0].Edge.Name.Name.O)
+				require.Equal(t, "high_school", match.Paths[0].Edges[0].Destination.Name.Name.O)
+				require.Equal(t, "hs", match.Paths[0].Edges[0].Destination.AsName.O)
+				require.Equal(t, ast.GraphEdgeDirectionBoth, match.Paths[0].Edges[2].Direction)
+			},
+		},
+		{
+			query:  "select * from match (students).in(a).(high_school as hs).x(xxx).(university) where x=10",
+			error:  "line 1 column 56 near \".x(xxx).(university) where x=10\" Wrong edge direction: x",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+		{
+			query:  "select * from match (students).in(a).(university).(university2) where x=10",
+			error:  "line 1 column 49 near \".(university2) where x=10\" Missing edge direction",
+			assert: func(stmt *ast.SelectStmt) {},
+		},
+	}
+	for _, c := range cases {
+		stmts, _, err := p.Parse(c.query, "", "")
+		if c.error != "" {
+			require.NotNil(t, err, c.query)
+			require.Equal(t, c.error, strings.TrimSpace(err.Error()), c.query)
+		} else {
+			require.Nil(t, err, c.query)
+			require.Equal(t, 1, len(stmts))
+			stmt := stmts[0].(*ast.SelectStmt)
+			c.assert(stmt)
+		}
+	}
+}

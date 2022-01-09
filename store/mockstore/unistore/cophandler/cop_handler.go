@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -118,6 +120,9 @@ func handleCopDAGRequest(dbReader *dbreader.DBReader, lockStore *lockstore.MemSt
 		return buildResp(nil, nil, nil, dagReq, err, dagCtx.sc.GetWarnings(), time.Since(startTime))
 	}
 	chunks, err := closureExec.execute()
+	if err != nil {
+		logutil.BgLogger().Error("Handle coprocessor request failed", zap.Error(err))
+	}
 	return buildResp(chunks, closureExec, closureExec.ndvs, dagReq, err, dagCtx.sc.GetWarnings(), time.Since(startTime))
 }
 

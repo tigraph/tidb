@@ -345,7 +345,21 @@ type TableInfo struct {
 
 	// StatsOptions is used when do analyze/auto-analyze for each table
 	StatsOptions *StatsOptions `json:"stats_options"`
+
+	// EdgeOptions is used to represent the source/destination information if current table is a edge table.
+	EdgeOptions *EdgeOptions `json:"edge_options,omitempty"`
 }
+
+type EdgeOptions struct {
+	Source      *EdgeReference `json:"source"`
+	Destination *EdgeReference `json:"destination"`
+}
+
+type EdgeReference struct {
+	Schema CIStr `json:"schema"`
+	Table  CIStr `json:"table"`
+}
+
 type TableCacheStatusType int
 
 const (
@@ -568,6 +582,24 @@ func (t *TableInfo) GetAutoIncrementColInfo() *ColumnInfo {
 	return nil
 }
 
+func (t *TableInfo) GetSourceKeyColInfo() *ColumnInfo {
+	for _, colInfo := range t.Columns {
+		if mysql.HasSourceKeyFlag(colInfo.Flag) {
+			return colInfo
+		}
+	}
+	return nil
+}
+
+func (t *TableInfo) GetDestinationKeyColInfo() *ColumnInfo {
+	for _, colInfo := range t.Columns {
+		if mysql.HasDestinationKeyFlag(colInfo.Flag) {
+			return colInfo
+		}
+	}
+	return nil
+}
+
 func (t *TableInfo) IsAutoIncColUnsigned() bool {
 	col := t.GetAutoIncrementColInfo()
 	if col == nil {
@@ -618,6 +650,11 @@ func (t *TableInfo) FindIndexByName(idxName string) *IndexInfo {
 // IsLocked checks whether the table was locked.
 func (t *TableInfo) IsLocked() bool {
 	return t.Lock != nil && len(t.Lock.Sessions) > 0
+}
+
+// IsGraphEdge checks whether the table was a edge table.
+func (t *TableInfo) IsGraphEdge() bool {
+	return t.EdgeOptions != nil
 }
 
 // NewExtraHandleColInfo mocks a column info for extra handle column.

@@ -2844,3 +2844,29 @@ func (p *LogicalMaxOneRow) exhaustPhysicalPlans(prop *property.PhysicalProperty)
 	mor := PhysicalMaxOneRow{}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: 2})
 	return []PhysicalPlan{mor}, true, nil
 }
+
+func (p *LogicalGraphEdgeScan) exhaustPhysicalPlans(prop *property.PhysicalProperty) ([]PhysicalPlan, bool, error) {
+	es := PhysicalGraphEdgeScan{
+		Direction:     p.Direction,
+		EdgeDBName:    p.EdgeDBName,
+		EdgeTableInfo: p.EdgeTableInfo,
+		EdgeSchema:    p.EdgeSchema,
+		DestDBName:    p.DestDBName,
+		DestTableInfo: p.DestTableInfo,
+		DestSchema:    p.DestSchema,
+	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
+	es.SetSchema(p.Schema())
+	es.SetOutputNames(p.OutputNames())
+	return []PhysicalPlan{es}, true, nil
+}
+
+func (p *LogicalGraphAnyShortest) exhaustPhysicalPlans(prop *property.PhysicalProperty) ([]PhysicalPlan, bool, error) {
+	es := PhysicalGraphAnyShortest{
+		SrcTableInfo:  p.SrcTableInfo,
+		DstTableInfo:  p.DstTableInfo,
+		EdgeTableInfo: p.EdgeTableInfo,
+	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
+	es.SetSchema(p.Schema())
+	es.SetOutputNames(p.OutputNames())
+	return []PhysicalPlan{es}, true, nil
+}

@@ -1908,6 +1908,10 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 		return nil, errors.Trace(err)
 	}
 
+	if err = handleEdgeOptions(tbInfo, colDefs); err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	if tbInfo.TempTableType == model.TempTableNone && tbInfo.PlacementPolicyRef == nil && tbInfo.DirectPlacementOpts == nil {
 		// Set the defaults from Schema. Note: they are mutual exclusive!
 		if placementPolicyRef != nil {
@@ -1937,6 +1941,87 @@ func buildTableInfoWithStmt(ctx sessionctx.Context, s *ast.CreateTableStmt, dbCh
 	}
 
 	return tbInfo, nil
+}
+
+func handleEdgeOptions(tbInfo *model.TableInfo, colDefs []*ast.ColumnDef) error {
+	var (
+		srcIdx, dstIdx int
+		edgeOptions    = &model.EdgeOptions{}
+	)
+	for i, cd := range colDefs {
+		if len(cd.Options) == 0 {
+			continue
+		}
+		for _, opt := range cd.Options {
+			switch opt.Tp {
+			case ast.ColumnOptionSourceKey:
+				if edgeOptions.Source != nil {
+					return errors.Errorf("Only one column can be specified SOURCE KEY option")
+				}
+				srcIdx = i
+				edgeOptions.Source = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Table: opt.Refer.Table.Name}
+			case ast.ColumnOptionDestinationKey:
+				if edgeOptions.Destination != nil {
+					return errors.Errorf("Only one column can be specified DESTINATION KEY option")
+				}
+				dstIdx = i
+				edgeOptions.Destination = &model.EdgeReference{Schema: opt.Refer.Table.Schema, Table: opt.Refer.Table.Name}
+			}
+		}
+	}
+
+	// Regular table.
+	if edgeOptions.Source == nil && edgeOptions.Destination == nil {
+		return nil
+	}
+
+	// Edge table cannot be assigned a primary key.
+	if tbInfo.IsCommonHandle || tbInfo.PKIsHandle {
+		return errors.New("can not specified primary key on edge")
+	}
+
+	if edgeOptions.Source == nil || edgeOptions.Destination == nil {
+		return errors.Errorf("SOURCE KEY and DESTINATION KEY columns need to be specified at the same time")
+	}
+
+	primaryKey := &model.IndexInfo{
+		Name:    model.NewCIStr(mysql.PrimaryKeyName),
+		Unique:  true,
+		Primary: true,
+		State:   model.StatePublic,
+	}
+
+	edgeKey := &model.IndexInfo{
+		Name:   model.NewCIStr(fmt.Sprintf(mysql.GraphEdgeKeyName)),
+		Unique: true,
+		State:  model.StatePublic,
+	}
+
+	for _, idx := range []int{srcIdx, dstIdx} {
+		tbInfo.Columns[idx].Flag |= mysql.PriKeyFlag
+		tbInfo.Columns[idx].Flag |= mysql.NotNullFlag
+		primaryKey.Columns = append(primaryKey.Columns, &model.IndexColumn{
+			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
+			Offset: idx,
+			Length: types.UnspecifiedLength,
+		})
+	}
+	for _, idx := range []int{dstIdx, srcIdx} {
+		edgeKey.Columns = append(edgeKey.Columns, &model.IndexColumn{
+			Name:   model.NewCIStr(tbInfo.Columns[idx].Name.O),
+			Offset: idx,
+			Length: types.UnspecifiedLength,
+		})
+	}
+
+	tbInfo.Columns[srcIdx].Flag |= mysql.SrcKeyFlag
+	tbInfo.Columns[dstIdx].Flag |= mysql.DstKeyFlag
+	tbInfo.Indices = append(tbInfo.Indices, primaryKey)
+	tbInfo.Indices = append(tbInfo.Indices, edgeKey)
+	tbInfo.EdgeOptions = edgeOptions
+	tbInfo.IsCommonHandle = true
+
+	return nil
 }
 
 func (d *ddl) assignTableID(tbInfo *model.TableInfo) error {
@@ -2643,6 +2728,39 @@ func (d *ddl) AlterTable(ctx context.Context, sctx sessionctx.Context, ident ast
 	is := d.infoCache.GetLatest()
 	if is.TableIsView(ident.Schema, ident.Name) || is.TableIsSequence(ident.Schema, ident.Name) {
 		return ErrWrongObject.GenWithStackByArgs(ident.Schema, ident.Name, "BASE TABLE")
+	}
+
+	var s0, s1 *ast.AlterTableSpec
+	if func() bool {
+		if len(validSpecs) != 2 {
+			return false
+		}
+		s0, s1 = validSpecs[0], validSpecs[1]
+		if len(s0.NewColumns) != 1 || len(s1.NewColumns) != 1 {
+			return false
+		}
+		col0 := s0.NewColumns[0]
+		col1 := s1.NewColumns[0]
+		if len(col0.Options) != 1 || len(col1.Options) != 1 {
+			return false
+		}
+		opt0 := col0.Options[0]
+		opt1 := col1.Options[0]
+		if opt0.Tp == ast.ColumnOptionDestinationKey {
+			opt0, opt1 = opt1, opt0
+			s0, s1 = s1, s0
+		}
+		return opt0.Tp == ast.ColumnOptionSourceKey && opt1.Tp == ast.ColumnOptionDestinationKey
+	}() {
+		if err := d.ModifyColumnAddGraphOption(sctx, ident, s0, s1); err != nil {
+			return err
+		}
+		keys := []*ast.IndexPartSpecification{
+			{Column: s1.NewColumns[0].Name, Length: -1},
+			{Column: s0.NewColumns[0].Name, Length: -1},
+		}
+		return d.CreateIndex(sctx, ident, ast.IndexKeyTypeUnique, model.NewCIStr(fmt.Sprintf(mysql.GraphEdgeKeyName)),
+			keys, nil, false)
 	}
 
 	err = checkMultiSpecs(sctx, validSpecs)
@@ -4522,6 +4640,34 @@ func (d *ddl) ModifyColumn(ctx context.Context, sctx sessionctx.Context, ident a
 		sctx.GetSessionVars().StmtCtx.AppendNote(err)
 		return nil
 	}
+	err = d.callHookOnChanged(err)
+	return errors.Trace(err)
+}
+
+func (d *ddl) ModifyColumnAddGraphOption(
+	ctx sessionctx.Context,
+	ident ast.Ident,
+	srcSpec, destSpec *ast.AlterTableSpec,
+) error {
+	is := d.infoCache.GetLatest()
+	schema, ok := is.SchemaByName(ident.Schema)
+	if !ok {
+		return infoschema.ErrDatabaseNotExists.GenWithStackByArgs(ident.Schema)
+	}
+
+	tb, err := is.TableByName(ident.Schema, ident.Name)
+	if err != nil {
+		return errors.Trace(infoschema.ErrTableNotExists.GenWithStackByArgs(ident.Schema, ident.Name))
+	}
+	job := &model.Job{
+		SchemaID:   schema.ID,
+		TableID:    tb.Meta().ID,
+		SchemaName: schema.Name.L,
+		Type:       model.ActionModifyColumnAddGraphOption,
+		BinlogInfo: &model.HistoryInfo{},
+		Args:       []interface{}{srcSpec.NewColumns[0], destSpec.NewColumns[0]},
+	}
+	err = d.doDDLJob(ctx, job)
 	err = d.callHookOnChanged(err)
 	return errors.Trace(err)
 }

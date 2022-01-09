@@ -72,9 +72,9 @@ const (
 type Join struct {
 	node
 
-	// Left table can be TableSource or JoinNode.
+	// Left table can be TableSource/GraphPattern or JoinNode.
 	Left ResultSetNode
-	// Right table can be TableSource or JoinNode or nil.
+	// Right table can be TableSource/GraphPattern or JoinNode or nil.
 	Right ResultSetNode
 	// Tp represents join type.
 	Tp JoinType

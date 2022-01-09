@@ -4242,3 +4242,39 @@ func TestIssueInsertPrefixIndexForNonUTF8Collation(t *testing.T) {
 	tk.MustExec("insert into t3 select 'abc '")
 	tk.MustGetErrCode("insert into t3 select 'abc d'", 1062)
 }
+
+func TestWriteGraph(t *testing.T) {
+	store, clean := testkit.CreateMockStore(t)
+	defer clean()
+
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("drop table if exists p")
+	// Test for tag
+	tk.MustExec("create table people1 (vertex_id bigint primary key, name varchar(32));")
+	tk.MustExec("insert into people1 values (1,'bob'),(2,'jim');")
+	tk.MustExec("insert into people1 values (3,'jack');")
+	tk.MustQuery("select * from people1 where vertex_id = 1").Check(testkit.Rows("1 bob"))
+	tk.MustQuery("select * from people1 where vertex_id in (1,2,3)").Check(testkit.Rows("1 bob", "2 jim", "3 jack"))
+	tk.MustExec("delete from people1 where vertex_id=2;")
+	tk.MustQuery("select * from people1 where vertex_id = 2").Check(testkit.Rows())
+	tk.MustQuery("select * from people1 where vertex_id in (1,2,3)").Check(testkit.Rows("1 bob", "3 jack"))
+	tk.MustQuery("select * from people1").Check(testkit.Rows("1 bob", "3 jack"))
+
+	// Test for edge
+	tk.MustExec("create table f (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1)")
+	tk.MustExec("insert into f values (1,3)")
+	tk.MustQuery("select * from f where `src` = 1 and `dst` = 3").Check(testkit.Rows("1 3"))
+
+	tk.MustExec("create table f2 (src bigint SOURCE KEY REFERENCES people1, dst bigint DESTINATION KEY REFERENCES people1, comment varchar(100));")
+	tk.MustExec("insert into people1 values (2, 'jim'),(5,'a'),(6,'b');")
+	tk.MustExec("insert into f2 (`src`,`dst`)values (1,3),(3,1)")
+	tk.MustExec("insert into f2 values (1,2,'hello')")
+	tk.MustQuery("select * from f2 where `src` = 1 and `dst` = 2").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2 where `src` = 3 and `dst` = 1").Check(testkit.Rows("3 1 <nil>"))
+	tk.MustQuery("select * from f2 where (`src`, `dst`) in ((1,2))").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2 where (`src`, `dst`) in ((1,2),(1,3),(5,1))").Check(testkit.Rows("1 2 hello", "1 3 <nil>"))
+	tk.MustExec("delete from f2 where `src` = 1 and `dst` = 3")
+	tk.MustQuery("select * from f2 where (`src`, `dst`) in ((1,2),(1,3),(5,1))").Check(testkit.Rows("1 2 hello"))
+	tk.MustQuery("select * from f2").Check(testkit.Rows("1 2 hello", "1 3 <nil>"))
+}

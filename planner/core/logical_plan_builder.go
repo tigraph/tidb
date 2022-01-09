@@ -374,6 +374,8 @@ func (b *PlanBuilder) buildResultSetNode(ctx context.Context, node ast.ResultSet
 		return b.buildSelect(ctx, x)
 	case *ast.SetOprStmt:
 		return b.buildSetOpr(ctx, x)
+	case *ast.GraphPattern:
+		return b.buildGraph(ctx, x)
 	default:
 		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.ResultSetNode(%T) for buildResultSetNode()", x)
 	}
@@ -6477,4 +6479,336 @@ func getResultCTESchema(seedSchema *expression.Schema, svar *variable.SessionVar
 		col.RetType.Flag &= ^mysql.NotNullFlag
 	}
 	return res
+}
+
+func (b *PlanBuilder) buildGraph(ctx context.Context, graphPattern *ast.GraphPattern) (LogicalPlan, error) {
+	var children []LogicalPlan
+	for _, path := range graphPattern.Paths {
+		child, err := b.buildGraphPath(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
+
+	if len(children) == 1 {
+		return children[0], nil
+	}
+
+	// FIXME: offset should be assigned a correct value.
+	unionAll := LogicalUnionAll{}.Init(b.ctx, 0)
+	unionAll.SetChildren(children...)
+	err := b.buildProjection4Union(ctx, unionAll)
+	if err != nil {
+		return nil, err
+	}
+	return unionAll, nil
+}
+
+func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) (*expression.Schema, *model.TableInfo, error) {
+	sessionVars := b.ctx.GetSessionVars()
+
+	// Source vertices
+	if dbName.L == "" {
+		dbName = model.NewCIStr(sessionVars.CurrentDB)
+	}
+
+	tbl, err := b.is.TableByName(dbName, tblName)
+	if err != nil {
+		return nil, nil, err
+	}
+	tableInfo := tbl.Meta()
+	var authErr error
+	if sessionVars.User != nil {
+		authErr = ErrTableaccessDenied.FastGenByArgs("SELECT", sessionVars.User.AuthUsername, sessionVars.User.AuthHostname, tableInfo.Name.L)
+	}
+	b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SelectPriv, dbName.L, tableInfo.Name.L, "", authErr)
+
+	var columns []*table.Column
+	if b.inUpdateStmt {
+		// create table t(a int, b int).
+		// Imagine that, There are 2 TiDB instances in the cluster, name A, B. We add a column `c` to table t in the TiDB cluster.
+		// One of the TiDB, A, the column type in its infoschema is changed to public. And in the other TiDB, the column type is
+		// still StateWriteReorganization.
+		// TiDB A: insert into t values(1, 2, 3);
+		// TiDB B: update t set a = 2 where b = 2;
+		// If we use tbl.Cols() here, the update statement, will ignore the col `c`, and the data `3` will lost.
+		columns = tbl.WritableCols()
+	} else if b.inDeleteStmt {
+		// DeletableCols returns all columns of the table in deletable states.
+		columns = tbl.DeletableCols()
+	} else {
+		columns = tbl.Cols()
+	}
+	schema := expression.NewSchema(make([]*expression.Column, 0, len(columns))...)
+	for _, col := range columns {
+		fn := &types.FieldName{
+			DBName:      dbName,
+			TblName:     tableInfo.Name,
+			ColName:     col.Name,
+			OrigTblName: tableInfo.Name,
+			OrigColName: col.Name,
+			// For update statement and delete statement, internal version should see the special middle state column, while user doesn't.
+			NotExplicitUsable: col.State != model.StatePublic,
+		}
+		newCol := &expression.Column{
+			UniqueID: sessionVars.AllocPlanColumnID(),
+			ID:       col.ID,
+			RetType:  col.FieldType.Clone(),
+			OrigName: fn.String(),
+			IsHidden: col.Hidden,
+		}
+		schema.Append(newCol)
+	}
+
+	return schema, tableInfo, nil
+}
+
+func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
+	switch pathPattern.Type {
+	case ast.GraphPathPatternTypeSimple:
+		return b.buildGraphPathSimple(ctx, pathPattern)
+	case ast.GraphPathPatternTypeAnyShortestPath:
+		return b.buildGraphPathAnyShortest(ctx, pathPattern)
+	default:
+		// TODO: support more path patterns.
+		return nil, errors.Errorf("unsupported graph path type: %v", pathPattern.Type)
+	}
+}
+
+func (b *PlanBuilder) buildGraphPathSimple(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
+	dbNameOrDefault := func(dbName model.CIStr) model.CIStr {
+		// Source vertices
+		if dbName.L == "" {
+			dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		return dbName
+	}
+
+	sourceAsName := &pathPattern.Source.AsName
+	p, err := b.buildDataSource(ctx, pathPattern.Source.Name, sourceAsName)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range p.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		if sourceAsName.L != "" {
+			name.TblName = *sourceAsName
+		}
+	}
+
+	if where := pathPattern.Source.Where; where != nil {
+		np, err := b.buildSelection(ctx, p, where, nil)
+		if err != nil {
+			return nil, err
+		}
+		p = np
+	}
+
+	if len(pathPattern.Edges) == 0 {
+		return p, nil
+	}
+
+	for i, edge := range pathPattern.Edges {
+		es := LogicalGraphEdgeScan{
+			Direction:  edge.Direction,
+			EdgeDBName: dbNameOrDefault(edge.Edge.Name.Schema),
+		}.Init(b.ctx)
+		edgeSchema, edgeTableInfo, err := b.buildGraphSchema(es.EdgeDBName, edge.Edge.Name.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !edgeTableInfo.IsGraphEdge() {
+			return nil, errors.Errorf("only EDGE table can be used in graph pattern edge expression")
+		}
+		es.EdgeTableInfo = edgeTableInfo
+		es.EdgeSchema = edgeSchema
+
+		// SELECT * FROM MATCH (v).OUT(e).OUT(e).(v)
+		// Use the table information referenced at Edge table definition.
+		var (
+			destSchema    *expression.Schema
+			destTableInfo *model.TableInfo
+			destDBName    model.CIStr
+			names         []*types.FieldName
+		)
+		if edge.Destination != nil {
+			destDBName = dbNameOrDefault(edge.Destination.Name.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edge.Destination.Name.Name)
+		} else {
+			destDBName = dbNameOrDefault(edgeTableInfo.EdgeOptions.Destination.Schema)
+			destSchema, destTableInfo, err = b.buildGraphSchema(destDBName, edgeTableInfo.EdgeOptions.Destination.Table)
+			for _, col := range destSchema.Columns {
+				col.IsHidden = true
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		es.DestDBName = destDBName
+		es.DestTableInfo = destTableInfo
+		es.DestSchema = destSchema
+
+		tblName := edgeTableInfo.Name
+		if edge.Edge.AsName.O != "" {
+			tblName = edge.Edge.AsName
+		}
+		for _, c := range edgeTableInfo.Columns {
+			names = append(names, &types.FieldName{DBName: es.EdgeDBName, TblName: tblName, ColName: c.Name})
+		}
+		if edge.Destination != nil {
+			if edge.Destination.AsName.O != "" {
+				tblName = edge.Destination.AsName
+			} else {
+				tblName = edge.Destination.Name.Name
+			}
+		} else {
+			tblName = model.NewCIStr(fmt.Sprintf("_dest_%d", i))
+		}
+		for _, c := range destTableInfo.Columns {
+			names = append(names, &types.FieldName{
+				DBName:  es.DestDBName,
+				TblName: tblName,
+				ColName: c.Name,
+				Hidden:  edge.Destination == nil,
+			})
+		}
+
+		// The new columns added by edge scan executor.
+		newSchema := expression.MergeSchema(edgeSchema, destSchema)
+		// Merge the edge scan executor schema with the child executor.
+		es.SetSchema(expression.MergeSchema(p.Schema(), newSchema))
+		es.SetOutputNames(append(p.OutputNames(), names...))
+
+		es.SetChildren(p)
+		if edge.Edge.Where != nil || (edge.Destination != nil && edge.Destination.Where != nil) {
+			var where ast.ExprNode
+			switch {
+			case edge.Edge.Where != nil && edge.Destination != nil && edge.Destination.Where != nil:
+				where = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: edge.Edge.Where, R: edge.Destination.Where}
+			case edge.Edge.Where != nil:
+				where = edge.Edge.Where
+			case edge.Destination != nil && edge.Destination.Where != nil:
+				where = edge.Destination.Where
+			}
+			np, err := b.buildSelection(ctx, es, where, nil)
+			if err != nil {
+				return nil, err
+			}
+			p = np
+		} else {
+			p = es
+		}
+	}
+
+	return p, nil
+}
+
+func (b *PlanBuilder) buildGraphPathAnyShortest(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
+	if !(len(pathPattern.Edges) == 1 && pathPattern.Edges[0].Destination != nil && pathPattern.Edges[0].Direction == ast.GraphEdgeDirectionOut) {
+		return nil, errors.New("unsupported any shortest path query")
+	}
+
+	dbNameOrDefault := func(dbName model.CIStr) model.CIStr {
+		if dbName.L == "" {
+			dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		return dbName
+	}
+
+	sourceAsName := &pathPattern.Source.AsName
+	source, err := b.buildDataSource(ctx, pathPattern.Source.Name, sourceAsName)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range source.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		if sourceAsName.L != "" {
+			name.TblName = *sourceAsName
+		}
+	}
+	if where := pathPattern.Source.Where; where != nil {
+		p, err := b.buildSelection(ctx, source, where, nil)
+		if err != nil {
+			return nil, err
+		}
+		source = p
+	}
+
+	edgePattern := pathPattern.Edges[0]
+	destinationAsName := &edgePattern.Destination.AsName
+	destination, err := b.buildDataSource(ctx, edgePattern.Destination.Name, destinationAsName)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range destination.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		if destinationAsName.L != "" {
+			name.TblName = *destinationAsName
+		}
+	}
+	if where := edgePattern.Destination.Where; where != nil {
+		p, err := b.buildSelection(ctx, destination, where, nil)
+		if err != nil {
+			return nil, err
+		}
+		destination = p
+	}
+
+	p := LogicalGraphAnyShortest{}.Init(b.ctx)
+	p.SetChildren(source, destination)
+
+	srcTableInfo, err := b.is.TableByName(dbNameOrDefault(pathPattern.Source.Name.Schema), pathPattern.Source.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	edgeTableInfo, err := b.is.TableByName(dbNameOrDefault(edgePattern.Edge.Name.Schema), edgePattern.Edge.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	dstTableInfo, err := b.is.TableByName(dbNameOrDefault(edgePattern.Destination.Name.Schema), edgePattern.Destination.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	p.SrcTableInfo = srcTableInfo.Meta()
+	p.DstTableInfo = dstTableInfo.Meta()
+	p.EdgeTableInfo = edgeTableInfo.Meta()
+
+	shortestPathCol := &expression.Column{
+		RetType: &types.FieldType{
+			Tp:      252,
+			Flag:    0,
+			Flen:    65535,
+			Decimal: 0,
+			Charset: "utf8mb4",
+			Collate: "utf8mb4_bin",
+		},
+		ID:       999999,
+		UniqueID: 999999,
+		Index:    0,
+	}
+	shortestPathName := &types.FieldName{
+		DBName:  model.NewCIStr("tigraph"),
+		TblName: model.NewCIStr("tigraph"),
+		ColName: model.NewCIStr("shortest_path"),
+	}
+
+	newSchema := expression.MergeSchema(p.children[0].Schema(), expression.NewSchema(shortestPathCol))
+	newSchema = expression.MergeSchema(newSchema, p.children[1].Schema())
+
+	var names types.NameSlice
+	names = append(names, p.children[0].OutputNames()...)
+	names = append(names, shortestPathName)
+	names = append(names, p.children[1].OutputNames()...)
+
+	p.SetSchema(newSchema)
+	p.SetOutputNames(names)
+
+	return p, nil
 }
