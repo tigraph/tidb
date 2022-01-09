@@ -120,7 +120,7 @@ func (e *GraphAnyShortestExec) deliverRes(ctx context.Context, srcID, dstID int6
 	if err := e.srcRowDecoder.DecodeToChunk(srcRowData, kv.IntHandle(srcID), srcChunk); err != nil {
 		return err
 	}
-	if err := e.dstRowDecoder.DecodeToChunk(dstRowData, kv.IntHandle(srcID), dstChunk); err != nil {
+	if err := e.dstRowDecoder.DecodeToChunk(dstRowData, kv.IntHandle(dstID), dstChunk); err != nil {
 		return err
 	}
 
