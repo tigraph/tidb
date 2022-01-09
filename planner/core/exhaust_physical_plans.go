@@ -2859,3 +2859,14 @@ func (p *LogicalGraphEdgeScan) exhaustPhysicalPlans(prop *property.PhysicalPrope
 	es.SetOutputNames(p.OutputNames())
 	return []PhysicalPlan{es}, true, nil
 }
+
+func (p *LogicalGraphAnyShortest) exhaustPhysicalPlans(prop *property.PhysicalProperty) ([]PhysicalPlan, bool, error) {
+	es := PhysicalGraphAnyShortest{
+		SrcTableInfo:  p.SrcTableInfo,
+		DstTableInfo:  p.DstTableInfo,
+		EdgeTableInfo: p.EdgeTableInfo,
+	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64}, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
+	es.SetSchema(p.Schema())
+	es.SetOutputNames(p.OutputNames())
+	return []PhysicalPlan{es}, true, nil
+}

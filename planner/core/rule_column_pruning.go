@@ -561,6 +561,11 @@ func (p *LogicalGraphEdgeScan) PruneColumns(parentUsedCols []*expression.Column)
 	return nil
 }
 
+func (p *LogicalGraphAnyShortest) PruneColumns(parentUsedCols []*expression.Column) error {
+	// Do nothing.
+	return nil
+}
+
 func (*columnPruner) name() string {
 	return "column_prune"
 }
