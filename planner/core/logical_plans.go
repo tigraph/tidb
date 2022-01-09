@@ -1332,3 +1332,30 @@ type LogicalGraphEdgeScan struct {
 	DestTableInfo *model.TableInfo
 	DestSchema    *expression.Schema
 }
+
+type LogicalGraphAnyShortest struct {
+	logicalSchemaProducer
+
+	SrcTableInfo  *model.TableInfo
+	DstTableInfo  *model.TableInfo
+	EdgeTableInfo *model.TableInfo
+}
+
+func (p *LogicalGraphAnyShortest) DeriveStats(childStats []*property.StatsInfo, selfSchema *expression.Schema, childSchema []*expression.Schema, columns [][]*expression.Column) (*property.StatsInfo, error) {
+	if len(childStats) >= 1 {
+		p.stats = childStats[0]
+		return p.stats, nil
+	}
+	if p.stats != nil {
+		return p.stats, nil
+	}
+	profile := &property.StatsInfo{
+		RowCount: float64(1),
+		ColNDVs:  make(map[int64]float64, selfSchema.Len()),
+	}
+	for _, col := range selfSchema.Columns {
+		profile.ColNDVs[col.UniqueID] = 1
+	}
+	p.stats = profile
+	return profile, nil
+}

@@ -2352,3 +2352,15 @@ func (t *mppTask) enforceExchangerImpl(prop *property.PhysicalProperty) *mppTask
 		hashCols: prop.MPPPartitionCols,
 	}
 }
+
+func (p *PhysicalGraphAnyShortest) attach2Task(tasks ...task) task {
+	lTask := tasks[0].convertToRootTask(p.ctx)
+	rTask := tasks[1].convertToRootTask(p.ctx)
+	p.SetChildren(lTask.plan(), rTask.plan())
+	task := &rootTask{
+		p:   p,
+		cst: lTask.cost() + rTask.cost(),
+	}
+	p.cost = task.cost()
+	return task
+}

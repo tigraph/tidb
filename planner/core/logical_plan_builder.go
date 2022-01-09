@@ -6565,11 +6565,18 @@ func (b *PlanBuilder) buildGraphSchema(dbName model.CIStr, tblName model.CIStr) 
 }
 
 func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
-	// TODO: support more path patterns.
-	if pathPattern.Type != ast.GraphPathPatternTypeSimple {
+	switch pathPattern.Type {
+	case ast.GraphPathPatternTypeSimple:
+		return b.buildGraphPathSimple(ctx, pathPattern)
+	case ast.GraphPathPatternTypeAnyShortestPath:
+		return b.buildGraphPathAnyShortest(ctx, pathPattern)
+	default:
+		// TODO: support more path patterns.
 		return nil, errors.Errorf("unsupported graph path type: %v", pathPattern.Type)
 	}
+}
 
+func (b *PlanBuilder) buildGraphPathSimple(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
 	dbNameOrDefault := func(dbName model.CIStr) model.CIStr {
 		// Source vertices
 		if dbName.L == "" {
@@ -6695,6 +6702,113 @@ func (b *PlanBuilder) buildGraphPath(ctx context.Context, pathPattern *ast.Graph
 			p = es
 		}
 	}
+
+	return p, nil
+}
+
+func (b *PlanBuilder) buildGraphPathAnyShortest(ctx context.Context, pathPattern *ast.GraphPathPattern) (LogicalPlan, error) {
+	if !(len(pathPattern.Edges) == 1 && pathPattern.Edges[0].Destination != nil && pathPattern.Edges[0].Direction == ast.GraphEdgeDirectionOut) {
+		return nil, errors.New("unsupported any shortest path query")
+	}
+
+	dbNameOrDefault := func(dbName model.CIStr) model.CIStr {
+		if dbName.L == "" {
+			dbName = model.NewCIStr(b.ctx.GetSessionVars().CurrentDB)
+		}
+		return dbName
+	}
+
+	sourceAsName := &pathPattern.Source.AsName
+	source, err := b.buildDataSource(ctx, pathPattern.Source.Name, sourceAsName)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range source.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		if sourceAsName.L != "" {
+			name.TblName = *sourceAsName
+		}
+	}
+	if where := pathPattern.Source.Where; where != nil {
+		p, err := b.buildSelection(ctx, source, where, nil)
+		if err != nil {
+			return nil, err
+		}
+		source = p
+	}
+
+	edgePattern := pathPattern.Edges[0]
+	destinationAsName := &edgePattern.Destination.AsName
+	destination, err := b.buildDataSource(ctx, edgePattern.Destination.Name, destinationAsName)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range destination.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		if destinationAsName.L != "" {
+			name.TblName = *destinationAsName
+		}
+	}
+	if where := edgePattern.Destination.Where; where != nil {
+		p, err := b.buildSelection(ctx, destination, where, nil)
+		if err != nil {
+			return nil, err
+		}
+		destination = p
+	}
+
+	p := LogicalGraphAnyShortest{}.Init(b.ctx)
+	p.SetChildren(source, destination)
+
+	srcTableInfo, err := b.is.TableByName(dbNameOrDefault(pathPattern.Source.Name.Schema), pathPattern.Source.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	edgeTableInfo, err := b.is.TableByName(dbNameOrDefault(edgePattern.Edge.Name.Schema), edgePattern.Edge.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	dstTableInfo, err := b.is.TableByName(dbNameOrDefault(edgePattern.Destination.Name.Schema), edgePattern.Destination.Name.Name)
+	if err != nil {
+		return nil, err
+	}
+	p.SrcTableInfo = srcTableInfo.Meta()
+	p.DstTableInfo = dstTableInfo.Meta()
+	p.EdgeTableInfo = edgeTableInfo.Meta()
+
+	shortestPathCol := &expression.Column{
+		RetType: &types.FieldType{
+			Tp:      252,
+			Flag:    0,
+			Flen:    65535,
+			Decimal: 0,
+			Charset: "utf8mb4",
+			Collate: "utf8mb4_bin",
+		},
+		ID:       999999,
+		UniqueID: 999999,
+		Index:    0,
+	}
+	shortestPathName := &types.FieldName{
+		DBName:  model.NewCIStr("tigraph"),
+		TblName: model.NewCIStr("tigraph"),
+		ColName: model.NewCIStr("shortest_path"),
+	}
+
+	newSchema := expression.MergeSchema(p.children[0].Schema(), expression.NewSchema(shortestPathCol))
+	newSchema = expression.MergeSchema(newSchema, p.children[1].Schema())
+
+	var names types.NameSlice
+	names = append(names, p.children[0].OutputNames()...)
+	names = append(names, shortestPathName)
+	names = append(names, p.children[1].OutputNames()...)
+
+	p.SetSchema(newSchema)
+	p.SetOutputNames(names)
 
 	return p, nil
 }

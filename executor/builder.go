@@ -288,6 +288,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildCTETableReader(v)
 	case *plannercore.PhysicalGraphEdgeScan:
 		return b.buildGraphEdgeScan(v)
+	case *plannercore.PhysicalGraphAnyShortest:
+		return b.buildGraphAnyShortestPath(v)
 	default:
 		if mp, ok := p.(MockPhysicalPlan); ok {
 			return mp.GetExecutor()
@@ -4740,6 +4742,26 @@ func (b *executorBuilder) buildGraphEdgeScan(v *plannercore.PhysicalGraphEdgeSca
 		destChunk:      destChunk,
 		startTS:        startTS,
 		die:            make(chan struct{}),
+	}
+}
+
+func (b *executorBuilder) buildGraphAnyShortestPath(v *plannercore.PhysicalGraphAnyShortest) Executor {
+	srcExec := b.build(v.Children()[0])
+	dstExec := b.build(v.Children()[1])
+	if b.err != nil {
+		return nil
+	}
+	startTS, err := b.getSnapshotTS()
+	if err != nil {
+		b.err = err
+		return nil
+	}
+	return &GraphAnyShortestExec{
+		baseExecutor:  newBaseExecutor(b.ctx, v.Schema(), v.ID(), srcExec, dstExec),
+		srcTableInfo:  v.SrcTableInfo,
+		dstTableInfo:  v.DstTableInfo,
+		edgeTableInfo: v.EdgeTableInfo,
+		startTS:       startTS,
 	}
 }
 
