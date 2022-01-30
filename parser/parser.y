@@ -296,6 +296,7 @@ import (
 	algorithm             "ALGORITHM"
 	always                "ALWAYS"
 	any                   "ANY"
+	are                   "ARE"
 	ascii                 "ASCII"
 	attributes            "ATTRIBUTES"
 	statsOptions          "STATS_OPTIONS"
@@ -368,6 +369,7 @@ import (
 	deallocate            "DEALLOCATE"
 	definer               "DEFINER"
 	delayKeyWrite         "DELAY_KEY_WRITE"
+	destination           "DESTINATION"
 	directory             "DIRECTORY"
 	disable               "DISABLE"
 	discard               "DISCARD"
@@ -375,6 +377,7 @@ import (
 	do                    "DO"
 	duplicate             "DUPLICATE"
 	dynamic               "DYNAMIC"
+	edge                  "EDGE"
 	enable                "ENABLE"
 	encryption            "ENCRYPTION"
 	end                   "END"
@@ -406,6 +409,7 @@ import (
 	general               "GENERAL"
 	global                "GLOBAL"
 	grants                "GRANTS"
+	graph                 "GRAPH"
 	hash                  "HASH"
 	help                  "HELP"
 	histogram             "HISTOGRAM"
@@ -429,6 +433,7 @@ import (
 	issuer                "ISSUER"
 	jsonType              "JSON"
 	keyBlockSize          "KEY_BLOCK_SIZE"
+	label                 "LABEL"
 	labels                "LABELS"
 	language              "LANGUAGE"
 	last                  "LAST"
@@ -505,6 +510,8 @@ import (
 	processlist           "PROCESSLIST"
 	profile               "PROFILE"
 	profiles              "PROFILES"
+	properties            "PROPERTIES"
+	property              "PROPERTY"
 	proxy                 "PROXY"
 	purge                 "PURGE"
 	quarter               "QUARTER"
@@ -613,6 +620,7 @@ import (
 	validation            "VALIDATION"
 	value                 "VALUE"
 	variables             "VARIABLES"
+	vertex                "VERTEX"
 	view                  "VIEW"
 	visible               "VISIBLE"
 	warnings              "WARNINGS"
@@ -935,6 +943,8 @@ import (
 	BindableStmt               "Statement that can be created binding on"
 	UpdateStmtNoWith           "Update statement without CTE clause"
 	HelpStmt                   "HELP statement"
+	CreatePropertyGraphStmt    "CREATE PROPERTY GRAPH statement"
+	DropPropertyGraphStmt      "DROP PROPERTY GRAPH statement"
 
 %type	<item>
 	AdminShowSlow                          "Admin Show Slow statement"
@@ -1317,6 +1327,26 @@ import (
 	AttributesOpt                          "Attributes options"
 	AllColumnsOrPredicateColumnsOpt        "all columns or predicate columns option"
 	StatsOptionsOpt                        "Stats options"
+	GraphName                              "Graph name"
+	VertexTables                           "Vertex tables"
+	VertexTableList                        "Vertex table list"
+	VertexTable                            "Vertex table"
+	EdgeTableList                          "Edge table list"
+	EdgeTablesOpt                          "Edge tables optional"
+	EdgeTable                              "Edge table"
+	KeyClause                              "Key clause"
+	KeyClauseOpt                           "Key clause optional"
+	VertexTableRef                         "Vertex table reference"
+	LabelClause                            "Label clause"
+	LabelClauseOpt                         "Label clause optional"
+	PropertiesClause                       "Properties clause"
+	PropertiesClauseOpt                    "Properties clause optional"
+	ExceptColumns                          "Except columns"
+	ExceptColumnsOpt                       "Except columns optional"
+	PropertyExpressionList                 "Property expression list"
+	PropertyExpression                     "Property expression"
+	PropertyAsName                         "Property as name"
+	PropertyAsNameOpt                      "Property as name optional"
 
 %type	<ident>
 	AsOpt             "AS or EmptyString"
@@ -1357,6 +1387,7 @@ import (
 	EncryptionOpt     "Encryption option 'Y' or 'N'"
 	FirstOrNext       "FIRST or NEXT"
 	RowOrRows         "ROW or ROWS"
+	AreKeywordOpt     "ARE keyword or empty"
 
 %type	<ident>
 	Identifier                      "identifier or unreserved keyword"
@@ -1396,6 +1427,12 @@ import (
 	Symbol                          "Constraint Symbol"
 
 %precedence empty
+%precedence label
+%precedence no
+%precedence properties
+%precedence source
+%precedence destination
+%precedence lowerThanAs
 %precedence as
 %precedence placement
 %precedence lowerThanSelectOpt
@@ -6059,6 +6096,14 @@ UnReservedKeyword:
 |	"CLUSTERED"
 |	"NONCLUSTERED"
 |	"PRESERVE"
+|	"GRAPH"
+|	"PROPERTY"
+|	"VERTEX"
+|	"EDGE"
+|	"DESTINATION"
+|	"ARE"
+|	"PROPERTIES"
+|	"LABEL"
 
 TiDBKeyword:
 	"ADMIN"
@@ -8743,7 +8788,7 @@ PartitionNameListOpt:
 	}
 
 TableAsNameOpt:
-	%prec empty
+	%prec lowerThanAs
 	{
 		$$ = model.CIStr{}
 	}
@@ -11015,6 +11060,8 @@ Statement:
 |	ShutdownStmt
 |	RestartStmt
 |	HelpStmt
+|	CreatePropertyGraphStmt
+|	DropPropertyGraphStmt
 
 TraceableStmt:
 	DeleteFromStmt
@@ -13800,4 +13847,206 @@ PlanReplayerStmt:
 
 		$$ = x
 	}
+
+CreatePropertyGraphStmt:
+	"CREATE" "PROPERTY" "GRAPH" GraphName VertexTables EdgeTablesOpt
+	{
+		$$ = &ast.CreatePropertyGraphStmt{
+			Graph:        $4.(*ast.GraphName),
+			VertexTables: $5.([]*ast.VertexTable),
+			EdgeTables:   $6.([]*ast.EdgeTable),
+		}
+	}
+
+DropPropertyGraphStmt:
+	"DROP" "PROPERTY" "GRAPH" GraphName
+	{
+		$$ = &ast.DropPropertyGraphStmt{
+			Graph: $4.(*ast.GraphName),
+		}
+	}
+
+GraphName:
+	Identifier
+	{
+		$$ = &ast.GraphName{Name: model.NewCIStr($1)}
+	}
+|	Identifier '.' Identifier
+	{
+		$$ = &ast.GraphName{Schema: model.NewCIStr($1), Name: model.NewCIStr($3)}
+	}
+
+VertexTables:
+	"VERTEX" "TABLES" '(' VertexTableList ')'
+	{
+		$$ = $4
+	}
+
+VertexTableList:
+	VertexTable
+	{
+		$$ = []*ast.VertexTable{$1.(*ast.VertexTable)}
+	}
+|	VertexTableList ',' VertexTable
+	{
+		$$ = append($1.([]*ast.VertexTable), $3.(*ast.VertexTable))
+	}
+
+VertexTable:
+	TableName TableAsNameOpt KeyClauseOpt LabelClauseOpt PropertiesClauseOpt
+	{
+		$$ = &ast.VertexTable{
+			Table:      $1.(*ast.TableName),
+			AsName:     $2.(model.CIStr),
+			Key:        $3.(*ast.KeyClause),
+			Label:      $4.(*ast.LabelClause),
+			Properties: $5.(*ast.PropertiesClause),
+		}
+	}
+
+EdgeTablesOpt:
+	{
+		$$ = []*ast.EdgeTable(nil)
+	}
+|	"EDGE" "TABLES" '(' EdgeTableList ')'
+	{
+		$$ = $4
+	}
+
+EdgeTableList:
+	EdgeTable
+	{
+		$$ = []*ast.EdgeTable{$1.(*ast.EdgeTable)}
+	}
+|	EdgeTableList ',' EdgeTable
+	{
+		$$ = append($1.([]*ast.EdgeTable), $3.(*ast.EdgeTable))
+	}
+
+EdgeTable:
+	TableName TableAsNameOpt KeyClauseOpt "SOURCE" VertexTableRef "DESTINATION" VertexTableRef LabelClauseOpt PropertiesClauseOpt
+	{
+		$$ = &ast.EdgeTable{
+			Table:       $1.(*ast.TableName),
+			AsName:      $2.(model.CIStr),
+			Key:         $3.(*ast.KeyClause),
+			Source:      $5.(*ast.VertexTableRef),
+			Destination: $7.(*ast.VertexTableRef),
+			Label:       $8.(*ast.LabelClause),
+			Properties:  $9.(*ast.PropertiesClause),
+		}
+	}
+
+VertexTableRef:
+	TableName
+	{
+		$$ = &ast.VertexTableRef{
+			Table: $1.(*ast.TableName),
+		}
+	}
+|	KeyClause "REFERENCES" TableName
+	{
+		$$ = &ast.VertexTableRef{
+			Key:   $1.(*ast.KeyClause),
+			Table: $3.(*ast.TableName),
+		}
+	}
+
+KeyClause:
+	"KEY" '(' ColumnNameList ')'
+	{
+		$$ = &ast.KeyClause{Cols: $3.([]*ast.ColumnName)}
+	}
+
+KeyClauseOpt:
+	{
+		$$ = (*ast.KeyClause)(nil)
+	}
+|	KeyClause
+
+LabelClause:
+	"LABEL" Identifier
+	{
+		$$ = &ast.LabelClause{Name: model.NewCIStr($2)}
+	}
+
+LabelClauseOpt:
+	{
+		$$ = (*ast.LabelClause)(nil)
+	}
+|	LabelClause
+
+PropertiesClause:
+	"PROPERTIES" AreKeywordOpt "ALL" "COLUMNS" ExceptColumnsOpt
+	{
+		$$ = &ast.PropertiesClause{
+			AllCols:    true,
+			ExceptCols: $5.([]*ast.ColumnName),
+		}
+	}
+|	"PROPERTIES" '(' PropertyExpressionList ')'
+	{
+		$$ = &ast.PropertiesClause{
+			Properties: $3.([]*ast.Property),
+		}
+	}
+|	"NO" "PROPERTIES"
+	{
+		$$ = &ast.PropertiesClause{
+			NoProperties: true,
+		}
+	}
+
+PropertiesClauseOpt:
+	{
+		$$ = (*ast.PropertiesClause)(nil)
+	}
+|	PropertiesClause
+
+AreKeywordOpt:
+	{}
+|	"ARE"
+
+ExceptColumns:
+	"EXCEPT" '(' ColumnNameList ')'
+	{
+		$$ = $3.([]*ast.ColumnName)
+	}
+
+ExceptColumnsOpt:
+	{
+		$$ = []*ast.ColumnName(nil)
+	}
+|	ExceptColumns
+
+PropertyExpressionList:
+	PropertyExpression
+	{
+		$$ = []*ast.Property{$1.(*ast.Property)}
+	}
+|	PropertyExpressionList ',' PropertyExpression
+	{
+		$$ = append($1.([]*ast.Property), $3.(*ast.Property))
+	}
+
+PropertyExpression:
+	Expression PropertyAsNameOpt
+	{
+		$$ = &ast.Property{
+			Expr:   $1.(ast.ExprNode),
+			AsName: $2.(model.CIStr),
+		}
+	}
+
+PropertyAsName:
+	"AS" Identifier
+	{
+		$$ = model.NewCIStr($2)
+	}
+
+PropertyAsNameOpt:
+	{
+		$$ = model.CIStr{}
+	}
+|	PropertyAsName
 %%

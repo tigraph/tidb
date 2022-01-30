@@ -6497,3 +6497,155 @@ func TestCharsetIntroducer(t *testing.T) {
 	_, _, err = p.Parse("select _gbk 0b101001;", "", "")
 	require.EqualError(t, err, "[ddl:1115]Unsupported character introducer: 'gbk'")
 }
+
+func TestPGQL(t *testing.T) {
+	table := []testCase{
+		{`CREATE PROPERTY GRAPH financial_transactions
+  VERTEX TABLES (
+    Persons LABEL Person PROPERTIES ( name ),
+    Companies LABEL Company PROPERTIES ( name ),
+    Accounts LABEL Account PROPERTIES ( number )
+  )
+  EDGE TABLES (
+    Transactions
+      SOURCE KEY ( from_account ) REFERENCES Accounts
+      DESTINATION KEY ( to_account ) REFERENCES Accounts
+      LABEL transaction PROPERTIES ( amount ),
+    Accounts AS PersonOwner
+      SOURCE KEY ( number ) REFERENCES Accounts
+      DESTINATION Persons
+      LABEL owner NO PROPERTIES,
+    Accounts AS CompanyOwner
+      SOURCE KEY ( number ) REFERENCES Accounts
+      DESTINATION Companies
+      LABEL owner NO PROPERTIES,
+    Persons AS worksFor
+      SOURCE KEY ( id ) REFERENCES Persons
+      DESTINATION Companies
+      NO PROPERTIES
+  )
+`, true, "CREATE PROPERTY GRAPH `financial_transactions` VERTEX TABLES (`Persons` LABEL `Person` PROPERTIES (`name`),`Companies` LABEL `Company` PROPERTIES (`name`),`Accounts` LABEL `Account` PROPERTIES (`number`)) EDGE TABLES (`Transactions` SOURCE KEY (`from_account`) REFERENCES `Accounts` DESTINATION KEY (`to_account`) REFERENCES `Accounts` LABEL `transaction` PROPERTIES (`amount`),`Accounts` AS `PersonOwner` SOURCE KEY (`number`) REFERENCES `Accounts` DESTINATION `Persons` LABEL `owner` NO PROPERTIES,`Accounts` AS `CompanyOwner` SOURCE KEY (`number`) REFERENCES `Accounts` DESTINATION `Companies` LABEL `owner` NO PROPERTIES,`Persons` AS `worksFor` SOURCE KEY (`id`) REFERENCES `Persons` DESTINATION `Companies` NO PROPERTIES)"},
+		{`CREATE PROPERTY GRAPH financial_transactions
+  VERTEX TABLES (
+    Persons
+      KEY ( id )
+      LABEL Person
+      PROPERTIES ( name ),
+    Companies
+      KEY ( id )
+      LABEL Company
+      PROPERTIES ( name ),
+    Accounts
+      KEY ( number )
+      LABEL Account
+      PROPERTIES ( number )
+  )
+  EDGE TABLES (
+    Transactions
+      KEY ( from_account, to_account, date )
+      SOURCE KEY ( from_account ) REFERENCES Accounts
+      DESTINATION KEY ( to_account ) REFERENCES Accounts
+      LABEL transaction PROPERTIES ( amount ),
+    Accounts AS PersonOwner
+      KEY ( number )
+      SOURCE KEY ( number ) REFERENCES Accounts
+      DESTINATION KEY ( person_id ) REFERENCES Persons
+      LABEL owner NO PROPERTIES,
+    Accounts AS CompanyOwner
+      KEY ( number )
+      SOURCE KEY ( number ) REFERENCES Accounts
+      DESTINATION KEY ( company_id ) REFERENCES Companies
+      LABEL owner NO PROPERTIES,
+  Persons AS worksFor
+      KEY ( id )
+      SOURCE KEY ( id ) REFERENCES Persons
+      DESTINATION KEY ( company_id ) REFERENCES Companies
+      NO PROPERTIES
+  )`, true, "CREATE PROPERTY GRAPH `financial_transactions` VERTEX TABLES (`Persons` KEY (`id`) LABEL `Person` PROPERTIES (`name`),`Companies` KEY (`id`) LABEL `Company` PROPERTIES (`name`),`Accounts` KEY (`number`) LABEL `Account` PROPERTIES (`number`)) EDGE TABLES (`Transactions` KEY (`from_account`,`to_account`,`date`) SOURCE KEY (`from_account`) REFERENCES `Accounts` DESTINATION KEY (`to_account`) REFERENCES `Accounts` LABEL `transaction` PROPERTIES (`amount`),`Accounts` AS `PersonOwner` KEY (`number`) SOURCE KEY (`number`) REFERENCES `Accounts` DESTINATION KEY (`person_id`) REFERENCES `Persons` LABEL `owner` NO PROPERTIES,`Accounts` AS `CompanyOwner` KEY (`number`) SOURCE KEY (`number`) REFERENCES `Accounts` DESTINATION KEY (`company_id`) REFERENCES `Companies` LABEL `owner` NO PROPERTIES,`Persons` AS `worksFor` KEY (`id`) SOURCE KEY (`id`) REFERENCES `Persons` DESTINATION KEY (`company_id`) REFERENCES `Companies` NO PROPERTIES)"},
+		{`CREATE PROPERTY GRAPH hr_simplified
+  VERTEX TABLES (
+    employees LABEL employee
+      PROPERTIES ARE ALL COLUMNS EXCEPT ( job_id, manager_id, department_id ),
+    departments LABEL department
+      PROPERTIES ( department_id, department_name )
+  )
+  EDGE TABLES (
+    employees AS works_for
+      SOURCE KEY ( employee_id ) REFERENCES employees
+      DESTINATION KEY ( manager_id ) REFERENCES employees
+      NO PROPERTIES,
+    departments AS managed_by
+      SOURCE KEY ( department_id ) REFERENCES departments
+      DESTINATION employees
+      NO PROPERTIES
+  )
+`, true, "CREATE PROPERTY GRAPH `hr_simplified` VERTEX TABLES (`employees` LABEL `employee` PROPERTIES ARE ALL COLUMNS EXCEPT (`job_id`,`manager_id`,`department_id`),`departments` LABEL `department` PROPERTIES (`department_id`,`department_name`)) EDGE TABLES (`employees` AS `works_for` SOURCE KEY (`employee_id`) REFERENCES `employees` DESTINATION KEY (`manager_id`) REFERENCES `employees` NO PROPERTIES,`departments` AS `managed_by` SOURCE KEY (`department_id`) REFERENCES `departments` DESTINATION `employees` NO PROPERTIES)"},
+		{`CREATE PROPERTY GRAPH hr
+  VERTEX TABLES (
+    employees LABEL employee
+      PROPERTIES ARE ALL COLUMNS EXCEPT ( job_id, manager_id, department_id ),
+    departments LABEL department
+      PROPERTIES ( department_id, department_name ),
+    jobs LABEL job
+      PROPERTIES ARE ALL COLUMNS,
+    job_history
+      PROPERTIES ( start_date, end_date ),
+    locations LABEL location
+      PROPERTIES ARE ALL COLUMNS EXCEPT ( country_id ),
+    countries LABEL country
+      PROPERTIES ARE ALL COLUMNS EXCEPT ( region_id ),
+    regions LABEL region
+  )
+  EDGE TABLES (
+    employees AS works_for
+      SOURCE KEY ( employee_id ) REFERENCES employees
+      DESTINATION KEY ( manager_id ) REFERENCES employees
+      NO PROPERTIES,
+    employees AS works_at
+      SOURCE KEY ( employee_id ) REFERENCES employees
+      DESTINATION departments
+      NO PROPERTIES,
+    employees AS works_as
+      SOURCE KEY ( employee_id ) REFERENCES employees
+      DESTINATION jobs
+      NO PROPERTIES,
+    departments AS managed_by
+      SOURCE KEY ( department_id ) REFERENCES departments
+      DESTINATION employees
+      NO PROPERTIES,
+    job_history AS for_employee
+      SOURCE KEY ( employee_id, start_date ) REFERENCES job_history
+      DESTINATION employees
+      LABEL job_history
+      NO PROPERTIES,
+    job_history AS for_department
+      SOURCE KEY ( employee_id, start_date ) REFERENCES job_history
+      DESTINATION departments
+      LABEL job_history
+      NO PROPERTIES,
+    job_history AS for_job
+      SOURCE KEY ( employee_id, start_date ) REFERENCES job_history
+      DESTINATION jobs
+      LABEL job_history
+      NO PROPERTIES,
+    departments AS department_located_in
+      SOURCE KEY ( department_id ) REFERENCES departments
+      DESTINATION locations
+      LABEL located_in
+      NO PROPERTIES,
+    locations AS location_located_in
+      SOURCE KEY ( location_id ) REFERENCES locations
+      DESTINATION countries
+      LABEL located_in
+      NO PROPERTIES,
+    countries AS country_located_in
+      SOURCE KEY ( country_id ) REFERENCES countries
+      DESTINATION regions
+      LABEL located_in
+      NO PROPERTIES
+  )
+`, true, "CREATE PROPERTY GRAPH `hr` VERTEX TABLES (`employees` LABEL `employee` PROPERTIES ARE ALL COLUMNS EXCEPT (`job_id`,`manager_id`,`department_id`),`departments` LABEL `department` PROPERTIES (`department_id`,`department_name`),`jobs` LABEL `job` PROPERTIES ARE ALL COLUMNS,`job_history` PROPERTIES (`start_date`,`end_date`),`locations` LABEL `location` PROPERTIES ARE ALL COLUMNS EXCEPT (`country_id`),`countries` LABEL `country` PROPERTIES ARE ALL COLUMNS EXCEPT (`region_id`),`regions` LABEL `region`) EDGE TABLES (`employees` AS `works_for` SOURCE KEY (`employee_id`) REFERENCES `employees` DESTINATION KEY (`manager_id`) REFERENCES `employees` NO PROPERTIES,`employees` AS `works_at` SOURCE KEY (`employee_id`) REFERENCES `employees` DESTINATION `departments` NO PROPERTIES,`employees` AS `works_as` SOURCE KEY (`employee_id`) REFERENCES `employees` DESTINATION `jobs` NO PROPERTIES,`departments` AS `managed_by` SOURCE KEY (`department_id`) REFERENCES `departments` DESTINATION `employees` NO PROPERTIES,`job_history` AS `for_employee` SOURCE KEY (`employee_id`,`start_date`) REFERENCES `job_history` DESTINATION `employees` LABEL `job_history` NO PROPERTIES,`job_history` AS `for_department` SOURCE KEY (`employee_id`,`start_date`) REFERENCES `job_history` DESTINATION `departments` LABEL `job_history` NO PROPERTIES,`job_history` AS `for_job` SOURCE KEY (`employee_id`,`start_date`) REFERENCES `job_history` DESTINATION `jobs` LABEL `job_history` NO PROPERTIES,`departments` AS `department_located_in` SOURCE KEY (`department_id`) REFERENCES `departments` DESTINATION `locations` LABEL `located_in` NO PROPERTIES,`locations` AS `location_located_in` SOURCE KEY (`location_id`) REFERENCES `locations` DESTINATION `countries` LABEL `located_in` NO PROPERTIES,`countries` AS `country_located_in` SOURCE KEY (`country_id`) REFERENCES `countries` DESTINATION `regions` LABEL `located_in` NO PROPERTIES)"},
+		{"DROP PROPERTY GRAPH financial_transactions", true, "DROP PROPERTY GRAPH `financial_transactions`"},
+	}
+	RunTest(t, table, false)
+}
