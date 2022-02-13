@@ -18,6 +18,19 @@ var (
 	_ Node = &PropertiesClause{}
 	_ Node = &VertexTableRef{}
 	_ Node = &Property{}
+	_ Node = &PathPattern{}
+	_ Node = &MatchClause{}
+	_ Node = &VariableSpec{}
+	_ Node = &VertexPattern{}
+	_ Node = &ReachabilityPathExpr{}
+	_ Node = &PatternQuantifier{}
+	_ Node = &PathPatternMacro{}
+
+	_ ResultSetNode = &MatchClauseList{}
+
+	_ VertexPairConnection = &EdgePattern{}
+	_ VertexPairConnection = &ReachabilityPathExpr{}
+	_ VertexPairConnection = &QuantifiedPathExpr{}
 )
 
 type CreatePropertyGraphStmt struct {
@@ -439,7 +452,7 @@ func (n *PropertiesClause) Restore(ctx *format.RestoreCtx) error {
 	case n.NoProperties:
 		ctx.WriteKeyWord("NO PROPERTIES")
 	default:
-		return errors.New("PropertiesClause is not properly set")
+		return errors.New("incomplete properties clause")
 	}
 	return nil
 }
@@ -500,5 +513,594 @@ func (n *Property) Accept(v Visitor) (Node, bool) {
 		return nn, false
 	}
 	nn.Expr = node.(ExprNode)
+	return v.Leave(nn)
+}
+
+type MatchClauseList struct {
+	node
+
+	Matches []*MatchClause
+}
+
+func (n *MatchClauseList) resultSet() {}
+
+func (n *MatchClauseList) Restore(ctx *format.RestoreCtx) error {
+	for i, m := range n.Matches {
+		if i > 0 {
+			ctx.WritePlain(",")
+		}
+		if err := m.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore MatchClauseList.Matches")
+		}
+	}
+	return nil
+}
+
+func (n *MatchClauseList) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*MatchClauseList)
+	for i, m := range nn.Matches {
+		node, ok := m.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Matches[i] = node.(*MatchClause)
+	}
+	return v.Leave(nn)
+}
+
+type MatchClause struct {
+	node
+
+	Graph *GraphName
+	Paths []*PathPattern
+}
+
+func (n *MatchClause) Restore(ctx *format.RestoreCtx) error {
+	ctx.WriteKeyWord("MATCH ")
+	switch len(n.Paths) {
+	case 0:
+		return errors.New("MatchClause must have at least one PathPattern")
+	case 1:
+		if err := n.Paths[0].Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore MatchClause.Paths")
+		}
+	default:
+		ctx.WritePlain("(")
+		for i, p := range n.Paths {
+			if i > 0 {
+				ctx.WritePlain(",")
+			}
+			if err := p.Restore(ctx); err != nil {
+				return errors.Annotate(err, "An error occurred while restore MatchClause.Paths")
+			}
+		}
+		ctx.WritePlain(")")
+	}
+	if n.Graph != nil {
+		ctx.WriteKeyWord(" ON ")
+		if err := n.Graph.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore MatchClause.Graph")
+		}
+	}
+	return nil
+}
+
+func (n *MatchClause) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*MatchClause)
+	for i, p := range nn.Paths {
+		node, ok := p.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Paths[i] = node.(*PathPattern)
+	}
+	if nn.Graph != nil {
+		node, ok := nn.Graph.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Graph = node.(*GraphName)
+	}
+	return v.Leave(nn)
+}
+
+type PathPatternType int
+
+const (
+	PathPatternSimple PathPatternType = iota
+	PathPatternAny
+	PathPatternAnyShortest
+	PathPatternAllShortest
+	PathPatternTopKShortest
+	PathPatternAnyCheapest
+	PathPatternAllCheapest
+	PathPatternTopKCheapest
+	PathPatternAll
+)
+
+type PathPattern struct {
+	node
+
+	Tp          PathPatternType
+	TopK        uint64
+	Vertices    []*VertexPattern
+	Connections []VertexPairConnection
+}
+
+func (n *PathPattern) Restore(ctx *format.RestoreCtx) error {
+	if len(n.Vertices) == 0 {
+		return errors.New("PathPattern must have at least one vertex pattern")
+	}
+	if len(n.Vertices) != len(n.Connections)+1 {
+		return errors.Errorf("PathPattern vertices must be exactly one more than connections, but got %d vertices and %d connections", len(n.Vertices), len(n.Connections))
+	}
+	if n.Tp != PathPatternSimple && len(n.Vertices) != 2 {
+		return errors.Errorf("variable-length paths can only have exactly two vertices, but got %d", len(n.Vertices))
+	}
+	switch n.Tp {
+	case PathPatternSimple:
+	case PathPatternAny:
+		ctx.WriteKeyWord("ANY ")
+	case PathPatternAnyShortest:
+		ctx.WriteKeyWord("ANY SHORTEST ")
+	case PathPatternAllShortest:
+		ctx.WriteKeyWord("ALL SHORTEST ")
+	case PathPatternTopKShortest:
+		ctx.WriteKeyWord("TOP ")
+		ctx.WritePlainf("%v", n.TopK)
+		ctx.WriteKeyWord(" SHORTEST ")
+	case PathPatternAnyCheapest:
+		ctx.WriteKeyWord("ANY CHEAPEST ")
+	case PathPatternAllCheapest:
+		ctx.WriteKeyWord("ALL CHEAPEST ")
+	case PathPatternTopKCheapest:
+		ctx.WriteKeyWord("TOP ")
+		ctx.WritePlainf("%v", n.TopK)
+		ctx.WriteKeyWord(" CHEAPEST ")
+	case PathPatternAll:
+		ctx.WriteKeyWord("ALL ")
+	default:
+		return errors.Errorf("unknown PathPatternType: %v", n.Tp)
+	}
+	if err := n.Vertices[0].Restore(ctx); err != nil {
+		return errors.Annotate(err, "An error occurred while restore PathPattern.Vertices")
+	}
+	for i := 0; i < len(n.Connections); i++ {
+		ctx.WritePlain(" ")
+		if err := n.Connections[i].Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore PathPattern.Connections")
+		}
+		ctx.WritePlain(" ")
+		if err := n.Vertices[i+1].Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore PathPattern.Vertices")
+		}
+	}
+	return nil
+}
+
+func (n *PathPattern) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*PathPattern)
+	for i, vertex := range nn.Vertices {
+		node, ok := vertex.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Vertices[i] = node.(*VertexPattern)
+	}
+	for i, conn := range nn.Connections {
+		node, ok := conn.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Connections[i] = node.(VertexPairConnection)
+	}
+	return v.Leave(nn)
+}
+
+type VertexPattern struct {
+	node
+
+	Variable *VariableSpec
+}
+
+func (n *VertexPattern) Restore(ctx *format.RestoreCtx) error {
+	ctx.WritePlain("(")
+	if err := n.Variable.Restore(ctx); err != nil {
+		return errors.Annotate(err, "An error occurred while restore VertexPattern.Variable")
+	}
+	ctx.WritePlain(")")
+	return nil
+}
+
+func (n *VertexPattern) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*VertexPattern)
+	node, ok := nn.Variable.Accept(v)
+	if !ok {
+		return nn, false
+	}
+	nn.Variable = node.(*VariableSpec)
+	return v.Leave(nn)
+}
+
+type EdgeDirection int
+
+const (
+	EdgeDirectionOutgoing = iota
+	EdgeDirectionIncoming
+	EdgeDirectionAnyDirected
+)
+
+type VertexPairConnection interface {
+	Node
+
+	vertexPairConnection()
+}
+
+type EdgePattern struct {
+	node
+
+	Variable  *VariableSpec
+	Direction EdgeDirection
+}
+
+func (n *EdgePattern) vertexPairConnection() {
+	panic("implement me")
+}
+
+func (n *EdgePattern) Restore(ctx *format.RestoreCtx) error {
+	switch n.Direction {
+	case EdgeDirectionOutgoing:
+		if n.Variable == nil {
+			ctx.WritePlain("->")
+		} else {
+			ctx.WritePlain("-[")
+			if err := n.Variable.Restore(ctx); err != nil {
+				return errors.Annotate(err, "An error occurred while restore EdgePattern.Variable")
+			}
+			ctx.WritePlain("]->")
+		}
+	case EdgeDirectionIncoming:
+		if n.Variable == nil {
+			ctx.WritePlain("<-")
+		} else {
+			ctx.WritePlain("<-[")
+			if err := n.Variable.Restore(ctx); err != nil {
+				return errors.Annotate(err, "An error occurred while restore EdgePattern.Variable")
+			}
+			ctx.WritePlain("]-")
+		}
+	case EdgeDirectionAnyDirected:
+		if n.Variable == nil {
+			ctx.WritePlain("-")
+		} else {
+			ctx.WritePlain("-[")
+			if err := n.Variable.Restore(ctx); err != nil {
+				return errors.Annotate(err, "An error occurred while restore EdgePattern.Variable")
+			}
+			ctx.WritePlain("]-")
+		}
+	default:
+		return errors.Errorf("unknown edge direction: %v", n.Direction)
+	}
+	return nil
+}
+
+func (n *EdgePattern) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if !skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*EdgePattern)
+	if nn.Variable != nil {
+		node, ok := nn.Variable.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Variable = node.(*VariableSpec)
+	}
+	return v.Leave(nn)
+}
+
+type ReachabilityPathExpr struct {
+	node
+
+	Labels     []model.CIStr
+	Direction  EdgeDirection
+	Quantifier *PatternQuantifier
+}
+
+func (n *ReachabilityPathExpr) vertexPairConnection() {}
+
+func (n *ReachabilityPathExpr) Restore(ctx *format.RestoreCtx) error {
+	var prefix, suffix string
+	switch n.Direction {
+	case EdgeDirectionOutgoing:
+		prefix = "-/"
+		suffix = "/->"
+	case EdgeDirectionIncoming:
+		prefix = "<-/"
+		suffix = "/-"
+	case EdgeDirectionAnyDirected:
+		prefix = "-/"
+		suffix = "/-"
+	default:
+		return errors.Errorf("unknown edge direction: %v", n.Direction)
+	}
+	ctx.WritePlain(prefix)
+	if len(n.Labels) == 0 {
+		return errors.New("ReachabilityPathExpr must have at least one label predicate")
+	}
+	ctx.WritePlain(":")
+	ctx.WriteName(n.Labels[0].String())
+	for i := 1; i < len(n.Labels); i++ {
+		ctx.WritePlain("|")
+		ctx.WriteName(n.Labels[i].String())
+	}
+	if n.Quantifier != nil {
+		if err := n.Quantifier.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore ReachabilityPathExpr.Quantifier")
+		}
+	}
+	ctx.WritePlain(suffix)
+	return nil
+}
+
+func (n *ReachabilityPathExpr) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*ReachabilityPathExpr)
+	if nn.Quantifier != nil {
+		node, ok := nn.Quantifier.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Quantifier = node.(*PatternQuantifier)
+	}
+	return v.Leave(nn)
+}
+
+type QuantifiedPathExpr struct {
+	node
+
+	Edge        *EdgePattern
+	Quantifier  *PatternQuantifier
+	Source      *VertexPattern
+	Destination *VertexPattern
+	Where       ExprNode
+	Cost        ExprNode
+}
+
+func (n *QuantifiedPathExpr) vertexPairConnection() {}
+
+func (n *QuantifiedPathExpr) shouldParenthesize() bool {
+	return n.Source != nil || n.Destination != nil || n.Where != nil || n.Cost != nil
+}
+
+func (n *QuantifiedPathExpr) Restore(ctx *format.RestoreCtx) error {
+	shouldParenthesize := n.shouldParenthesize()
+	if shouldParenthesize {
+		ctx.WritePlain("(")
+	}
+	if n.Source != nil {
+		if err := n.Source.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore QuantifiedPathExpr.Source")
+		}
+		ctx.WritePlain(" ")
+	}
+	if err := n.Edge.Restore(ctx); err != nil {
+		return errors.Annotate(err, "An error occurred while restore QuantifiedPathExpr.Edge")
+	}
+	if n.Destination != nil {
+		ctx.WritePlain(" ")
+		if err := n.Destination.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore QuantifiedPathExpr.Destination")
+		}
+	}
+	if n.Where != nil {
+		ctx.WriteKeyWord(" WHERE ")
+		if err := n.Where.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore QuantifiedPathExpr.Where")
+		}
+	}
+	if n.Cost != nil {
+		ctx.WriteKeyWord(" COST ")
+		if err := n.Cost.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore QuantifiedPathExpr.Cost")
+		}
+	}
+	if shouldParenthesize {
+		ctx.WritePlain(")")
+	}
+	if n.Quantifier != nil {
+		if err := n.Quantifier.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore QuantifiedPathExpr.Quantifier")
+		}
+	}
+	return nil
+}
+
+func (n *QuantifiedPathExpr) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*QuantifiedPathExpr)
+	node, ok := nn.Edge.Accept(v)
+	if !ok {
+		return nn, false
+	}
+	nn.Edge = node.(*EdgePattern)
+	if nn.Quantifier != nil {
+		node, ok = nn.Quantifier.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Quantifier = node.(*PatternQuantifier)
+	}
+	if nn.Source != nil {
+		node, ok = nn.Source.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Source = node.(*VertexPattern)
+	}
+	if nn.Destination != nil {
+		node, ok = nn.Destination.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Destination = node.(*VertexPattern)
+	}
+	if nn.Where != nil {
+		node, ok = nn.Where.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Where = node.(ExprNode)
+	}
+	if nn.Cost != nil {
+		node, ok = nn.Cost.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Cost = node.(ExprNode)
+	}
+	return v.Leave(nn)
+}
+
+type PatternQuantifierType int
+
+const (
+	PatternQuantifierZeroOrMore = iota
+	PatternQuantifierOneOrMore
+	PatternQuantifierOptional
+	PatternQuantifierExactlyN
+	PatternQuantifierNOrMore
+	PatternQuantifierBetweenNAndM
+	PatternQuantifierBetweenZeroAndM
+)
+
+type PatternQuantifier struct {
+	node
+
+	Tp PatternQuantifierType
+	N  uint64
+	M  uint64
+}
+
+func (n *PatternQuantifier) Restore(ctx *format.RestoreCtx) error {
+	switch n.Tp {
+	case PatternQuantifierZeroOrMore:
+		ctx.WritePlain("*")
+	case PatternQuantifierOneOrMore:
+		ctx.WritePlain("+")
+	case PatternQuantifierOptional:
+		ctx.WritePlain("?")
+	case PatternQuantifierExactlyN:
+		ctx.WritePlainf("{%d}", n.N)
+	case PatternQuantifierNOrMore:
+		ctx.WritePlainf("{%d,}", n.N)
+	case PatternQuantifierBetweenNAndM:
+		ctx.WritePlainf("{%d,%d}", n.N, n.M)
+	case PatternQuantifierBetweenZeroAndM:
+		ctx.WritePlainf("{,%d}", n.M)
+	default:
+		return errors.Errorf("unknown PatternQuantifierType: %v", n.Tp)
+	}
+	return nil
+}
+
+func (n *PatternQuantifier) Accept(v Visitor) (Node, bool) {
+	newNode, _ := v.Enter(n)
+	return v.Leave(newNode)
+}
+
+type VariableSpec struct {
+	node
+
+	Name   model.CIStr
+	Labels []model.CIStr
+}
+
+func (n *VariableSpec) Restore(ctx *format.RestoreCtx) error {
+	if name := n.Name.String(); name != "" {
+		ctx.WriteName(name)
+	}
+	if len(n.Labels) > 0 {
+		ctx.WritePlain(":")
+		ctx.WriteName(n.Labels[0].String())
+	}
+	for i := 1; i < len(n.Labels); i++ {
+		ctx.WritePlain("|")
+		ctx.WriteName(n.Labels[i].String())
+	}
+	return nil
+}
+
+func (n *VariableSpec) Accept(v Visitor) (Node, bool) {
+	newNode, _ := v.Enter(n)
+	return v.Leave(newNode)
+}
+
+type PathPatternMacro struct {
+	node
+
+	Name  model.CIStr
+	Path  *PathPattern
+	Where ExprNode
+}
+
+func (n *PathPatternMacro) Restore(ctx *format.RestoreCtx) error {
+	ctx.WriteKeyWord("PATH ")
+	ctx.WriteName(n.Name.String())
+	ctx.WriteKeyWord(" AS ")
+	if err := n.Path.Restore(ctx); err != nil {
+		return errors.Annotate(err, "An error occurred while restore PathPatternMacro.Path")
+	}
+	if n.Where != nil {
+		ctx.WriteKeyWord(" WHERE ")
+		if err := n.Where.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore PathPatternMacro.Where")
+		}
+	}
+	return nil
+}
+
+func (n *PathPatternMacro) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	nn := newNode.(*PathPatternMacro)
+	node, ok := nn.Path.Accept(v)
+	if !ok {
+		return nn, false
+	}
+	nn.Path = node.(*PathPattern)
+	if nn.Where != nil {
+		node, ok = nn.Where.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Where = node.(ExprNode)
+	}
 	return v.Leave(nn)
 }

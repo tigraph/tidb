@@ -110,6 +110,11 @@ func init() {
 	initTokenString("<<", lsh)
 	initTokenString(">>", rsh)
 	initTokenString("\\N", null)
+	initTokenString("<-", leftArrow)
+	initTokenString("<-[", bLeftArrow)
+	initTokenString("]-", bracketDash)
+	initTokenString("]->", bRightArrow)
+	initTokenString("<-/", sLeftArrow)
 
 	initTokenFunc("@", startWithAt)
 	initTokenFunc("/", startWithSlash)
@@ -210,6 +215,7 @@ var tokenMap = map[string]int{
 	"CHAR":                     charType,
 	"CHARACTER":                character,
 	"CHARSET":                  charsetKwd,
+	"CHEAPEST":                 cheapest,
 	"CHECK":                    check,
 	"CHECKPOINT":               checkpoint,
 	"CHECKSUM":                 checksum,
@@ -243,6 +249,7 @@ var tokenMap = map[string]int{
 	"CONVERT":                  convert,
 	"COPY":                     copyKwd,
 	"CORRELATION":              correlation,
+	"COST":                     cost,
 	"CPU":                      cpu,
 	"CREATE":                   create,
 	"CROSS":                    cross,
@@ -531,6 +538,7 @@ var tokenMap = map[string]int{
 	"PARTITIONING":             partitioning,
 	"PARTITIONS":               partitions,
 	"PASSWORD":                 password,
+	"PATH":                     pathKwd,
 	"PERCENT":                  percent,
 	"PER_DB":                   per_db,
 	"PER_TABLE":                per_table,
@@ -637,6 +645,7 @@ var tokenMap = map[string]int{
 	"SHARD_ROW_ID_BITS":        shardRowIDBits,
 	"SHARE":                    share,
 	"SHARED":                   shared,
+	"SHORTEST":                 shorest,
 	"SHOW":                     show,
 	"SHUTDOWN":                 shutdown,
 	"SIGNED":                   signed,

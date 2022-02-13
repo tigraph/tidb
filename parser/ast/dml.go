@@ -812,6 +812,8 @@ func (n *ByItem) Restore(ctx *format.RestoreCtx) error {
 	}
 	if n.Desc {
 		ctx.WriteKeyWord(" DESC")
+	} else if !n.NullOrder {
+		ctx.WriteKeyWord(" ASC")
 	}
 	return nil
 }
@@ -1102,6 +1104,8 @@ type SelectStmt struct {
 	With  *WithClause
 	// AsViewSchema indicates if this stmt provides the schema for the view. It is only used when creating the view
 	AsViewSchema bool
+	// PathPatternMacros is the list of graph pattern macros.
+	PathPatternMacros []*PathPatternMacro
 }
 
 func (*SelectStmt) resultSet() {}
@@ -1185,6 +1189,12 @@ func (n *SelectStmt) Restore(ctx *format.RestoreCtx) error {
 		}
 	}
 
+	for _, p := range n.PathPatternMacros {
+		if err := p.Restore(ctx); err != nil {
+			return errors.New("An error occurred while restore SelectStmt.PathPatternMacros")
+		}
+		ctx.WritePlain(" ")
+	}
 	ctx.WriteKeyWord(n.Kind.String())
 	ctx.WritePlain(" ")
 	switch n.Kind {
@@ -1403,6 +1413,14 @@ func (n *SelectStmt) Accept(v Visitor) (Node, bool) {
 			return n, false
 		}
 		n.With = node.(*WithClause)
+	}
+
+	for i, p := range n.PathPatternMacros {
+		node, ok := p.Accept(v)
+		if !ok {
+			return n, false
+		}
+		n.PathPatternMacros[i] = node.(*PathPatternMacro)
 	}
 
 	if n.TableHints != nil && len(n.TableHints) != 0 {

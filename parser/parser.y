@@ -285,6 +285,7 @@ import (
 	yearMonth         "YEAR_MONTH"
 	zerofill          "ZEROFILL"
 	natural           "NATURAL"
+	pathKwd           "PATH"
 
 	/* The following tokens belong to UnReservedKeyword. Notice: make sure these tokens are contained in UnReservedKeyword. */
 	account               "ACCOUNT"
@@ -331,6 +332,7 @@ import (
 	charsetKwd            "CHARSET"
 	checkpoint            "CHECKPOINT"
 	checksum              "CHECKSUM"
+	cheapest              "CHEAPEST"
 	cipher                "CIPHER"
 	cleanup               "CLEANUP"
 	client                "CLIENT"
@@ -351,6 +353,7 @@ import (
 	consistency           "CONSISTENCY"
 	consistent            "CONSISTENT"
 	context               "CONTEXT"
+	cost                  "COST"
 	cpu                   "CPU"
 	csvBackslashEscape    "CSV_BACKSLASH_ESCAPE"
 	csvDelimiter          "CSV_DELIMITER"
@@ -559,6 +562,7 @@ import (
 	shardRowIDBits        "SHARD_ROW_ID_BITS"
 	share                 "SHARE"
 	shared                "SHARED"
+	shorest               "SHORTEST"
 	shutdown              "SHUTDOWN"
 	signed                "SIGNED"
 	simple                "SIMPLE"
@@ -815,6 +819,15 @@ import (
 	nulleq       "<=>"
 	paramMarker  "?"
 	rsh          ">>"
+	leftArrow    "<-"
+	dashSlash    "-/"
+	slashDash    "/-"
+	dashBracket  "-["
+	bracketDash  "]-"
+	bLeftArrow   "<-["
+	bRightArrow  "]->"
+	sLeftArrow   "<-/"
+	sRightArrow  "/->"
 
 %token not2
 %type	<expr>
@@ -1337,6 +1350,7 @@ import (
 	KeyClause                              "Key clause"
 	KeyClauseOpt                           "Key clause optional"
 	VertexTableRef                         "Vertex table reference"
+	LabelName                              "Label name"
 	LabelClause                            "Label clause"
 	LabelClauseOpt                         "Label clause optional"
 	PropertiesClause                       "Properties clause"
@@ -1347,6 +1361,32 @@ import (
 	PropertyExpression                     "Property expression"
 	PropertyAsName                         "Property as name"
 	PropertyAsNameOpt                      "Property as name optional"
+	SelectStmtFromMatch                    "SELECT statement from match"
+	MatchClause                            "Match clause"
+	MatchClauseList                        "Match clause list"
+	GraphOnClause                          "Graph ON Clause"
+	GraphOnClauseOpt                       "Graph ON Clause optional"
+	GraphPattern                           "Graph pattern"
+	PathPattern                            "Path pattern"
+	PathPatternList                        "Path pattern list"
+	SimplePathPattern                      "Simple path pattern"
+	VertexPattern                          "Vertex pattern"
+	VertexPatternOpt                       "Vertex pattern optional"
+	ReachabilityPathExpr                   "Reachability path expression"
+	EdgePattern                            "Edge pattern"
+	VariableLengthPathPattern              "Variable length path pattern"
+	QuantifiedPathExpr                     "Quantified path expression"
+	LabelPredicate                         "Label predicate"
+	LabelPredicateOpt                      "Label predicate optional"
+	PatternQuantifier                      "Pattern quantifier"
+	LabelNameList                          "Label name list"
+	PatternQuantifierOpt                   "Pattern quantifier optional"
+	VariableSpec                           "Variable specification"
+	VariableNameOpt                        "Variable name optional"
+	CostClause                             "Cost clause optional"
+	CostClauseOpt                          "Cost clause"
+	PathPatternMacro                       "Path pattern macro"
+	PathPatternMacroList                   "Path pattern macro list"
 
 %type	<ident>
 	AsOpt             "AS or EmptyString"
@@ -6104,6 +6144,9 @@ UnReservedKeyword:
 |	"ARE"
 |	"PROPERTIES"
 |	"LABEL"
+|	"CHEAPEST"
+|	"SHORTEST"
+|	"COST"
 
 TiDBKeyword:
 	"ADMIN"
@@ -6988,6 +7031,7 @@ FunctionNameConflict:
 |	"IF"
 |	"INTERVAL"
 |	"FORMAT"
+|	"LABEL"
 |	"LEFT"
 |	"MICROSECOND"
 |	"MINUTE"
@@ -8308,6 +8352,29 @@ SelectStmt:
 		}
 		if $5 != nil {
 			st.SelectIntoOpt = $5.(*ast.SelectIntoOption)
+		}
+		$$ = st
+	}
+|	SelectStmtFromMatch OrderByOptional SelectStmtLimitOpt
+	{
+		st := $1.(*ast.SelectStmt)
+		if $2 != nil {
+			st.OrderBy = $2.(*ast.OrderByClause)
+		}
+		if $3 != nil {
+			st.Limit = $3.(*ast.Limit)
+		}
+		$$ = st
+	}
+|	PathPatternMacroList SelectStmtFromMatch OrderByOptional SelectStmtLimitOpt
+	{
+		st := $2.(*ast.SelectStmt)
+		st.PathPatternMacros = $1.([]*ast.PathPatternMacro)
+		if $3 != nil {
+			st.OrderBy = $2.(*ast.OrderByClause)
+		}
+		if $4 != nil {
+			st.Limit = $3.(*ast.Limit)
 		}
 		$$ = st
 	}
@@ -13964,10 +14031,16 @@ KeyClauseOpt:
 	}
 |	KeyClause
 
-LabelClause:
-	"LABEL" Identifier
+LabelName:
+	Identifier
 	{
-		$$ = &ast.LabelClause{Name: model.NewCIStr($2)}
+		$$ = model.NewCIStr($1)
+	}
+
+LabelClause:
+	"LABEL" LabelName
+	{
+		$$ = &ast.LabelClause{Name: $2.(model.CIStr)}
 	}
 
 LabelClauseOpt:
@@ -14049,4 +14122,374 @@ PropertyAsNameOpt:
 		$$ = model.CIStr{}
 	}
 |	PropertyAsName
+
+SelectStmtFromMatch:
+	SelectStmtBasic "FROM" MatchClauseList WhereClauseOptional SelectStmtGroup HavingClause
+	{
+		st := $1.(*ast.SelectStmt)
+		st.From = &ast.TableRefsClause{
+			TableRefs: &ast.Join{Left: $3.(ast.ResultSetNode)},
+		}
+		if $4 != nil {
+			st.Where = $4.(ast.ExprNode)
+		}
+		if $5 != nil {
+			st.GroupBy = $5.(*ast.GroupByClause)
+		}
+		if $6 != nil {
+			st.Having = $6.(*ast.HavingClause)
+		}
+		$$ = st
+	}
+
+MatchClauseList:
+	MatchClause
+	{
+		$$ = &ast.MatchClauseList{Matches: []*ast.MatchClause{$1.(*ast.MatchClause)}}
+	}
+|	MatchClauseList ',' MatchClause
+	{
+		ml := $1.(*ast.MatchClauseList)
+		ml.Matches = append(ml.Matches, $3.(*ast.MatchClause))
+		$$ = ml
+	}
+
+MatchClause:
+	"MATCH" GraphPattern GraphOnClauseOpt
+	{
+		$$ = &ast.MatchClause{
+			Graph: $3.(*ast.GraphName),
+			Paths: $2.([]*ast.PathPattern),
+		}
+	}
+
+GraphOnClause:
+	"ON" GraphName
+	{
+		$$ = $2
+	}
+
+GraphOnClauseOpt:
+	%prec lowerThanOn
+	{
+		$$ = (*ast.GraphName)(nil)
+	}
+|	GraphOnClause
+
+GraphPattern:
+	PathPattern
+	{
+		$$ = []*ast.PathPattern{$1.(*ast.PathPattern)}
+	}
+|	'(' PathPatternList ')'
+	{
+		$$ = $2.([]*ast.PathPattern)
+	}
+
+PathPatternList:
+	PathPattern
+	{
+		$$ = $1.(*ast.PathPattern)
+	}
+|	PathPatternList ',' PathPattern
+	{
+		$$ = append($1.([]*ast.PathPattern), $3.(*ast.PathPattern))
+	}
+
+PathPattern:
+	SimplePathPattern
+	{
+		pp := $1.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternSimple
+		$$ = pp
+	}
+|	"ANY" VariableLengthPathPattern
+	{
+		pp := $2.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternAny
+		$$ = pp
+	}
+|	"ANY" "SHORTEST" VariableLengthPathPattern
+	{
+		pp := $3.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternAnyShortest
+		$$ = pp
+	}
+|	"ALL" "SHORTEST" VariableLengthPathPattern
+	{
+		pp := $3.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternAllShortest
+		$$ = pp
+	}
+|	"TOP" LengthNum "SHORTEST" VariableLengthPathPattern
+	{
+		pp := $4.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternTopKShortest
+		pp.TopK = $2.(uint64)
+		$$ = pp
+	}
+|	"ANY" "CHEAPEST" VariableLengthPathPattern
+	{
+		pp := $3.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternAnyCheapest
+		$$ = pp
+	}
+|	"ALL" "CHEAPEST" VariableLengthPathPattern
+	{
+		pp := $3.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternAllCheapest
+		$$ = pp
+	}
+|	"TOP" LengthNum "CHEAPEST" VariableLengthPathPattern
+	{
+		pp := $4.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternTopKCheapest
+		pp.TopK = $2.(uint64)
+		$$ = pp
+	}
+|	"ALL" VariableLengthPathPattern
+	{
+		pp := $2.(*ast.PathPattern)
+		pp.Tp = ast.PathPatternAll
+		$$ = pp
+	}
+
+SimplePathPattern:
+	VertexPattern
+	{
+		$$ = &ast.PathPattern{Vertices: []*ast.VertexPattern{$1.(*ast.VertexPattern)}}
+	}
+|	SimplePathPattern ReachabilityPathExpr VertexPattern
+	{
+		pp := $1.(*ast.PathPattern)
+		pp.Vertices = append(pp.Vertices, $3.(*ast.VertexPattern))
+		pp.Connections = append(pp.Connections, $2.(*ast.ReachabilityPathExpr))
+		$$ = pp
+	}
+|	SimplePathPattern EdgePattern VertexPattern
+	{
+		pp := $1.(*ast.PathPattern)
+		pp.Vertices = append(pp.Vertices, $3.(*ast.VertexPattern))
+		pp.Connections = append(pp.Connections, $2.(*ast.EdgePattern))
+		$$ = pp
+	}
+
+VariableLengthPathPattern:
+	VertexPattern QuantifiedPathExpr VertexPattern
+	{
+		$$ = &ast.PathPattern{
+			Vertices:    []*ast.VertexPattern{$1.(*ast.VertexPattern), $3.(*ast.VertexPattern)},
+			Connections: []ast.VertexPairConnection{$2.(*ast.QuantifiedPathExpr)},
+		}
+	}
+
+ReachabilityPathExpr:
+	"-/" LabelPredicate PatternQuantifierOpt "/->"
+	{
+		$$ = &ast.ReachabilityPathExpr{
+			Labels:     $2.([]model.CIStr),
+			Direction:  ast.EdgeDirectionOutgoing,
+			Quantifier: $3.(*ast.PatternQuantifier),
+		}
+	}
+|	"<-/" LabelPredicate PatternQuantifierOpt "/-"
+	{
+		$$ = &ast.ReachabilityPathExpr{
+			Labels:     $2.([]model.CIStr),
+			Direction:  ast.EdgeDirectionIncoming,
+			Quantifier: $3.(*ast.PatternQuantifier),
+		}
+	}
+|	"-/" LabelPredicate PatternQuantifierOpt "/-"
+	{
+		$$ = &ast.ReachabilityPathExpr{
+			Labels:     $2.([]model.CIStr),
+			Direction:  ast.EdgeDirectionAnyDirected,
+			Quantifier: $3.(*ast.PatternQuantifier),
+		}
+	}
+
+VertexPattern:
+	'(' VariableSpec ')'
+	{
+		$$ = &ast.VertexPattern{Variable: $2.(*ast.VariableSpec)}
+	}
+
+VertexPatternOpt:
+	{
+		$$ = (*ast.VertexPattern)(nil)
+	}
+|	VertexPattern
+
+EdgePattern:
+	"-[" VariableSpec "]->"
+	{
+		$$ = &ast.EdgePattern{
+			Variable:  $2.(*ast.VariableSpec),
+			Direction: ast.EdgeDirectionOutgoing,
+		}
+	}
+|	"->"
+	{
+		$$ = &ast.EdgePattern{Direction: ast.EdgeDirectionOutgoing}
+	}
+|	"<-[" VariableSpec "]-"
+	{
+		$$ = &ast.EdgePattern{
+			Variable:  $2.(*ast.VariableSpec),
+			Direction: ast.EdgeDirectionIncoming,
+		}
+	}
+|	"<-"
+	{
+		$$ = &ast.EdgePattern{Direction: ast.EdgeDirectionIncoming}
+	}
+|	"-[" VariableSpec "]-"
+	{
+		$$ = &ast.EdgePattern{
+			Variable:  $2.(*ast.VariableSpec),
+			Direction: ast.EdgeDirectionAnyDirected,
+		}
+	}
+|	'-'
+	{
+		$$ = &ast.EdgePattern{Direction: ast.EdgeDirectionAnyDirected}
+	}
+
+VariableSpec:
+	VariableNameOpt LabelPredicateOpt
+	{
+		$$ = &ast.VariableSpec{
+			Name:   $1.(model.CIStr),
+			Labels: $2.([]model.CIStr),
+		}
+	}
+
+VariableNameOpt:
+	{
+		$$ = model.CIStr{}
+	}
+|	Identifier
+	{
+		$$ = model.NewCIStr($1)
+	}
+
+LabelPredicate:
+	':' LabelNameList
+	{
+		$$ = $2.([]model.CIStr)
+	}
+
+LabelPredicateOpt:
+	{
+		$$ = []model.CIStr(nil)
+	}
+|	LabelPredicate
+
+LabelNameList:
+	LabelName
+	{
+		$$ = []model.CIStr{$1.(model.CIStr)}
+	}
+|	LabelNameList '|' LabelName
+	{
+		$$ = append($1.([]model.CIStr), $3.(model.CIStr))
+	}
+
+QuantifiedPathExpr:
+	EdgePattern PatternQuantifierOpt
+	{
+		$$ = &ast.QuantifiedPathExpr{
+			Edge:       $1.(*ast.EdgePattern),
+			Quantifier: $2.(*ast.PatternQuantifier),
+		}
+	}
+|	'(' VertexPatternOpt EdgePattern VertexPatternOpt WhereClauseOptional CostClauseOpt ')' PatternQuantifierOpt
+	{
+		q := &ast.QuantifiedPathExpr{
+			Edge:        $3.(*ast.EdgePattern),
+			Quantifier:  $8.(*ast.PatternQuantifier),
+			Source:      $2.(*ast.VertexPattern),
+			Destination: $4.(*ast.VertexPattern),
+		}
+		if $5 != nil {
+			q.Where = $5.(ast.ExprNode)
+		}
+		if $6 != nil {
+			q.Cost = $6.(ast.ExprNode)
+		}
+		$$ = q
+	}
+
+CostClause:
+	"COST" Expression
+	{
+		$$ = $2.(ast.ExprNode)
+	}
+
+CostClauseOpt:
+	{
+		$$ = nil
+	}
+|	CostClause
+
+PatternQuantifier:
+	'*'
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierZeroOrMore, M: 18446744073709551615}
+	}
+|	'+'
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierOneOrMore, N: 1, M: 18446744073709551615}
+	}
+// '?' is declared as paramMarker before.
+|	paramMarker
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierOptional, N: 0, M: 1}
+	}
+|	'{' LengthNum '}'
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierExactlyN, N: $2.(uint64), M: $2.(uint64)}
+	}
+|	'{' LengthNum ',' '}'
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierNOrMore, N: $2.(uint64), M: 18446744073709551615}
+	}
+|	'{' LengthNum ',' LengthNum '}'
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierBetweenNAndM, N: $2.(uint64), M: $4.(uint64)}
+	}
+|	'{' ',' LengthNum '}'
+	{
+		$$ = &ast.PatternQuantifier{Tp: ast.PatternQuantifierBetweenZeroAndM, N: 0, M: $3.(uint64)}
+	}
+
+PatternQuantifierOpt:
+	{
+		$$ = (*ast.PatternQuantifier)(nil)
+	}
+|	PatternQuantifier
+
+PathPatternMacroList:
+	PathPatternMacro
+	{
+		$$ = []*ast.PathPatternMacro{$1.(*ast.PathPatternMacro)}
+	}
+|	PathPatternMacroList PathPatternMacro
+	{
+		$$ = append($1.([]*ast.PathPatternMacro), $2.(*ast.PathPatternMacro))
+	}
+
+PathPatternMacro:
+	"PATH" Identifier "AS" PathPattern WhereClauseOptional
+	{
+		p := &ast.PathPatternMacro{
+			Name: model.NewCIStr($2),
+			Path: $4.(*ast.PathPattern),
+		}
+		if $5 != nil {
+			p.Where = $5.(ast.ExprNode)
+		}
+		$$ = p
+	}
 %%
