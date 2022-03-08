@@ -328,6 +328,10 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 			p.ctx.GetSessionVars().StmtCtx.IsStaleness = true
 			p.IsStaleness = true
 		}
+	case *ast.CreatePropertyGraphStmt:
+		p.stmtTp = TypeCreate
+	case *ast.DropPropertyGraphStmt:
+		p.stmtTp = TypeDrop
 	default:
 		p.flag &= ^parentIsJoin
 	}
@@ -556,6 +560,8 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 		if x.Kind == ast.BRIEKindRestore {
 			p.flag &= ^inCreateOrDropTable
 		}
+	case *ast.GraphName:
+		p.handleGraphName(x)
 	}
 
 	return in, p.err == nil
@@ -1451,6 +1457,17 @@ func (p *preprocessor) handleTableName(tn *ast.TableName) {
 	}
 	tn.TableInfo = tableInfo
 	tn.DBInfo = dbInfo
+}
+
+func (p *preprocessor) handleGraphName(gn *ast.GraphName) {
+	if gn.Schema.L == "" {
+		currentDB := p.ctx.GetSessionVars().CurrentDB
+		if currentDB == "" {
+			p.err = errors.Trace(ErrNoDB)
+			return
+		}
+		gn.Schema = model.NewCIStr(currentDB)
+	}
 }
 
 func (p *preprocessor) checkNotInRepair(tn *ast.TableName) {

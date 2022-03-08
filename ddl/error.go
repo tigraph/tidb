@@ -309,4 +309,25 @@ var (
 	errFunctionalIndexOnBlob = dbterror.ClassDDL.NewStd(mysql.ErrFunctionalIndexOnBlob)
 	// ErrIncompatibleTiFlashAndPlacement when placement and tiflash replica options are set at the same time
 	ErrIncompatibleTiFlashAndPlacement = dbterror.ClassDDL.NewStdErr(mysql.ErrUnsupportedDDLOperation, parser_mysql.Message("Placement and tiflash replica options cannot be set at the same time", nil))
+
+	// ErrPrimaryKeyRequired returns when graph underlying table doesn't define primary key.
+	ErrPrimaryKeyRequired = dbterror.ClassDDL.NewStd(mysql.ErrPrimaryKeyRequired)
+	// ErrForeignKeyRequired returns when graph underlying table doesn't define foreign key.
+	ErrForeignKeyRequired = dbterror.ClassDDL.NewStd(mysql.ErrForeignKeyRequired)
+	// ErrAmbiguousForeignKeyForEdgeTable returns when graph underlying table contains ambiguous foreign keys.
+	ErrAmbiguousForeignKeyForEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrAmbiguousForeignKeyForEdgeTable)
+	// ErrWrongVertexTableReference returns when vertex table reference is incorrect.
+	ErrWrongVertexTableReference = dbterror.ClassDDL.NewStd(mysql.ErrWrongVertexTableReference)
+	// ErrVertexTableNotExists returns when vertex table doesn't exist.
+	ErrVertexTableNotExists = dbterror.ClassDDL.NewStd(mysql.ErrVertexTableNotExists)
+	// ErrFunctionalPropertyFunctionIsNotAllowed returns for unsupported functions for functional property.
+	ErrFunctionalPropertyFunctionIsNotAllowed = dbterror.ClassDDL.NewStd(mysql.ErrFunctionalPropertyFunctionIsNotAllowed)
+	// ErrDuplicateVertexTable returns when duplicate vertex table exists.
+	ErrDuplicateVertexTable = dbterror.ClassDDL.NewStd(mysql.ErrDuplicateVertexTable)
+	// ErrDuplicateEdgeTable returns when duplicate edge table exists.
+	ErrDuplicateEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrDuplicateEdgeTable)
+	// ErrDuplicateProperty returns when duplicate property exists.
+	ErrDuplicateProperty = dbterror.ClassDDL.NewStd(mysql.ErrDuplicateProperty)
+	// ErrLabelContainsDifferentProperties returns when tables have the same label but contain different
+	ErrLabelContainsDifferentProperties = dbterror.ClassDDL.NewStd(mysql.ErrLabelContainsDifferentProperties)
 )

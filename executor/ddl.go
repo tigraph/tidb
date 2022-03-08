@@ -201,6 +201,10 @@ func (e *DDLExec) Next(ctx context.Context, req *chunk.Chunk) (err error) {
 		err = e.executeDropPlacementPolicy(x)
 	case *ast.AlterPlacementPolicyStmt:
 		err = e.executeAlterPlacementPolicy(x)
+	case *ast.CreatePropertyGraphStmt:
+		err = e.executeCreatePropertyGraph(x)
+	case *ast.DropPropertyGraphStmt:
+		err = e.executeDropPropertyGraph(x)
 	}
 	if err != nil {
 		// If the owner return ErrTableNotExists error when running this DDL, it may be caused by schema changed,
@@ -830,4 +834,12 @@ func (e *DDLExec) executeDropPlacementPolicy(s *ast.DropPlacementPolicyStmt) err
 
 func (e *DDLExec) executeAlterPlacementPolicy(s *ast.AlterPlacementPolicyStmt) error {
 	return domain.GetDomain(e.ctx).DDL().AlterPlacementPolicy(e.ctx, s)
+}
+
+func (e *DDLExec) executeCreatePropertyGraph(s *ast.CreatePropertyGraphStmt) error {
+	return domain.GetDomain(e.ctx).DDL().CreatePropertyGraph(e.ctx, s)
+}
+
+func (e *DDLExec) executeDropPropertyGraph(s *ast.DropPropertyGraphStmt) error {
+	return domain.GetDomain(e.ctx).DDL().DropPropertyGraph(e.ctx, s)
 }

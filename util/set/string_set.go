@@ -52,3 +52,16 @@ func (s StringSet) Intersection(rhs StringSet) StringSet {
 func (s StringSet) Count() int {
 	return len(s)
 }
+
+// Equal reports whether the two sets are equal.
+func (s StringSet) Equal(rhs StringSet) bool {
+	if len(s) != len(rhs) {
+		return false
+	}
+	for k := range s {
+		if _, ok := rhs[k]; !ok {
+			return false
+		}
+	}
+	return true
+}

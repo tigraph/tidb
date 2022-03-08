@@ -177,7 +177,7 @@ func SubTestDomain(t *testing.T) {
 	err = dd.CreateSchema(ctx, model.NewCIStr("aaa"), cs, nil, nil)
 	require.NoError(t, err)
 
-	// Test for fetchSchemasWithTables when "tables" isn't nil.
+	// Test for fetchSchemasWithTablesAndGraphs when "tables" isn't nil.
 	err = dd.CreateTable(ctx, &ast.CreateTableStmt{Table: &ast.TableName{
 		Schema: model.NewCIStr("aaa"),
 		Name:   model.NewCIStr("tbl")}})

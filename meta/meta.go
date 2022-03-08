@@ -31,7 +31,6 @@ import (
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/metrics"
 	"github.com/pingcap/tidb/parser/model"
-	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/structure"
 	"github.com/pingcap/tidb/util/dbterror"
 	"github.com/pingcap/tidb/util/logutil"
@@ -76,6 +75,7 @@ var (
 	mPolicyPrefix     = "Policy"
 	mPolicyGlobalID   = []byte("PolicyGlobalID")
 	mPolicyMagicByte  = CurrentMagicByteVer
+	mGraphPrefix      = "Graph"
 )
 
 const (
@@ -95,19 +95,23 @@ const (
 
 var (
 	// ErrDBExists is the error for db exists.
-	ErrDBExists = dbterror.ClassMeta.NewStd(mysql.ErrDBCreateExists)
+	ErrDBExists = dbterror.ClassMeta.NewStd(errno.ErrDBCreateExists)
 	// ErrDBNotExists is the error for db not exists.
-	ErrDBNotExists = dbterror.ClassMeta.NewStd(mysql.ErrBadDB)
+	ErrDBNotExists = dbterror.ClassMeta.NewStd(errno.ErrBadDB)
 	// ErrPolicyExists is the error for policy exists.
 	ErrPolicyExists = dbterror.ClassMeta.NewStd(errno.ErrPlacementPolicyExists)
 	// ErrPolicyNotExists is the error for policy not exists.
 	ErrPolicyNotExists = dbterror.ClassMeta.NewStd(errno.ErrPlacementPolicyNotExists)
 	// ErrTableExists is the error for table exists.
-	ErrTableExists = dbterror.ClassMeta.NewStd(mysql.ErrTableExists)
+	ErrTableExists = dbterror.ClassMeta.NewStd(errno.ErrTableExists)
 	// ErrTableNotExists is the error for table not exists.
-	ErrTableNotExists = dbterror.ClassMeta.NewStd(mysql.ErrNoSuchTable)
+	ErrTableNotExists = dbterror.ClassMeta.NewStd(errno.ErrNoSuchTable)
 	// ErrDDLReorgElementNotExist is the error for reorg element not exists.
 	ErrDDLReorgElementNotExist = dbterror.ClassMeta.NewStd(errno.ErrDDLReorgElementNotExist)
+	// ErrGraphExists is the error for table exists.
+	ErrGraphExists = dbterror.ClassMeta.NewStd(errno.ErrGraphExists)
+	// ErrGraphNotExists is the error for table not exists.
+	ErrGraphNotExists = dbterror.ClassMeta.NewStd(errno.ErrGraphNotExists)
 )
 
 // Meta is for handling meta information in a transaction.
@@ -1224,4 +1228,138 @@ func (m *Meta) SetSchemaDiff(diff *model.SchemaDiff) error {
 	err = m.txn.Set(diffKey, data)
 	metrics.MetaHistogram.WithLabelValues(metrics.SetSchemaDiff, metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
 	return errors.Trace(err)
+}
+
+func (m *Meta) graphKey(graphID int64) []byte {
+	return []byte(fmt.Sprintf("%s:%d", mGraphPrefix, graphID))
+}
+
+func (m *Meta) checkGraphExists(dbKey []byte, graphKey []byte) error {
+	v, err := m.txn.HGet(dbKey, graphKey)
+	if err == nil && v == nil {
+		err = ErrGraphNotExists.GenWithStack("graph doesn't exists")
+	}
+	return errors.Trace(err)
+}
+
+func (m *Meta) checkGraphNotExists(dbKey []byte, graphKey []byte) error {
+	v, err := m.txn.HGet(dbKey, graphKey)
+	if err == nil && v != nil {
+		err = ErrGraphExists.GenWithStack("graph already exists")
+	}
+	return errors.Trace(err)
+}
+
+// CreateGraph creates a graph with graphInfo in database.
+func (m *Meta) CreateGraph(dbID int64, graphInfo *model.GraphInfo) error {
+	// Check if db exists.
+	dbKey := m.dbKey(dbID)
+	if err := m.checkDBExists(dbKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	// Check if graph exists.
+	graphKey := m.graphKey(graphInfo.ID)
+	if err := m.checkGraphNotExists(dbKey, graphKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	data, err := json.Marshal(graphInfo)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	return m.txn.HSet(dbKey, graphKey, data)
+}
+
+// DropGraph drops graph in database.
+func (m *Meta) DropGraph(dbID int64, graphID int64) error {
+	// Check if db exists.
+	dbKey := m.dbKey(dbID)
+	if err := m.checkDBExists(dbKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	// Check if graph exists.
+	graphKey := m.graphKey(graphID)
+	if err := m.checkGraphExists(dbKey, graphKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	if err := m.txn.HDel(dbKey, graphKey); err != nil {
+		return errors.Trace(err)
+	}
+	return nil
+}
+
+// GetGraph gets the graph value in database with graphID.
+func (m *Meta) GetGraph(dbID int64, graphID int64) (*model.GraphInfo, error) {
+	dbKey := m.dbKey(dbID)
+	if err := m.checkDBExists(dbKey); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	graphKey := m.graphKey(graphID)
+	value, err := m.txn.HGet(dbKey, graphKey)
+	if err != nil || value == nil {
+		return nil, errors.Trace(err)
+	}
+
+	graphInfo := &model.GraphInfo{}
+	err = json.Unmarshal(value, graphInfo)
+	return graphInfo, errors.Trace(err)
+}
+
+// UpdateGraph updates the graph with graph info.
+func (m *Meta) UpdateGraph(dbID int64, graphInfo *model.GraphInfo) error {
+	// Check if db exists.
+	dbKey := m.dbKey(dbID)
+	if err := m.checkDBExists(dbKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	// Check if graph exists.
+	graphKey := m.graphKey(graphInfo.ID)
+	if err := m.checkGraphExists(dbKey, graphKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	data, err := json.Marshal(graphInfo)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	err = m.txn.HSet(dbKey, graphKey, data)
+	return errors.Trace(err)
+}
+
+func (m *Meta) ListGraphs(dbID int64) ([]*model.GraphInfo, error) {
+	dbKey := m.dbKey(dbID)
+	if err := m.checkDBExists(dbKey); err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	res, err := m.txn.HGetAll(dbKey)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	graphs := make([]*model.GraphInfo, 0, len(res)/2)
+	for _, r := range res {
+		// only handle graph meta
+		graphKey := string(r.Field)
+		if !strings.HasPrefix(graphKey, mGraphPrefix) {
+			continue
+		}
+
+		graphInfo := &model.GraphInfo{}
+		err = json.Unmarshal(r.Value, graphInfo)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+
+		graphs = append(graphs, graphInfo)
+	}
+
+	return graphs, nil
 }

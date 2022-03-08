@@ -59,6 +59,10 @@ type InfoSchema interface {
 	RuleBundles() []*placement.Bundle
 	// AllPlacementPolicies returns all placement policies
 	AllPlacementPolicies() []*model.PolicyInfo
+	// GraphByName returns graph info with given schema and graph name.
+	GraphByName(schema, graph model.CIStr) (*model.GraphInfo, bool)
+	// GraphByID return graph info by graph id.
+	GraphByID(id int64) (*model.GraphInfo, bool)
 }
 
 type sortedTables []table.Table
@@ -85,9 +89,18 @@ func (s sortedTables) searchTable(id int64) int {
 	return idx
 }
 
-type schemaTables struct {
+type schemaMetas struct {
 	dbInfo *model.DBInfo
 	tables map[string]table.Table
+	graphs map[string]*model.GraphInfo
+}
+
+func newSchemaMetas(dbInfo *model.DBInfo) *schemaMetas {
+	return &schemaMetas{
+		dbInfo: dbInfo,
+		tables: make(map[string]table.Table),
+		graphs: make(map[string]*model.GraphInfo),
+	}
 }
 
 const bucketCount = 512
@@ -101,10 +114,13 @@ type infoSchema struct {
 	policyMutex sync.RWMutex
 	policyMap   map[string]*model.PolicyInfo
 
-	schemaMap map[string]*schemaTables
+	schemaMap map[string]*schemaMetas
 
 	// sortedTablesBuckets is a slice of sortedTables, a table's bucket index is (tableID % bucketCount).
 	sortedTablesBuckets []sortedTables
+
+	// sortedGraphs is a slice of all graphs which is sorted by graph id.
+	sortedGraphs []*model.GraphInfo
 
 	// schemaMetaVersion is the version of schema, and we should check version when change schema.
 	schemaMetaVersion int64
@@ -113,19 +129,16 @@ type infoSchema struct {
 // MockInfoSchema only serves for test.
 func MockInfoSchema(tbList []*model.TableInfo) InfoSchema {
 	result := &infoSchema{}
-	result.schemaMap = make(map[string]*schemaTables)
+	result.schemaMap = make(map[string]*schemaMetas)
 	result.policyMap = make(map[string]*model.PolicyInfo)
 	result.ruleBundleMap = make(map[string]*placement.Bundle)
 	result.sortedTablesBuckets = make([]sortedTables, bucketCount)
 	dbInfo := &model.DBInfo{ID: 0, Name: model.NewCIStr("test"), Tables: tbList}
-	tableNames := &schemaTables{
-		dbInfo: dbInfo,
-		tables: make(map[string]table.Table),
-	}
-	result.schemaMap["test"] = tableNames
+	metas := newSchemaMetas(dbInfo)
+	result.schemaMap["test"] = metas
 	for _, tb := range tbList {
 		tbl := table.MockTableFromMeta(tb)
-		tableNames.tables[tb.Name.L] = tbl
+		metas.tables[tb.Name.L] = tbl
 		bucketIdx := tableBucketIdx(tb.ID)
 		result.sortedTablesBuckets[bucketIdx] = append(result.sortedTablesBuckets[bucketIdx], tbl)
 	}
@@ -138,19 +151,16 @@ func MockInfoSchema(tbList []*model.TableInfo) InfoSchema {
 // MockInfoSchemaWithSchemaVer only serves for test.
 func MockInfoSchemaWithSchemaVer(tbList []*model.TableInfo, schemaVer int64) InfoSchema {
 	result := &infoSchema{}
-	result.schemaMap = make(map[string]*schemaTables)
+	result.schemaMap = make(map[string]*schemaMetas)
 	result.policyMap = make(map[string]*model.PolicyInfo)
 	result.ruleBundleMap = make(map[string]*placement.Bundle)
 	result.sortedTablesBuckets = make([]sortedTables, bucketCount)
 	dbInfo := &model.DBInfo{ID: 0, Name: model.NewCIStr("test"), Tables: tbList}
-	tableNames := &schemaTables{
-		dbInfo: dbInfo,
-		tables: make(map[string]table.Table),
-	}
-	result.schemaMap["test"] = tableNames
+	metas := newSchemaMetas(dbInfo)
+	result.schemaMap["test"] = metas
 	for _, tb := range tbList {
 		tbl := table.MockTableFromMeta(tb)
-		tableNames.tables[tb.Name.L] = tbl
+		metas.tables[tb.Name.L] = tbl
 		bucketIdx := tableBucketIdx(tb.ID)
 		result.sortedTablesBuckets[bucketIdx] = append(result.sortedTablesBuckets[bucketIdx], tbl)
 	}
@@ -428,6 +438,25 @@ func (is *infoSchema) deleteBundle(id string) {
 	delete(is.ruleBundleMap, id)
 }
 
+func (is *infoSchema) GraphByName(schema, graph model.CIStr) (*model.GraphInfo, bool) {
+	if metas, ok := is.schemaMap[schema.L]; ok {
+		if graphInfo, ok := metas.graphs[graph.L]; ok {
+			return graphInfo, true
+		}
+	}
+	return nil, false
+}
+
+func (is *infoSchema) GraphByID(id int64) (*model.GraphInfo, bool) {
+	idx := sort.Search(len(is.sortedGraphs), func(i int) bool {
+		return is.sortedGraphs[i].ID >= id
+	})
+	if idx >= len(is.sortedGraphs) || is.sortedGraphs[idx].ID != id {
+		return nil, false
+	}
+	return is.sortedGraphs[idx], true
+}
+
 // GetBundle get the first available bundle by array of IDs, possibly fallback to the default.
 // If fallback to the default, only rules applied to all regions(empty keyrange) will be returned.
 // If the default bundle is unavailable, an empty bundle with an GroupID(ids[0]) is returned.
@@ -460,16 +489,16 @@ func GetBundle(h InfoSchema, ids []int64) *placement.Bundle {
 // LocalTemporaryTables store local temporary tables
 type LocalTemporaryTables struct {
 	// Local temporary tables can be accessed after the db is dropped, so there needs a way to retain the DBInfo.
-	// schemaTables.dbInfo will only be used when the db is dropped and it may be stale after the db is created again.
+	// schemaMetas.dbInfo will only be used when the db is dropped and it may be stale after the db is created again.
 	// But it's fine because we only need its name.
-	schemaMap map[string]*schemaTables
+	schemaMap map[string]*schemaMetas
 	idx2table map[int64]table.Table
 }
 
 // NewLocalTemporaryTables creates a new NewLocalTemporaryTables object
 func NewLocalTemporaryTables() *LocalTemporaryTables {
 	return &LocalTemporaryTables{
-		schemaMap: make(map[string]*schemaTables),
+		schemaMap: make(map[string]*schemaMetas),
 		idx2table: make(map[int64]table.Table),
 	}
 }
@@ -517,19 +546,19 @@ func (is *LocalTemporaryTables) AddTable(db *model.DBInfo, tbl table.Table) erro
 
 // RemoveTable remove a table
 func (is *LocalTemporaryTables) RemoveTable(schema, table model.CIStr) (exist bool) {
-	tbls := is.schemaTables(schema)
-	if tbls == nil {
+	metas := is.schemaMetas(schema)
+	if metas == nil {
 		return false
 	}
 
-	oldTable, exist := tbls.tables[table.L]
+	oldTable, exist := metas.tables[table.L]
 	if !exist {
 		return false
 	}
 
-	delete(tbls.tables, table.L)
+	delete(metas.tables, table.L)
 	delete(is.idx2table, oldTable.Meta().ID)
-	if len(tbls.tables) == 0 {
+	if len(metas.tables) == 0 {
 		delete(is.schemaMap, schema.L)
 	}
 	return true
@@ -552,23 +581,23 @@ func (is *LocalTemporaryTables) SchemaByTable(tableInfo *model.TableInfo) (*mode
 	return nil, false
 }
 
-func (is *LocalTemporaryTables) ensureSchema(db *model.DBInfo) *schemaTables {
+func (is *LocalTemporaryTables) ensureSchema(db *model.DBInfo) *schemaMetas {
 	if tbls, ok := is.schemaMap[db.Name.L]; ok {
 		return tbls
 	}
 
-	tbls := &schemaTables{dbInfo: db, tables: make(map[string]table.Table)}
-	is.schemaMap[db.Name.L] = tbls
-	return tbls
+	metas := newSchemaMetas(db)
+	is.schemaMap[db.Name.L] = metas
+	return metas
 }
 
-func (is *LocalTemporaryTables) schemaTables(schema model.CIStr) *schemaTables {
+func (is *LocalTemporaryTables) schemaMetas(schema model.CIStr) *schemaMetas {
 	if is.schemaMap == nil {
 		return nil
 	}
 
-	if tbls, ok := is.schemaMap[schema.L]; ok {
-		return tbls
+	if metas, ok := is.schemaMap[schema.L]; ok {
+		return metas
 	}
 
 	return nil

@@ -318,6 +318,7 @@ func (c *illegalFunctionChecker) Leave(inNode ast.Node) (node ast.Node, ok bool)
 const (
 	typeColumn = iota
 	typeIndex
+	typeProperty
 )
 
 func checkIllegalFn4Generated(name string, genType int, expr ast.ExprNode) error {
@@ -332,6 +333,8 @@ func checkIllegalFn4Generated(name string, genType int, expr ast.ExprNode) error
 			return ErrGeneratedColumnFunctionIsNotAllowed.GenWithStackByArgs(name)
 		case typeIndex:
 			return ErrFunctionalIndexFunctionIsNotAllowed.GenWithStackByArgs(name)
+		case typeProperty:
+			return ErrFunctionalPropertyFunctionIsNotAllowed.GenWithStackByArgs(name)
 		}
 	}
 	if c.hasAggFunc {
@@ -343,6 +346,8 @@ func checkIllegalFn4Generated(name string, genType int, expr ast.ExprNode) error
 			return ErrGeneratedColumnRowValueIsNotAllowed.GenWithStackByArgs(name)
 		case typeIndex:
 			return ErrFunctionalIndexRowValueIsNotAllowed.GenWithStackByArgs(name)
+		case typeProperty:
+			return ErrFunctionalPropertyFunctionIsNotAllowed.GenWithStackByArgs(name)
 		}
 	}
 	if c.hasWindowFunc {

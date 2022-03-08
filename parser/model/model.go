@@ -1099,6 +1099,7 @@ type DBInfo struct {
 	Charset             string             `json:"charset"`
 	Collate             string             `json:"collate"`
 	Tables              []*TableInfo       `json:"-"` // Tables in the DB.
+	Graphs              []*GraphInfo       `json:"-"` // Graphs in the DB
 	State               SchemaState        `json:"state"`
 	PlacementPolicyRef  *PolicyRefInfo     `json:"policy_ref_info"`
 	DirectPlacementOpts *PlacementSettings `json:"placement_settings"`
@@ -1110,6 +1111,9 @@ func (db *DBInfo) Clone() *DBInfo {
 	newInfo.Tables = make([]*TableInfo, len(db.Tables))
 	for i := range db.Tables {
 		newInfo.Tables[i] = db.Tables[i].Clone()
+	}
+	for i := range db.Graphs {
+		newInfo.Graphs[i] = db.Graphs[i].Clone()
 	}
 	return &newInfo
 }
@@ -1326,4 +1330,101 @@ func (s WindowRepeatType) String() string {
 	default:
 		return ""
 	}
+}
+
+// GraphInfo provides meta data describing a graph.
+type GraphInfo struct {
+	ID           int64          `json:"id"`
+	Name         CIStr          `json:"name"`
+	State        SchemaState    `json:"state"`
+	VertexTables []*VertexTable `json:"vertex_tables"`
+	EdgeTables   []*EdgeTable   `json:"edge_tables"`
+}
+
+func (g *GraphInfo) Clone() *GraphInfo {
+	ng := *g
+	ng.VertexTables = make([]*VertexTable, len(g.VertexTables))
+	ng.EdgeTables = make([]*EdgeTable, len(g.EdgeTables))
+
+	for i := 0; i < len(g.VertexTables); i++ {
+		ng.VertexTables[i] = g.VertexTables[i].Clone()
+	}
+	for i := 0; i < len(g.EdgeTables); i++ {
+		ng.EdgeTables[i] = g.EdgeTables[i].Clone()
+	}
+	return &ng
+}
+
+// PropertyInfo provides graph property info.
+type PropertyInfo struct {
+	Name CIStr  `json:"name"`
+	Expr string `json:"expr"`
+}
+
+func (p *PropertyInfo) Clone() *PropertyInfo {
+	np := *p
+	return &np
+}
+
+// VertexTable provides meta data describing a vertex table.
+type VertexTable struct {
+	Name       CIStr           `json:"name"`
+	KeyCols    []CIStr         `json:"key_cols"`
+	RefTable   CIStr           `json:"ref_table"`
+	Label      CIStr           `json:"label"`
+	Properties []*PropertyInfo `json:"properties"`
+}
+
+func (v *VertexTable) Clone() *VertexTable {
+	nv := *v
+	nv.KeyCols = make([]CIStr, len(v.KeyCols))
+	nv.Properties = make([]*PropertyInfo, len(v.Properties))
+
+	copy(nv.KeyCols, v.KeyCols)
+	for i := 0; i < len(v.Properties); i++ {
+		nv.Properties[i] = v.Properties[i].Clone()
+	}
+	return &nv
+}
+
+// EdgeTable provides meta data describing a edge table.
+type EdgeTable struct {
+	Name        CIStr           `json:"name"`
+	KeyCols     []CIStr         `json:"key_cols"`
+	RefTable    CIStr           `json:"ref_table"`
+	Label       CIStr           `json:"label"`
+	Properties  []*PropertyInfo `json:"properties"`
+	Source      *VertexTableRef `json:"source"`
+	Destination *VertexTableRef `json:"destination"`
+}
+
+func (e *EdgeTable) Clone() *EdgeTable {
+	ne := *e
+	ne.KeyCols = make([]CIStr, len(e.KeyCols))
+	ne.Properties = make([]*PropertyInfo, len(e.Properties))
+
+	copy(ne.KeyCols, e.KeyCols)
+	for i := 0; i < len(e.Properties); i++ {
+		ne.Properties[i] = e.Properties[i].Clone()
+	}
+	if e.Source != nil {
+		ne.Source = e.Source.Clone()
+	}
+	if e.Destination != nil {
+		ne.Destination = e.Destination.Clone()
+	}
+	return &ne
+}
+
+// VertexTableRef describes the source or destination vertex table reference for a edge table.
+type VertexTableRef struct {
+	Name    CIStr   `json:"name"`
+	KeyCols []CIStr `json:"key_cols"`
+}
+
+func (v *VertexTableRef) Clone() *VertexTableRef {
+	nv := *v
+	nv.KeyCols = make([]CIStr, len(v.KeyCols))
+	copy(nv.KeyCols, v.KeyCols)
+	return &nv
 }

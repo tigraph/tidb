@@ -861,6 +861,10 @@ func (w *worker) runDDLJob(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, 
 		ver, err = onAlterCacheTable(t, job)
 	case model.ActionAlterNoCacheTable:
 		ver, err = onAlterNoCacheTable(t, job)
+	case model.ActionCreateGraph:
+		ver, err = onCreateGraph(d, t, job)
+	case model.ActionDropGraph:
+		ver, err = onDropGraph(t, job)
 	default:
 		// Invalid job, cancel it.
 		job.State = model.JobStateCancelled
@@ -1096,6 +1100,20 @@ func updateSchemaVersion(t *meta.Meta, job *model.Job) (int64, error) {
 				diff.AffectedOpts = buildPlacementAffects(oldIDs, oldIDs)
 			}
 		}
+	case model.ActionCreateGraph:
+		var graphInfo model.GraphInfo
+		err = job.DecodeArgs(&graphInfo)
+		if err != nil {
+			return 0, errors.Trace(err)
+		}
+		diff.GraphID = graphInfo.ID
+	case model.ActionDropGraph:
+		var graphID int64
+		err = job.DecodeArgs(&graphID)
+		if err != nil {
+			return 0, errors.Trace(err)
+		}
+		diff.GraphID = graphID
 	default:
 		diff.TableID = job.TableID
 	}

@@ -147,7 +147,7 @@ func (do *Domain) loadInfoSchema(startTS uint64) (infoschema.InfoSchema, bool, i
 		logutil.BgLogger().Error("failed to load schema diff", zap.Error(err))
 	}
 
-	schemas, err := do.fetchAllSchemasWithTables(m)
+	schemas, err := do.fetchAllSchemasWithTablesAndGraphs(m)
 	if err != nil {
 		return nil, false, currentSchemaVersion, nil, err
 	}
@@ -194,7 +194,7 @@ func (do *Domain) fetchPolicies(m *meta.Meta) ([]*model.PolicyInfo, error) {
 	return allPolicies, nil
 }
 
-func (do *Domain) fetchAllSchemasWithTables(m *meta.Meta) ([]*model.DBInfo, error) {
+func (do *Domain) fetchAllSchemasWithTablesAndGraphs(m *meta.Meta) ([]*model.DBInfo, error) {
 	allSchemas, err := m.ListDatabases()
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func (do *Domain) fetchAllSchemasWithTables(m *meta.Meta) ([]*model.DBInfo, erro
 	splittedSchemas := do.splitForConcurrentFetch(allSchemas)
 	doneCh := make(chan error, len(splittedSchemas))
 	for _, schemas := range splittedSchemas {
-		go do.fetchSchemasWithTables(schemas, m, doneCh)
+		go do.fetchSchemasWithTablesAndGraphs(schemas, m, doneCh)
 	}
 	for range splittedSchemas {
 		err = <-doneCh
@@ -232,7 +232,7 @@ func (do *Domain) splitForConcurrentFetch(schemas []*model.DBInfo) [][]*model.DB
 	return splitted
 }
 
-func (do *Domain) fetchSchemasWithTables(schemas []*model.DBInfo, m *meta.Meta, done chan error) {
+func (do *Domain) fetchSchemasWithTablesAndGraphs(schemas []*model.DBInfo, m *meta.Meta, done chan error) {
 	for _, di := range schemas {
 		if di.State != model.StatePublic {
 			// schema is not public, can't be used outside.
@@ -261,6 +261,19 @@ func (do *Domain) fetchSchemasWithTables(schemas []*model.DBInfo, m *meta.Meta, 
 				continue
 			}
 			di.Tables = append(di.Tables, tbl)
+		}
+		graphs, err := m.ListGraphs(di.ID)
+		if err != nil {
+			done <- err
+			return
+		}
+		di.Graphs = make([]*model.GraphInfo, 0, len(graphs))
+		for _, graph := range graphs {
+			if graph.State != model.StatePublic {
+				// schema is not public, can't be used outside.
+				continue
+			}
+			di.Graphs = append(di.Graphs, graph)
 		}
 	}
 	done <- nil
