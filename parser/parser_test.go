@@ -1148,6 +1148,12 @@ func TestDBAStmt(t *testing.T) {
 		{"show imports", true, "SHOW IMPORTS"},
 		// for show create import
 		{"show create import test", true, "SHOW CREATE IMPORT `test`"},
+		// for show create graph
+		{"show create graph test.g", true, "SHOW CREATE GRAPH `test`.`g`"},
+		// for show create property graph
+		{"show create property graph test.g", true, "SHOW CREATE PROPERTY GRAPH `test`.`g`"},
+		// for show graphs
+		{"show graphs", true, "SHOW GRAPHS"},
 
 		// for load stats
 		{"load stats '/tmp/stats.json'", true, "LOAD STATS '/tmp/stats.json'"},

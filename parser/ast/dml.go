@@ -2623,6 +2623,9 @@ const (
 	ShowPlacementForTable
 	ShowPlacementForPartition
 	ShowPlacementLabels
+	ShowGraphs
+	ShowCreateGraph
+	ShowCreatePropertyGraph
 )
 
 const (
@@ -2655,6 +2658,7 @@ type ShowStmt struct {
 	Roles       []*auth.RoleIdentity // Used for show grants .. using
 	IfNotExists bool                 // Used for `show create database if not exists`
 	Extended    bool                 // Used for `show extended columns from ...`
+	Graph       *GraphName           // Used for showing graphs.
 
 	// GlobalScope is used by `show variables` and `show bindings`
 	GlobalScope bool
@@ -2862,6 +2866,16 @@ func (n *ShowStmt) Restore(ctx *format.RestoreCtx) error {
 		}
 		ctx.WriteKeyWord(" PARTITION ")
 		ctx.WriteName(n.Partition.String())
+	case ShowCreateGraph:
+		ctx.WriteKeyWord("CREATE GRAPH ")
+		if err := n.Graph.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore ShowStmt.Graph")
+		}
+	case ShowCreatePropertyGraph:
+		ctx.WriteKeyWord("CREATE PROPERTY GRAPH ")
+		if err := n.Graph.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore ShowStmt.Graph")
+		}
 	// ShowTargetFilterable
 	default:
 		switch n.Tp {
@@ -2970,6 +2984,8 @@ func (n *ShowStmt) Restore(ctx *format.RestoreCtx) error {
 			ctx.WriteKeyWord("PLACEMENT")
 		case ShowPlacementLabels:
 			ctx.WriteKeyWord("PLACEMENT LABELS")
+		case ShowGraphs:
+			ctx.WriteKeyWord("GRAPHS")
 		default:
 			return errors.New("Unknown ShowStmt type")
 		}
@@ -2991,6 +3007,13 @@ func (n *ShowStmt) Accept(v Visitor) (Node, bool) {
 			return n, false
 		}
 		n.Table = node.(*TableName)
+	}
+	if n.Graph != nil {
+		node, ok := n.Graph.Accept(v)
+		if !ok {
+			return n, false
+		}
+		n.Graph = node.(*GraphName)
 	}
 	if n.Column != nil {
 		node, ok := n.Column.Accept(v)

@@ -1250,6 +1250,7 @@ type ShowContents struct {
 	Flag      int                  // Some flag parsed from sql, such as FULL.
 	User      *auth.UserIdentity   // Used for show grants.
 	Roles     []*auth.RoleIdentity // Used for show grants.
+	Graph     *ast.GraphName       // Used for showing create graph.
 
 	Full        bool
 	IfNotExists bool // Used for `show create database if not exists`.

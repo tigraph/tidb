@@ -84,6 +84,7 @@ type ShowExec struct {
 	Flag      int                  // Some flag parsed from sql, such as FULL.
 	Roles     []*auth.RoleIdentity // Used for show grants.
 	User      *auth.UserIdentity   // Used by show grants, show create user.
+	Graph     *ast.GraphName       // Used for showing create graphs.
 
 	is infoschema.InfoSchema
 
@@ -232,6 +233,10 @@ func (e *ShowExec) fetchAll(ctx context.Context) error {
 		return e.fetchShowPlacementForTable(ctx)
 	case ast.ShowPlacementForPartition:
 		return e.fetchShowPlacementForPartition(ctx)
+	case ast.ShowGraphs:
+		return e.fetchShowGraphs()
+	case ast.ShowCreateGraph, ast.ShowCreatePropertyGraph:
+		return e.fetchShowCreateGraph()
 	}
 	return nil
 }
@@ -1842,6 +1847,115 @@ func (e *ShowExec) fetchShowBuiltins() error {
 		e.appendRow([]interface{}{f})
 	}
 	return nil
+}
+
+func (e *ShowExec) fetchShowGraphs() error {
+	checker := privilege.GetPrivilegeManager(e.ctx)
+	if checker != nil && e.ctx.GetSessionVars().User != nil {
+		if !checker.DBIsVisible(e.ctx.GetSessionVars().ActiveRoles, e.DBName.O) {
+			return e.dbAccessDenied()
+		}
+	}
+	if !e.is.SchemaExists(e.DBName) {
+		return ErrBadDB.GenWithStackByArgs(e.DBName)
+	}
+	graphs := e.is.SchemaGraphs(e.DBName)
+	graphNames := make([]string, 0, len(graphs))
+	for _, g := range graphs {
+		graphNames = append(graphNames, g.Name.O)
+	}
+	sort.Strings(graphNames)
+	for _, v := range graphNames {
+		e.appendRow([]interface{}{v})
+	}
+	return nil
+}
+
+func (e *ShowExec) fetchShowCreateGraph() error {
+	graphInfo, ok := e.is.GraphByName(e.Graph.Schema, e.Graph.Name)
+	if !ok {
+		return infoschema.ErrGraphNotExists.GenWithStackByArgs(e.Graph.Schema, e.Graph.Name)
+	}
+	var buf bytes.Buffer
+	ConstructResultOfShowCreateGraph(e.ctx, graphInfo, &buf)
+	e.appendRow([]interface{}{graphInfo.Name.O, buf.String()})
+	return nil
+}
+
+// ConstructResultOfShowCreateGraph constructs the result for show create graph.
+func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.GraphInfo, buf *bytes.Buffer) {
+	sqlMode := ctx.GetSessionVars().SQLMode
+	joinCols := func(cols []model.CIStr) string {
+		var sb strings.Builder
+		for i, col := range cols {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(stringutil.Escape(col.O, sqlMode))
+		}
+		return sb.String()
+	}
+	fmt.Fprintf(buf, "CREATE PROPERTY GRAPH %s\n", stringutil.Escape(graphInfo.Name.O, sqlMode))
+	buf.WriteString("  VERTEX TABLES (\n")
+	for i, vTbl := range graphInfo.VertexTables {
+		if i > 0 {
+			buf.WriteString(",\n")
+		}
+		fmt.Fprintf(buf, "    %s AS %s\n", stringutil.Escape(vTbl.RefTable.O, sqlMode), stringutil.Escape(vTbl.Name.O, sqlMode))
+		fmt.Fprintf(buf, "      KEY (%s)\n", joinCols(vTbl.KeyCols))
+		fmt.Fprintf(buf, "      LABEL %s", stringutil.Escape(vTbl.Label.O, sqlMode))
+		if len(vTbl.Properties) == 0 {
+			buf.WriteString(" NO PROPERTIES")
+		} else {
+			buf.WriteString(" PROPERTIES (\n")
+			for i, p := range vTbl.Properties {
+				if i > 0 {
+					buf.WriteString(",\n")
+				}
+				buf.WriteString("        ")
+				if p.Col.O != "" {
+					buf.WriteString(stringutil.Escape(p.Col.O, sqlMode))
+				} else {
+					buf.WriteString(p.Expr)
+				}
+				fmt.Fprintf(buf, " AS %s", stringutil.Escape(p.Name.O, sqlMode))
+			}
+			buf.WriteString("\n      )")
+		}
+	}
+	buf.WriteString("\n  )")
+	if len(graphInfo.EdgeTables) > 0 {
+		buf.WriteString("\n  EDGE TABLES (\n")
+		for i, eTbl := range graphInfo.EdgeTables {
+			if i > 0 {
+				buf.WriteString(",\n")
+			}
+			fmt.Fprintf(buf, "    %s AS %s\n", stringutil.Escape(eTbl.RefTable.O, sqlMode), stringutil.Escape(eTbl.Name.O, sqlMode))
+			fmt.Fprintf(buf, "      KEY (%s)\n", joinCols(eTbl.KeyCols))
+			fmt.Fprintf(buf, "      SOURCE KEY (%s) REFERENCES %s\n", joinCols(eTbl.Source.KeyCols), stringutil.Escape(eTbl.Source.Name.O, sqlMode))
+			fmt.Fprintf(buf, "      DESTINATION KEY (%s) REFERENCES %s\n", joinCols(eTbl.Destination.KeyCols), stringutil.Escape(eTbl.Destination.Name.O, sqlMode))
+			fmt.Fprintf(buf, "      LABEL %s", stringutil.Escape(eTbl.Label.O, sqlMode))
+			if len(eTbl.Properties) == 0 {
+				buf.WriteString(" NO PROPERTIES")
+			} else {
+				buf.WriteString(" PROPERTIES (\n")
+				for i, p := range eTbl.Properties {
+					if i > 0 {
+						buf.WriteString(",\n")
+					}
+					buf.WriteString("        ")
+					if p.Col.O != "" {
+						buf.WriteString(stringutil.Escape(p.Col.O, sqlMode))
+					} else {
+						buf.WriteString(p.Expr)
+					}
+					fmt.Fprintf(buf, " AS %s", stringutil.Escape(p.Name.O, sqlMode))
+				}
+				buf.WriteString("\n      )")
+			}
+		}
+		buf.WriteString("\n  )")
+	}
 }
 
 // tryFillViewColumnType fill the columns type info of a view.

@@ -1045,6 +1045,7 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrGraphExists:    mysql.Message("Graph '%-.192s.%-.192s' already exists", nil),
 	ErrGraphNotExists: mysql.Message("Graph '%-.192s.%-.192s' doesn't exist", nil),
 	ErrFunctionalPropertyFunctionIsNotAllowed: mysql.Message("Expression of expression property '%s' contains a disallowed function", nil),
+	ErrGraphAccessDenied:                      mysql.Message("%-.128s command denied to user '%-.48s'@'%-.255s' for graph '%-.64s'", nil),
 	ErrPrimaryKeyRequired:                     mysql.Message("Primary key is required on table '%-.192s'", nil),
 	ErrForeignKeyRequired:                     mysql.Message("Foreign key is required on table '%-.192s'", nil),
 	ErrAmbiguousForeignKeyForEdgeTable:        mysql.Message("Ambiguous foreign keys defined on the underlying edge table '%-.192s', please specific key clause for vertex table reference explicitly", nil),

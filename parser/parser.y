@@ -413,6 +413,7 @@ import (
 	global                "GLOBAL"
 	grants                "GRANTS"
 	graph                 "GRAPH"
+	graphs                "GRAPHS"
 	hash                  "HASH"
 	help                  "HELP"
 	histogram             "HISTOGRAM"
@@ -6137,6 +6138,7 @@ UnReservedKeyword:
 |	"NONCLUSTERED"
 |	"PRESERVE"
 |	"GRAPH"
+|	"GRAPHS"
 |	"PROPERTY"
 |	"VERTEX"
 |	"EDGE"
@@ -10505,6 +10507,20 @@ ShowStmt:
 	{
 		$$ = $4.(*ast.ShowStmt)
 	}
+|	"SHOW" "CREATE" "GRAPH" GraphName
+	{
+		$$ = &ast.ShowStmt{
+			Tp:    ast.ShowCreateGraph,
+			Graph: $4.(*ast.GraphName),
+		}
+	}
+|	"SHOW" "CREATE" "PROPERTY" "GRAPH" GraphName
+	{
+		$$ = &ast.ShowStmt{
+			Tp:    ast.ShowCreatePropertyGraph,
+			Graph: $5.(*ast.GraphName),
+		}
+	}
 
 ShowPlacementTarget:
 	DatabaseSym DBName
@@ -10825,6 +10841,13 @@ ShowTargetFilterable:
 |	"PLACEMENT" "LABELS"
 	{
 		$$ = &ast.ShowStmt{Tp: ast.ShowPlacementLabels}
+	}
+|	"GRAPHS" ShowDatabaseNameOpt
+	{
+		$$ = &ast.ShowStmt{
+			Tp:     ast.ShowGraphs,
+			DBName: $2,
+		}
 	}
 
 ShowLikeOrWhereOpt:

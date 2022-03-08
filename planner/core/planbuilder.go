@@ -2863,6 +2863,7 @@ func (b *PlanBuilder) buildShow(ctx context.Context, show *ast.ShowStmt) (Plan, 
 			Flag:        show.Flag,
 			User:        show.User,
 			Roles:       show.Roles,
+			Graph:       show.Graph,
 			Full:        show.Full,
 			IfNotExists: show.IfNotExists,
 			GlobalScope: show.GlobalScope,
@@ -2872,7 +2873,7 @@ func (b *PlanBuilder) buildShow(ctx context.Context, show *ast.ShowStmt) (Plan, 
 	isView := false
 	isSequence := false
 	switch show.Tp {
-	case ast.ShowTables, ast.ShowTableStatus:
+	case ast.ShowTables, ast.ShowTableStatus, ast.ShowGraphs:
 		if p.DBName == "" {
 			return nil, ErrNoDB
 		}
@@ -2934,6 +2935,16 @@ func (b *PlanBuilder) buildShow(ctx context.Context, show *ast.ShowStmt) (Plan, 
 		if tableInfo.Meta().TempTableType != model.TempTableNone {
 			return nil, ErrOptOnTemporaryTable.GenWithStackByArgs("show table regions")
 		}
+	case ast.ShowCreateGraph, ast.ShowCreatePropertyGraph:
+		if _, ok := b.is.GraphByName(show.Graph.Schema, show.Graph.Name); !ok {
+			return nil, infoschema.ErrGraphNotExists.GenWithStackByArgs(show.Graph.Schema, show.Graph.Name)
+		}
+		var err error
+		user := b.ctx.GetSessionVars().User
+		if user != nil {
+			err = ErrGraphAccessDenied.GenWithStackByArgs("SHOW", user.AuthUsername, user.AuthHostname, show.Graph.Name.L)
+		}
+		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.AllPrivMask, "", "", "", err)
 	}
 	schema, names := buildShowSchema(show, isView, isSequence)
 	p.SetSchema(schema)
@@ -4738,6 +4749,10 @@ func buildShowSchema(s *ast.ShowStmt, isView bool, isSequence bool) (schema *exp
 	case ast.ShowPlacement, ast.ShowPlacementForDatabase, ast.ShowPlacementForTable, ast.ShowPlacementForPartition:
 		names = []string{"Target", "Placement", "Scheduling_State"}
 		ftypes = []byte{mysql.TypeVarchar, mysql.TypeVarchar, mysql.TypeVarchar}
+	case ast.ShowCreateGraph, ast.ShowCreatePropertyGraph:
+		names = []string{"Graph", "Create Graph"}
+	case ast.ShowGraphs:
+		names = []string{fmt.Sprintf("Graphs_in_%s", s.DBName)}
 	}
 
 	schema = expression.NewSchema(make([]*expression.Column, 0, len(names))...)

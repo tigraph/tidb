@@ -1016,6 +1016,7 @@ const (
 	ErrGraphExists                            = 8138
 	ErrGraphNotExists                         = 8139
 	ErrFunctionalPropertyFunctionIsNotAllowed = 8140
+	ErrGraphAccessDenied                      = 8141
 
 	// Error codes used by TiDB ddl package
 	ErrUnsupportedDDLOperation            = 8200

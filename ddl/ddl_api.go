@@ -6972,7 +6972,7 @@ func (d *ddl) CreatePropertyGraph(ctx sessionctx.Context, stmt *ast.CreateProper
 		if vTbl.Label != nil && vTbl.Label.Name.String() != "" {
 			vTblInfo.Label = vTbl.Label.Name
 		}
-		keyCols, err := buildGraphKeyCols(vTbl.Key, tblInfo)
+		keyCols, err := buildKeyCols(vTbl.Key, tblInfo)
 		if err != nil {
 			return err
 		}
@@ -7007,7 +7007,7 @@ func (d *ddl) CreatePropertyGraph(ctx sessionctx.Context, stmt *ast.CreateProper
 		if eTbl.Label != nil && eTbl.Label.Name.String() != "" {
 			eTblInfo.Label = eTbl.Label.Name
 		}
-		eTblInfo.KeyCols, err = buildGraphKeyCols(eTbl.Key, tblInfo)
+		eTblInfo.KeyCols, err = buildKeyCols(eTbl.Key, tblInfo)
 		if err != nil {
 			return err
 		}
@@ -7053,10 +7053,10 @@ func (d *ddl) assignGraphID(graphInfo *model.GraphInfo) error {
 	return nil
 }
 
-func buildGraphKeyCols(key *ast.KeyClause, tblInfo *model.TableInfo) ([]model.CIStr, error) {
+func buildKeyCols(key *ast.KeyClause, tblInfo *model.TableInfo) ([]model.CIStr, error) {
 	colNames := set.NewStringSet()
 	var keyCols []model.CIStr
-	if key == nil || len(key.Cols) == 0 {
+	if key != nil && len(key.Cols) > 0 {
 		for _, col := range key.Cols {
 			colInfo := findColumnByName(col.Name.L, tblInfo)
 			if colInfo == nil {
@@ -7093,14 +7093,16 @@ func findPkColumns(tblInfo *model.TableInfo) []model.CIStr {
 }
 
 func buildProperties(pc *ast.PropertiesClause, schema model.CIStr, tbl table.Table) ([]*model.PropertyInfo, error) {
-	if pc.NoProperties {
+	if pc != nil && pc.NoProperties {
 		return nil, nil
 	}
 	var properties []*model.PropertyInfo
-	if pc.AllCols {
+	if pc == nil || pc.AllCols {
 		exceptCols := set.NewStringSet()
-		for _, col := range pc.ExceptCols {
-			exceptCols.Insert(col.Name.L)
+		if pc != nil {
+			for _, col := range pc.ExceptCols {
+				exceptCols.Insert(col.Name.L)
+			}
 		}
 		for _, col := range tbl.VisibleCols() {
 			if exceptCols.Exist(col.Name.L) {
@@ -7108,7 +7110,7 @@ func buildProperties(pc *ast.PropertiesClause, schema model.CIStr, tbl table.Tab
 			}
 			properties = append(properties, &model.PropertyInfo{
 				Name: col.Name,
-				Expr: col.Name.String(),
+				Col:  col.Name,
 			})
 		}
 	} else {
@@ -7129,30 +7131,36 @@ func buildProperties(pc *ast.PropertiesClause, schema model.CIStr, tbl table.Tab
 				return nil, err
 			}
 
-			cleanedExpr := cleanColsInPropertyExpr(p.Expr)
-			restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
-			var sb strings.Builder
-			if err := cleanedExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+			propertyInfo := &model.PropertyInfo{
+				Name: p.AsName,
+			}
+			propertyExpr := cleanColsInPropertyExpr(p.Expr)
+			if colNameExpr, ok := propertyExpr.(*ast.ColumnNameExpr); ok {
+				propertyInfo.Col = colNameExpr.Name.Name
+				if propertyInfo.Name.L == "" {
+					propertyInfo.Name = colNameExpr.Name.Name
+				}
+			} else {
+				restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
+				var sb strings.Builder
+				if err := propertyExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+					return nil, err
+				}
+				propertyInfo.Expr = sb.String()
+				if propertyInfo.Name.L == "" {
+					propertyInfo.Name = model.NewCIStr(propertyInfo.Expr)
+				}
+			}
+
+			if propertyNames.Exist(propertyInfo.Name.L) {
+				return nil, ErrDuplicateProperty.GenWithStackByArgs(propertyInfo.Name.String())
+			}
+			propertyNames.Insert(propertyInfo.Name.L)
+
+			if err := checkIllegalFn4Generated(propertyInfo.Name.L, typeProperty, propertyExpr); err != nil {
 				return nil, err
 			}
-			exprString := sb.String()
-
-			propertyName := p.AsName
-			if propertyName.L == "" {
-				propertyName = model.NewCIStr(exprString)
-			}
-			if propertyNames.Exist(propertyName.L) {
-				return nil, ErrDuplicateProperty.GenWithStackByArgs(propertyName.String())
-			}
-			propertyNames.Insert(propertyName.L)
-
-			if err := checkIllegalFn4Generated(propertyName.L, typeProperty, cleanedExpr); err != nil {
-				return nil, err
-			}
-			properties = append(properties, &model.PropertyInfo{
-				Name: propertyName,
-				Expr: exprString,
-			})
+			properties = append(properties, propertyInfo)
 		}
 	}
 	return properties, nil

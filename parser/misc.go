@@ -368,6 +368,7 @@ var tokenMap = map[string]int{
 	"GRANT":                    grant,
 	"GRANTS":                   grants,
 	"GRAPH":                    graph,
+	"GRAPHS":                   graphs,
 	"GROUP_CONCAT":             groupConcat,
 	"GROUP":                    group,
 	"HASH":                     hash,

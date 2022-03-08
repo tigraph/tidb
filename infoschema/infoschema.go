@@ -59,6 +59,8 @@ type InfoSchema interface {
 	RuleBundles() []*placement.Bundle
 	// AllPlacementPolicies returns all placement policies
 	AllPlacementPolicies() []*model.PolicyInfo
+	// SchemaGraphs returns all graphs in the schema.
+	SchemaGraphs(schema model.CIStr) (graphs []*model.GraphInfo)
 	// GraphByName returns graph info with given schema and graph name.
 	GraphByName(schema, graph model.CIStr) (*model.GraphInfo, bool)
 	// GraphByID return graph info by graph id.
@@ -291,11 +293,11 @@ func (is *infoSchema) AllSchemas() (schemas []*model.DBInfo) {
 }
 
 func (is *infoSchema) SchemaTables(schema model.CIStr) (tables []table.Table) {
-	schemaTables, ok := is.schemaMap[schema.L]
+	metas, ok := is.schemaMap[schema.L]
 	if !ok {
 		return
 	}
-	for _, tbl := range schemaTables.tables {
+	for _, tbl := range metas.tables {
 		tables = append(tables, tbl)
 	}
 	return
@@ -436,6 +438,17 @@ func (is *infoSchema) deleteBundle(id string) {
 	is.ruleBundleMutex.Lock()
 	defer is.ruleBundleMutex.Unlock()
 	delete(is.ruleBundleMap, id)
+}
+
+func (is *infoSchema) SchemaGraphs(schema model.CIStr) (graphs []*model.GraphInfo) {
+	metas, ok := is.schemaMap[schema.L]
+	if !ok {
+		return
+	}
+	for _, tbl := range metas.graphs {
+		graphs = append(graphs, tbl)
+	}
+	return
 }
 
 func (is *infoSchema) GraphByName(schema, graph model.CIStr) (*model.GraphInfo, bool) {

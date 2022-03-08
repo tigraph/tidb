@@ -1504,6 +1504,8 @@ func (p *preprocessor) resolveShowStmt(node *ast.ShowStmt) {
 	if node.DBName == "" {
 		if node.Table != nil && node.Table.Schema.L != "" {
 			node.DBName = node.Table.Schema.O
+		} else if node.Graph != nil && node.Graph.Schema.L != "" {
+			node.DBName = node.Graph.Schema.O
 		} else {
 			node.DBName = p.ctx.GetSessionVars().CurrentDB
 		}
