@@ -1358,7 +1358,6 @@ func (g *GraphInfo) Clone() *GraphInfo {
 // PropertyInfo provides graph property info.
 type PropertyInfo struct {
 	Name CIStr  `json:"name"`
-	Col  CIStr  `json:"col"`
 	Expr string `json:"expr"`
 }
 

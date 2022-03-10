@@ -6949,82 +6949,13 @@ func (d *ddl) CreatePropertyGraph(ctx sessionctx.Context, stmt *ast.CreateProper
 	graphInfo := &model.GraphInfo{
 		Name: stmt.Graph.Name,
 	}
-	for _, vTbl := range stmt.VertexTables {
-		tbl, err := is.TableByName(schema.Name, vTbl.Table.Name)
-		if err != nil {
-			return err
-		}
-		tblInfo := tbl.Meta()
-		if tblInfo.IsSequence() || tblInfo.IsSequence() {
-			return ErrWrongObject.GenWithStackByArgs(schema.Name, tblInfo.Name, "BASE TABLE")
-		}
-		if tblInfo.TempTableType != model.TempTableNone {
-			return ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
-		}
-		vTblInfo := &model.VertexTable{
-			Name:     tblInfo.Name,
-			RefTable: tblInfo.Name,
-			Label:    tblInfo.Name,
-		}
-		if vTbl.AsName.String() != "" {
-			vTblInfo.Name = vTbl.AsName
-		}
-		if vTbl.Label != nil && vTbl.Label.Name.String() != "" {
-			vTblInfo.Label = vTbl.Label.Name
-		}
-		keyCols, err := buildKeyCols(vTbl.Key, tblInfo)
-		if err != nil {
-			return err
-		}
-		vTblInfo.KeyCols = keyCols
-		properties, err := buildProperties(vTbl.Properties, schema.Name, tbl)
-		if err != nil {
-			return err
-		}
-		vTblInfo.Properties = properties
-		graphInfo.VertexTables = append(graphInfo.VertexTables, vTblInfo)
+	if err := buildVertexTables(graphInfo, stmt.VertexTables, schema.Name, is); err != nil {
+		return err
 	}
-	for _, eTbl := range stmt.EdgeTables {
-		tbl, err := is.TableByName(schema.Name, eTbl.Table.Name)
-		if err != nil {
-			return err
-		}
-		tblInfo := tbl.Meta()
-		if tblInfo.IsSequence() || tblInfo.IsSequence() {
-			return ErrWrongObject.GenWithStackByArgs(schema.Name, tblInfo.Name, "BASE TABLE")
-		}
-		if tblInfo.TempTableType != model.TempTableNone {
-			return ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
-		}
-		eTblInfo := &model.EdgeTable{
-			Name:     tblInfo.Name,
-			RefTable: tblInfo.Name,
-			Label:    tblInfo.Name,
-		}
-		if eTbl.AsName.String() != "" {
-			eTblInfo.Name = eTbl.AsName
-		}
-		if eTbl.Label != nil && eTbl.Label.Name.String() != "" {
-			eTblInfo.Label = eTbl.Label.Name
-		}
-		eTblInfo.KeyCols, err = buildKeyCols(eTbl.Key, tblInfo)
-		if err != nil {
-			return err
-		}
-		eTblInfo.Properties, err = buildProperties(eTbl.Properties, schema.Name, tbl)
-		if err != nil {
-			return err
-		}
-		eTblInfo.Source, err = buildVertexTableRef(eTbl.Source, graphInfo.VertexTables, tblInfo)
-		if err != nil {
-			return err
-		}
-		eTblInfo.Destination, err = buildVertexTableRef(eTbl.Destination, graphInfo.VertexTables, tblInfo)
-		if err != nil {
-			return err
-		}
-		graphInfo.EdgeTables = append(graphInfo.EdgeTables, eTblInfo)
+	if err := buildEdgeTables(graphInfo, stmt.EdgeTables, schema.Name, is); err != nil {
+		return err
 	}
+
 	if err := checkGraphInfoValid(graphInfo); err != nil {
 		return err
 	}
@@ -7050,6 +6981,90 @@ func (d *ddl) assignGraphID(graphInfo *model.GraphInfo) error {
 		return errors.Trace(err)
 	}
 	graphInfo.ID = genIDs[0]
+	return nil
+}
+
+func buildVertexTables(graphInfo *model.GraphInfo, astVertexTables []*ast.VertexTable, schema model.CIStr, is infoschema.InfoSchema) error {
+	for _, astVTbl := range astVertexTables {
+		tbl, err := is.TableByName(schema, astVTbl.Table.Name)
+		if err != nil {
+			return err
+		}
+		tblInfo := tbl.Meta()
+		if tblInfo.IsSequence() || tblInfo.IsSequence() {
+			return ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
+		}
+		if tblInfo.TempTableType != model.TempTableNone {
+			return ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
+		}
+		vTbl := &model.VertexTable{
+			Name:     tblInfo.Name,
+			RefTable: tblInfo.Name,
+			Label:    tblInfo.Name,
+		}
+		if astVTbl.AsName.String() != "" {
+			vTbl.Name = astVTbl.AsName
+		}
+		if astVTbl.Label != nil && astVTbl.Label.Name.String() != "" {
+			vTbl.Label = astVTbl.Label.Name
+		}
+		keyCols, err := buildKeyCols(astVTbl.Key, tblInfo)
+		if err != nil {
+			return err
+		}
+		vTbl.KeyCols = keyCols
+		properties, err := buildProperties(astVTbl.Properties, schema, tbl)
+		if err != nil {
+			return err
+		}
+		vTbl.Properties = properties
+		graphInfo.VertexTables = append(graphInfo.VertexTables, vTbl)
+	}
+	return nil
+}
+
+func buildEdgeTables(graphInfo *model.GraphInfo, astEdgeTables []*ast.EdgeTable, schema model.CIStr, is infoschema.InfoSchema) error {
+	for _, astETbl := range astEdgeTables {
+		tbl, err := is.TableByName(schema, astETbl.Table.Name)
+		if err != nil {
+			return err
+		}
+		tblInfo := tbl.Meta()
+		if tblInfo.IsSequence() || tblInfo.IsSequence() {
+			return ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
+		}
+		if tblInfo.TempTableType != model.TempTableNone {
+			return ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
+		}
+		eTbl := &model.EdgeTable{
+			Name:     tblInfo.Name,
+			RefTable: tblInfo.Name,
+			Label:    tblInfo.Name,
+		}
+		if astETbl.AsName.String() != "" {
+			eTbl.Name = astETbl.AsName
+		}
+		if astETbl.Label != nil && astETbl.Label.Name.String() != "" {
+			eTbl.Label = astETbl.Label.Name
+		}
+		eTbl.KeyCols, err = buildKeyCols(astETbl.Key, tblInfo)
+		if err != nil {
+			return err
+		}
+		eTbl.Properties, err = buildProperties(astETbl.Properties, schema, tbl)
+		if err != nil {
+			return err
+		}
+		eTbl.Source, err = buildVertexTableRef(astETbl.Source, graphInfo.VertexTables, tblInfo)
+		if err != nil {
+			return err
+		}
+		eTbl.Destination, err = buildVertexTableRef(astETbl.Destination, graphInfo.VertexTables, tblInfo)
+		if err != nil {
+			return err
+		}
+		graphInfo.EdgeTables = append(graphInfo.EdgeTables, eTbl)
+	}
 	return nil
 }
 
@@ -7093,82 +7108,95 @@ func findPkColumns(tblInfo *model.TableInfo) []model.CIStr {
 }
 
 func buildProperties(pc *ast.PropertiesClause, schema model.CIStr, tbl table.Table) ([]*model.PropertyInfo, error) {
-	if pc != nil && pc.NoProperties {
-		return nil, nil
+	if pc == nil {
+		return buildPropertiesWithAllCols(tbl, nil)
+	}
+	if pc.AllCols {
+		return buildPropertiesWithAllCols(tbl, pc.ExceptCols)
+	}
+	return buildPropertiesWithExpr(pc.Properties, schema, tbl)
+}
+
+func buildPropertiesWithAllCols(tbl table.Table, exceptCols []*ast.ColumnName) ([]*model.PropertyInfo, error) {
+	exceptColNames := set.NewStringSet()
+	for _, col := range exceptCols {
+		exceptColNames.Insert(col.Name.L)
 	}
 	var properties []*model.PropertyInfo
-	if pc == nil || pc.AllCols {
-		exceptCols := set.NewStringSet()
-		if pc != nil {
-			for _, col := range pc.ExceptCols {
-				exceptCols.Insert(col.Name.L)
-			}
+	for _, col := range tbl.VisibleCols() {
+		if exceptColNames.Exist(col.Name.L) {
+			continue
 		}
-		for _, col := range tbl.VisibleCols() {
-			if exceptCols.Exist(col.Name.L) {
-				continue
-			}
-			properties = append(properties, &model.PropertyInfo{
-				Name: col.Name,
-				Col:  col.Name,
-			})
+		colExpr := ast.ColumnNameExpr{Name: &ast.ColumnName{Name: col.Name}}
+		restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
+		var sb strings.Builder
+		if err := colExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+			return nil, err
 		}
-	} else {
-		propertyNames := set.NewStringSet()
-		for _, p := range pc.Properties {
-			dependedColNames := findColumnNamesInExpr(p.Expr)
-			dependCols := make(map[string]struct{}, len(dependedColNames))
-			for _, col := range dependedColNames {
-				if col.Schema.L != "" && col.Schema.L != schema.L {
-					return nil, ErrBadField.GenWithStackByArgs(col.String(), "property expression")
-				}
-				if col.Table.L != "" && col.Table.L != tbl.Meta().Name.L {
-					return nil, ErrBadField.GenWithStackByArgs(col.String(), "property expression")
-				}
-				dependCols[col.Name.L] = struct{}{}
-			}
-			if err := checkDependedColExist(dependCols, tbl.VisibleCols()); err != nil {
-				return nil, err
-			}
-
-			propertyInfo := &model.PropertyInfo{
-				Name: p.AsName,
-			}
-			propertyExpr := cleanColsInPropertyExpr(p.Expr)
-			if colNameExpr, ok := propertyExpr.(*ast.ColumnNameExpr); ok {
-				propertyInfo.Col = colNameExpr.Name.Name
-				if propertyInfo.Name.L == "" {
-					propertyInfo.Name = colNameExpr.Name.Name
-				}
-			} else {
-				restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
-				var sb strings.Builder
-				if err := propertyExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
-					return nil, err
-				}
-				propertyInfo.Expr = sb.String()
-				if propertyInfo.Name.L == "" {
-					propertyInfo.Name = model.NewCIStr(propertyInfo.Expr)
-				}
-			}
-
-			if propertyNames.Exist(propertyInfo.Name.L) {
-				return nil, ErrDuplicateProperty.GenWithStackByArgs(propertyInfo.Name.String())
-			}
-			propertyNames.Insert(propertyInfo.Name.L)
-
-			if err := checkIllegalFn4Generated(propertyInfo.Name.L, typeProperty, propertyExpr); err != nil {
-				return nil, err
-			}
-			properties = append(properties, propertyInfo)
-		}
+		properties = append(properties, &model.PropertyInfo{
+			Name: col.Name,
+			Expr: sb.String(),
+		})
 	}
 	return properties, nil
 }
 
-type propertyExprColsCleaner struct{}
+func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, tbl table.Table) ([]*model.PropertyInfo, error) {
+	var properties []*model.PropertyInfo
+	propertyNames := set.NewStringSet()
+	for _, p := range astProperties {
+		dependedColNames := findColumnNamesInExpr(p.Expr)
+		dependCols := make(map[string]struct{}, len(dependedColNames))
+		for _, col := range dependedColNames {
+			if col.Schema.L != "" && col.Schema.L != schema.L {
+				return nil, ErrBadField.GenWithStackByArgs(col.String(), "property expression")
+			}
+			if col.Table.L != "" && col.Table.L != tbl.Meta().Name.L {
+				return nil, ErrBadField.GenWithStackByArgs(col.String(), "property expression")
+			}
+			dependCols[col.Name.L] = struct{}{}
+		}
+		if err := checkDependedColExist(dependCols, tbl.VisibleCols()); err != nil {
+			return nil, err
+		}
 
-func (c *propertyExprColsCleaner) Enter(node ast.Node) (ast.Node, bool) {
+		propertyInfo := &model.PropertyInfo{
+			Name: p.AsName,
+		}
+		propertyExpr := cleanColSchemaTableInExpr(p.Expr)
+		if propertyInfo.Name.L == "" {
+			if colNameExpr, ok := propertyExpr.(*ast.ColumnNameExpr); ok {
+				propertyInfo.Name = colNameExpr.Name.Name
+			}
+		}
+
+		restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
+		var sb strings.Builder
+		if err := propertyExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+			return nil, err
+		}
+		propertyInfo.Expr = sb.String()
+		if propertyInfo.Name.L == "" {
+			propertyInfo.Name = model.NewCIStr(propertyInfo.Expr)
+		}
+
+		if propertyNames.Exist(propertyInfo.Name.L) {
+			return nil, ErrDuplicateProperty.GenWithStackByArgs(propertyInfo.Name.String())
+		}
+		propertyNames.Insert(propertyInfo.Name.L)
+
+		if err := checkIllegalFn4Generated(propertyInfo.Name.L, typeProperty, propertyExpr); err != nil {
+			return nil, err
+		}
+		properties = append(properties, propertyInfo)
+	}
+
+	return properties, nil
+}
+
+type exprColSchemaTableCleaner struct{}
+
+func (c *exprColSchemaTableCleaner) Enter(node ast.Node) (ast.Node, bool) {
 	switch x := node.(type) {
 	case *ast.ColumnName:
 		x.Schema = model.CIStr{}
@@ -7177,12 +7205,12 @@ func (c *propertyExprColsCleaner) Enter(node ast.Node) (ast.Node, bool) {
 	return node, false
 }
 
-func (c *propertyExprColsCleaner) Leave(node ast.Node) (ast.Node, bool) {
+func (c *exprColSchemaTableCleaner) Leave(node ast.Node) (ast.Node, bool) {
 	return node, true
 }
 
-func cleanColsInPropertyExpr(expr ast.ExprNode) ast.ExprNode {
-	var c propertyExprColsCleaner
+func cleanColSchemaTableInExpr(expr ast.ExprNode) ast.ExprNode {
+	var c exprColSchemaTableCleaner
 	newExpr, _ := expr.Accept(&c)
 	return newExpr.(ast.ExprNode)
 }

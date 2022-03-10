@@ -1913,11 +1913,7 @@ func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.G
 					buf.WriteString(",\n")
 				}
 				buf.WriteString("        ")
-				if p.Col.O != "" {
-					buf.WriteString(stringutil.Escape(p.Col.O, sqlMode))
-				} else {
-					buf.WriteString(p.Expr)
-				}
+				buf.WriteString(p.Expr)
 				fmt.Fprintf(buf, " AS %s", stringutil.Escape(p.Name.O, sqlMode))
 			}
 			buf.WriteString("\n      )")
@@ -1944,11 +1940,7 @@ func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.G
 						buf.WriteString(",\n")
 					}
 					buf.WriteString("        ")
-					if p.Col.O != "" {
-						buf.WriteString(stringutil.Escape(p.Col.O, sqlMode))
-					} else {
-						buf.WriteString(p.Expr)
-					}
+					buf.WriteString(p.Expr)
 					fmt.Fprintf(buf, " AS %s", stringutil.Escape(p.Name.O, sqlMode))
 				}
 				buf.WriteString("\n      )")
