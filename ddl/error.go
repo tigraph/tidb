@@ -322,12 +322,12 @@ var (
 	ErrVertexTableNotExists = dbterror.ClassDDL.NewStd(mysql.ErrVertexTableNotExists)
 	// ErrFunctionalPropertyFunctionIsNotAllowed returns for unsupported functions for functional property.
 	ErrFunctionalPropertyFunctionIsNotAllowed = dbterror.ClassDDL.NewStd(mysql.ErrFunctionalPropertyFunctionIsNotAllowed)
-	// ErrDuplicateVertexTable returns when duplicate vertex table exists.
-	ErrDuplicateVertexTable = dbterror.ClassDDL.NewStd(mysql.ErrDuplicateVertexTable)
-	// ErrDuplicateEdgeTable returns when duplicate edge table exists.
-	ErrDuplicateEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrDuplicateEdgeTable)
-	// ErrDuplicateProperty returns when duplicate property exists.
-	ErrDuplicateProperty = dbterror.ClassDDL.NewStd(mysql.ErrDuplicateProperty)
-	// ErrLabelContainsDifferentProperties returns when tables have the same label but contain different
-	ErrLabelContainsDifferentProperties = dbterror.ClassDDL.NewStd(mysql.ErrLabelContainsDifferentProperties)
+	// ErrNonUniqVertexTable returns when duplicate vertex table exists.
+	ErrNonUniqVertexTable = dbterror.ClassDDL.NewStd(mysql.ErrNonUniqVertexTable)
+	// ErrNonUniqEdgeTable returns when duplicate edge table exists.
+	ErrNonUniqEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrNonUniqEdgeTable)
+	// ErrNonUniqProperty returns when duplicate property exists.
+	ErrNonUniqProperty = dbterror.ClassDDL.NewStd(mysql.ErrNonUniqProperty)
+	// ErrInconsistentLabelDefinition returns when graph has tables with the same labels but different properties.
+	ErrInconsistentLabelDefinition = dbterror.ClassDDL.NewStd(mysql.ErrInconsistentLabelDefinition)
 )

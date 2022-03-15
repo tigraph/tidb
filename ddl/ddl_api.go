@@ -6991,7 +6991,7 @@ func buildVertexTables(graphInfo *model.GraphInfo, astVertexTables []*ast.Vertex
 			return err
 		}
 		tblInfo := tbl.Meta()
-		if tblInfo.IsSequence() || tblInfo.IsSequence() {
+		if tblInfo.IsView() || tblInfo.IsSequence() {
 			return ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
 		}
 		if tblInfo.TempTableType != model.TempTableNone {
@@ -7004,6 +7004,7 @@ func buildVertexTables(graphInfo *model.GraphInfo, astVertexTables []*ast.Vertex
 		}
 		if astVTbl.AsName.String() != "" {
 			vTbl.Name = astVTbl.AsName
+			vTbl.Label = astVTbl.AsName
 		}
 		if astVTbl.Label != nil && astVTbl.Label.Name.String() != "" {
 			vTbl.Label = astVTbl.Label.Name
@@ -7030,7 +7031,7 @@ func buildEdgeTables(graphInfo *model.GraphInfo, astEdgeTables []*ast.EdgeTable,
 			return err
 		}
 		tblInfo := tbl.Meta()
-		if tblInfo.IsSequence() || tblInfo.IsSequence() {
+		if tblInfo.IsView() || tblInfo.IsSequence() {
 			return ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
 		}
 		if tblInfo.TempTableType != model.TempTableNone {
@@ -7043,6 +7044,7 @@ func buildEdgeTables(graphInfo *model.GraphInfo, astEdgeTables []*ast.EdgeTable,
 		}
 		if astETbl.AsName.String() != "" {
 			eTbl.Name = astETbl.AsName
+			eTbl.Label = astETbl.AsName
 		}
 		if astETbl.Label != nil && astETbl.Label.Name.String() != "" {
 			eTbl.Label = astETbl.Label.Name
@@ -7163,7 +7165,7 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 		propertyInfo := &model.PropertyInfo{
 			Name: p.AsName,
 		}
-		propertyExpr := cleanColSchemaTableInExpr(p.Expr)
+		propertyExpr := rewritePropertyExpr(p.Expr)
 		if propertyInfo.Name.L == "" {
 			if colNameExpr, ok := propertyExpr.(*ast.ColumnNameExpr); ok {
 				propertyInfo.Name = colNameExpr.Name.Name
@@ -7181,7 +7183,7 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 		}
 
 		if propertyNames.Exist(propertyInfo.Name.L) {
-			return nil, ErrDuplicateProperty.GenWithStackByArgs(propertyInfo.Name.String())
+			return nil, ErrNonUniqProperty.GenWithStackByArgs(propertyInfo.Name.String())
 		}
 		propertyNames.Insert(propertyInfo.Name.L)
 
@@ -7194,23 +7196,22 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 	return properties, nil
 }
 
-type exprColSchemaTableCleaner struct{}
+type propertyExprRewriter struct{}
 
-func (c *exprColSchemaTableCleaner) Enter(node ast.Node) (ast.Node, bool) {
+func (c *propertyExprRewriter) Enter(node ast.Node) (ast.Node, bool) {
 	switch x := node.(type) {
 	case *ast.ColumnName:
-		x.Schema = model.CIStr{}
-		x.Table = model.CIStr{}
+		*x = ast.ColumnName{Name: x.Name}
 	}
 	return node, false
 }
 
-func (c *exprColSchemaTableCleaner) Leave(node ast.Node) (ast.Node, bool) {
+func (c *propertyExprRewriter) Leave(node ast.Node) (ast.Node, bool) {
 	return node, true
 }
 
-func cleanColSchemaTableInExpr(expr ast.ExprNode) ast.ExprNode {
-	var c exprColSchemaTableCleaner
+func rewritePropertyExpr(expr ast.ExprNode) ast.ExprNode {
+	var c propertyExprRewriter
 	newExpr, _ := expr.Accept(&c)
 	return newExpr.(ast.ExprNode)
 }
@@ -7279,7 +7280,7 @@ func checkVertexTablesValid(graphInfo *model.GraphInfo) error {
 	lable2Properties := make(map[string]set.StringSet)
 	for _, v := range graphInfo.VertexTables {
 		if tblNames.Exist(v.Name.L) {
-			return ErrDuplicateVertexTable.GenWithStackByArgs(v.Name.String())
+			return ErrNonUniqVertexTable.GenWithStackByArgs(v.Name.String())
 		}
 		tblNames.Insert(v.Name.L)
 		propertyNames := set.NewStringSet()
@@ -7288,7 +7289,7 @@ func checkVertexTablesValid(graphInfo *model.GraphInfo) error {
 		}
 		if firstPropertyNames, ok := lable2Properties[v.Label.L]; ok {
 			if !propertyNames.Equal(firstPropertyNames) {
-				return ErrLabelContainsDifferentProperties.GenWithStackByArgs(v.Label.String())
+				return ErrInconsistentLabelDefinition.GenWithStackByArgs(v.Label.String())
 			}
 		}
 	}
@@ -7300,7 +7301,7 @@ func checkEdgeTablesValid(graphInfo *model.GraphInfo) error {
 	lable2Properties := make(map[string]set.StringSet)
 	for _, v := range graphInfo.EdgeTables {
 		if tblNames.Exist(v.Name.L) {
-			return ErrDuplicateEdgeTable.GenWithStackByArgs(v.Name.String())
+			return ErrNonUniqEdgeTable.GenWithStackByArgs(v.Name.String())
 		}
 		tblNames.Insert(v.Name.L)
 		propertyNames := set.NewStringSet()
@@ -7309,7 +7310,7 @@ func checkEdgeTablesValid(graphInfo *model.GraphInfo) error {
 		}
 		if firstPropertyNames, ok := lable2Properties[v.Label.L]; ok {
 			if !propertyNames.Equal(firstPropertyNames) {
-				return ErrLabelContainsDifferentProperties.GenWithStackByArgs(v.Label.String())
+				return ErrInconsistentLabelDefinition.GenWithStackByArgs(v.Label.String())
 			}
 		}
 	}

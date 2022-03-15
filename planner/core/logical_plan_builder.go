@@ -373,8 +373,10 @@ func (b *PlanBuilder) buildResultSetNode(ctx context.Context, node ast.ResultSet
 		return b.buildSelect(ctx, x)
 	case *ast.SetOprStmt:
 		return b.buildSetOpr(ctx, x)
+	case *ast.MatchClause:
+		return b.buildMatch(ctx, x)
 	case *ast.MatchClauseList:
-		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.ResultSetNode(%T) for buildResultSetNode()", x)
+		return b.buildMatchList(ctx, x)
 	default:
 		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.ResultSetNode(%T) for buildResultSetNode()", x)
 	}
@@ -3509,6 +3511,9 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 			return nil, ErrCTERecursiveForbidsAggregation.FastGenByArgs(b.genCTETableNameForError())
 		}
 	}
+	if len(sel.PathPatternMacros) > 0 {
+		return nil, ErrNotSupportedYet.GenWithStackByArgs("Path Pattern Macros")
+	}
 	noopFuncsMode := b.ctx.GetSessionVars().NoopFuncsMode
 	if sel.SelectStmtOpts != nil {
 		if sel.SelectStmtOpts.CalcFoundRows && noopFuncsMode != variable.OnInt {
@@ -3549,9 +3554,6 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 		}
 	}
 
-	// For sub-queries, the FROM clause may have already been built in outer query when resolving correlated aggregates.
-	// If the ResultSetNode inside FROM clause has nothing to do with correlated aggregates, we can simply get the
-	// existing ResultSetNode from the cache.
 	p, err = b.buildTableRefs(ctx, sel.From)
 	if err != nil {
 		return nil, err
@@ -6495,4 +6497,295 @@ func getResultCTESchema(seedSchema *expression.Schema, svar *variable.SessionVar
 		col.RetType.Flag &= ^mysql.NotNullFlag
 	}
 	return res
+}
+
+func (b *PlanBuilder) buildMatchList(ctx context.Context, matchList *ast.MatchClauseList) (p LogicalPlan, err error) {
+	matches := rewriteMatchListToDisconnected(matchList.Matches)
+	if len(matches) == 1 {
+		return b.buildMatch(ctx, matches[0])
+	}
+	// Now any two match clauses are disconnected from each other. The final result is
+	// produced by taking the Cartesian product of the result sets of the different match clause.
+	//
+	// See https://pgql-lang.org/spec/1.4/#disconnected-graph-patterns for more details.
+	join := ast.NewCrossJoin(matches[0], nil)
+	for i := 1; i < len(matches); i++ {
+		join = ast.NewCrossJoin(join, matches[i])
+	}
+	return b.buildJoin(ctx, join)
+}
+
+// rewriteMatchListToDisconnected rewrites the match clause list to a new match clause list that any two match clauses
+// don't have the same variable. path patterns in match clause will be split into different match clause if they don't
+// share same variable. For example,
+// match ((n1)-[e1]->(m1),(n2)-[e2]->(m2)) will be rewritten to match (n1)-[e1]->(m1), match (n2)-[e2]->(m2).
+// match (n1)-[e1]->(m), match (n2)-[e2]->(m) will be rewritten to match ((n1)-[e1]->(m), (n2)-[e2]->(m)).
+func rewriteMatchListToDisconnected(matches []*ast.MatchClause) []*ast.MatchClause {
+	graphs := make(map[string]*ast.GraphName)
+	graph2Paths := make(map[string][]*ast.PathPattern)
+	for _, m := range matches {
+		graphs[m.Graph.Name.L] = m.Graph
+		for _, p := range m.Paths {
+			graph2Paths[m.Graph.Name.L] = append(graph2Paths[m.Graph.Name.L], p)
+		}
+	}
+	var result []*ast.MatchClause
+	for graph, paths := range graph2Paths {
+		pathGroups := splitPathsToDisconnectedGroup(paths)
+		m := &ast.MatchClause{Graph: graphs[graph]}
+		for _, group := range pathGroups {
+			for _, path := range group {
+				m.Paths = append(m.Paths, path)
+			}
+		}
+		result = append(result, m)
+	}
+	return result
+}
+
+func splitPathsToDisconnectedGroup(paths []*ast.PathPattern) [][]*ast.PathPattern {
+	variableName2Group := make(map[string]int)
+	var groups [][]*ast.PathPattern
+	for _, p := range paths {
+		group := -1
+		for _, v := range p.Vertices {
+			if v.Variable.Name.L != "" {
+				// Found an existing connected group.
+				if g, ok := variableName2Group[v.Variable.Name.L]; ok {
+					group = g
+					break
+				}
+			}
+		}
+		// This path is disconnected with any existing groups. So create a new group.
+		if group == -1 {
+			group = len(groups)
+			groups = append(groups, nil)
+		}
+		groups[group] = append(groups[group], p)
+		for _, v := range p.Vertices {
+			if v.Variable.Name.L != "" {
+				variableName2Group[v.Variable.Name.L] = group
+			}
+		}
+	}
+	return groups
+}
+
+// vertexVar represents a vertex variable.
+type vertexVar struct {
+	name      string
+	anonymous bool
+	tables    []*model.VertexTable
+	// labels is the original labels specified in match clause.
+	// It is used to build Plan.Schema and Plan.OutputNames.
+	labels set.StringSet
+}
+
+// tableMap returns a map of all vertex tables.
+func (v *vertexVar) tableMap() map[string]*model.VertexTable {
+	m := make(map[string]*model.VertexTable)
+	for _, tbl := range v.tables {
+		m[tbl.Name.L] = tbl
+	}
+	return m
+}
+
+// extractCommonTables extracts common tables between v.tables and tables.
+func (v *vertexVar) extractCommonTables(tables []*model.VertexTable) {
+	if v.anonymous {
+		panic("anonymous variable shouldn't be repeatable")
+	}
+	tableNames := set.NewStringSet()
+	for _, tbl := range tables {
+		tableNames.Insert(tbl.Name.L)
+	}
+	v.filterTables(tableNames)
+}
+
+// filterTables filter tables which match the filter.
+func (v *vertexVar) filterTables(filter set.StringSet) {
+	n := 0
+	for _, tbl := range v.tables {
+		if filter.Exist(tbl.Name.L) {
+			v.tables[n] = tbl
+			n++
+		}
+	}
+	v.tables = v.tables[:n]
+}
+
+// edgeVar represents an edge variable.
+type edgeVar struct {
+	name      string
+	anonymous bool
+	tables    []*model.EdgeTable
+	// labels is the original labels specified in match clause.
+	// It is used to build Plan.Schema and Plan.OutputNames.
+	labels       set.StringSet
+	srcVertexVar string
+	dstVertexVar string
+	// anyDirected indicates the source vertex and destination vertex can
+	// swap position when they are connected with this edge.
+	anyDirected bool
+}
+
+func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (p LogicalPlan, err error) {
+	dbName := match.Graph.Schema
+	graphName := match.Graph.Name
+
+	is := b.is
+	graphInfo, ok := is.GraphByName(dbName, graphName)
+	if !ok {
+		return nil, infoschema.ErrGraphNotExists.GenWithStackByArgs(dbName.String(), graphName.String())
+	}
+
+	allVertexLabels := set.NewStringSet()
+	allEdgeLabels := set.NewStringSet()
+	for _, vTbl := range graphInfo.VertexTables {
+		allVertexLabels.Insert(vTbl.Label.L)
+	}
+	for _, eTbl := range graphInfo.EdgeTables {
+		allEdgeLabels.Insert(eTbl.Label.L)
+	}
+
+	vertexVars := make(map[string]*vertexVar)
+	edgeVars := make(map[string]*edgeVar)
+	for _, path := range match.Paths {
+		for _, v := range path.Vertices {
+			var (
+				vTbls  []*model.VertexTable
+				labels set.StringSet
+			)
+			if len(v.Variable.Labels) == 0 {
+				labels = allVertexLabels.Clone()
+			} else {
+				labels = set.NewStringSet()
+				for _, lbl := range v.Variable.Labels {
+					labels.Insert(lbl.L)
+				}
+			}
+			for _, vTbl := range graphInfo.VertexTables {
+				if labels.Exist(vTbl.Label.L) {
+					vTbls = append(vTbls, vTbl)
+				}
+			}
+			varName := v.Variable.Name.L
+			if dup, ok := vertexVars[varName]; ok {
+				dup.extractCommonTables(vTbls)
+			} else {
+				vertexVars[varName] = &vertexVar{
+					name:      varName,
+					anonymous: v.Variable.Anonymous,
+					tables:    vTbls,
+				}
+			}
+		}
+		switch path.Tp {
+		case ast.PathPatternSimple:
+			for i, conn := range path.Connections {
+				switch x := conn.(type) {
+				case *ast.EdgePattern:
+					var (
+						eTbls  []*model.EdgeTable
+						labels set.StringSet
+					)
+					if len(x.Variable.Labels) == 0 {
+						labels = allEdgeLabels.Clone()
+					} else {
+						labels = set.NewStringSet()
+						for _, lbl := range x.Variable.Labels {
+							labels.Insert(lbl.L)
+						}
+					}
+					for _, eTbl := range graphInfo.EdgeTables {
+						if labels.Exist(eTbl.Label.L) {
+							eTbls = append(eTbls, eTbl)
+						}
+					}
+					varName := x.Variable.Name.L
+					ev := &edgeVar{
+						name:      varName,
+						anonymous: x.Variable.Anonymous,
+						tables:    eTbls,
+					}
+					switch x.Direction {
+					case ast.EdgeDirectionOutgoing:
+						ev.srcVertexVar = path.Vertices[i].Variable.Name.L
+						ev.dstVertexVar = path.Vertices[i+1].Variable.Name.L
+					case ast.EdgeDirectionIncoming:
+						ev.srcVertexVar = path.Vertices[i+1].Variable.Name.L
+						ev.dstVertexVar = path.Vertices[i].Variable.Name.L
+					case ast.EdgeDirectionAnyDirected:
+						ev.srcVertexVar = path.Vertices[i].Variable.Name.L
+						ev.dstVertexVar = path.Vertices[i+1].Variable.Name.L
+						ev.anyDirected = true
+					default:
+						return nil, ErrUnsupportedType.GenWithStack("Unsupported EdgeDirection %d", x.Direction)
+					}
+					edgeVars[varName] = ev
+				case *ast.ReachabilityPathExpr:
+					return nil, ErrNotSupportedYet.GenWithStackByArgs("ReachabilityPathExpr")
+				default:
+					return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) for simple path pattern", x)
+				}
+			}
+		case ast.PathPatternAny, ast.PathPatternAnyShortest, ast.PathPatternAllShortest, ast.PathPatternTopKShortest,
+			ast.PathPatternAnyCheapest, ast.PathPatternAllCheapest, ast.PathPatternTopKCheapest, ast.PathPatternAll:
+			for _, conn := range path.Connections {
+				switch x := conn.(type) {
+				case *ast.QuantifiedPathExpr:
+				default:
+					return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) for variable-length path pattern", x)
+				}
+			}
+			return nil, ErrNotSupportedYet.GenWithStackByArgs("Match Variable-Length Paths")
+		default:
+			return nil, ErrUnsupportedType.GenWithStack("Unsupported PathPatternType %d", path.Tp)
+		}
+	}
+
+	// Prune tables that are impossible to match.
+	//
+	// For example, suppose a match clause is like match (n:label1)-[e:label2]->(m:label3).
+	// label1 is corresponding to two table t1, t2. label2 is corresponding to table t3.
+	// And the source key of t3 only references t1. It's obviously that t2 is impossible to match.
+	// So we prune t2 of label1. If all tables of a label are pruned, we prune the whole label.
+	for _, ev := range edgeVars {
+		srcVar := vertexVars[ev.srcVertexVar]
+		dstVar := vertexVars[ev.dstVertexVar]
+		srcTbls := srcVar.tableMap()
+		dstTbls := dstVar.tableMap()
+		srcUsedTbl := set.NewStringSet()
+		dstUsedTbl := set.NewStringSet()
+		eTblNum := 0
+		for _, tbl := range ev.tables {
+			matched := false
+			_, srcExists := srcTbls[tbl.Source.Name.L]
+			_, dstExists := dstTbls[tbl.Destination.Name.L]
+			if srcExists && dstExists {
+				srcUsedTbl.Insert(tbl.Source.Name.L)
+				dstUsedTbl.Insert(tbl.Destination.Name.L)
+				matched = true
+			}
+			if ev.anyDirected {
+				_, srcExists = srcTbls[tbl.Destination.Name.L]
+				_, dstExists = dstTbls[tbl.Source.Name.L]
+				if srcExists && dstExists {
+					srcUsedTbl.Insert(tbl.Destination.Name.L)
+					dstUsedTbl.Insert(tbl.Source.Name.L)
+					matched = true
+				}
+			}
+			if matched {
+				ev.tables[eTblNum] = tbl
+				eTblNum++
+			}
+		}
+		ev.tables = ev.tables[:eTblNum]
+		srcVar.filterTables(srcUsedTbl)
+		dstVar.filterTables(dstUsedTbl)
+	}
+
+	return nil, ErrNotSupportedYet.GenWithStackByArgs("MATCH clause")
 }

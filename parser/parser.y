@@ -14382,10 +14382,14 @@ EdgePattern:
 VariableSpec:
 	VariableNameOpt LabelPredicateOpt
 	{
-		$$ = &ast.VariableSpec{
+		v := &ast.VariableSpec{
 			Name:   $1.(model.CIStr),
 			Labels: $2.([]model.CIStr),
 		}
+		if v.Name.L == "" {
+			v.Anonymous = true
+		}
+		$$ = v
 	}
 
 VariableNameOpt:

@@ -19,13 +19,13 @@ var (
 	_ Node = &VertexTableRef{}
 	_ Node = &Property{}
 	_ Node = &PathPattern{}
-	_ Node = &MatchClause{}
 	_ Node = &VariableSpec{}
 	_ Node = &VertexPattern{}
 	_ Node = &ReachabilityPathExpr{}
 	_ Node = &PatternQuantifier{}
 	_ Node = &PathPatternMacro{}
 
+	_ ResultSetNode = &MatchClause{}
 	_ ResultSetNode = &MatchClauseList{}
 
 	_ VertexPairConnection = &EdgePattern{}
@@ -559,6 +559,8 @@ type MatchClause struct {
 	Paths []*PathPattern
 }
 
+func (n *MatchClause) resultSet() {}
+
 func (n *MatchClause) Restore(ctx *format.RestoreCtx) error {
 	ctx.WriteKeyWord("MATCH ")
 	switch len(n.Paths) {
@@ -759,9 +761,7 @@ type EdgePattern struct {
 	Direction EdgeDirection
 }
 
-func (n *EdgePattern) vertexPairConnection() {
-	panic("implement me")
-}
+func (n *EdgePattern) vertexPairConnection() {}
 
 func (n *EdgePattern) Restore(ctx *format.RestoreCtx) error {
 	switch n.Direction {
@@ -803,7 +803,7 @@ func (n *EdgePattern) Restore(ctx *format.RestoreCtx) error {
 
 func (n *EdgePattern) Accept(v Visitor) (Node, bool) {
 	newNode, skipChildren := v.Enter(n)
-	if !skipChildren {
+	if skipChildren {
 		return v.Leave(newNode)
 	}
 	nn := newNode.(*EdgePattern)
@@ -1036,12 +1036,13 @@ func (n *PatternQuantifier) Accept(v Visitor) (Node, bool) {
 type VariableSpec struct {
 	node
 
-	Name   model.CIStr
-	Labels []model.CIStr
+	Name      model.CIStr
+	Labels    []model.CIStr
+	Anonymous bool
 }
 
 func (n *VariableSpec) Restore(ctx *format.RestoreCtx) error {
-	if name := n.Name.String(); name != "" {
+	if name := n.Name.String(); name != "" && !n.Anonymous {
 		ctx.WriteName(name)
 	}
 	if len(n.Labels) > 0 {

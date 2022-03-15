@@ -45,6 +45,7 @@ import (
 	"github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/domainutil"
 	utilparser "github.com/pingcap/tidb/util/parser"
+	"github.com/pingcap/tidb/util/set"
 )
 
 // PreprocessOpt presents optional parameters to `Preprocess` method.
@@ -129,7 +130,7 @@ func Preprocess(ctx sessionctx.Context, node ast.Node, preprocessOpt ...Preproce
 	return errors.Trace(v.err)
 }
 
-type preprocessorFlag uint8
+type preprocessorFlag uint16
 
 const (
 	// inPrepare is set when visiting in prepare statement.
@@ -147,6 +148,10 @@ const (
 	inSequenceFunction
 	// initTxnContextProvider is set when we should init txn context in preprocess
 	initTxnContextProvider
+	// inVertexVariable is set when visiting a vertex variable.
+	inVertexVariable
+	// inEdgeVariable is set when visiting an edge variable.
+	inEdgeVariable
 )
 
 // Make linter happy.
@@ -182,6 +187,11 @@ type preprocessor struct {
 	// len(tableAliasInJoin) may bigger than 1 because the left/right child of join may be subquery that contains `JOIN`
 	tableAliasInJoin []map[string]interface{}
 	withName         map[string]interface{}
+
+	// vertexLabels is a stacks that keep all the vertex labels in a match clause.
+	vertexLabels map[string]model.CIStr
+	// edgeLabels is a stacks that keep all the edge labels in a match clause.
+	edgeLabels map[string]model.CIStr
 
 	// values that may be returned
 	*PreprocessorReturn
@@ -332,6 +342,13 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		p.stmtTp = TypeCreate
 	case *ast.DropPropertyGraphStmt:
 		p.stmtTp = TypeDrop
+	case *ast.MatchClause:
+		p.vertexLabels = make(map[string]model.CIStr)
+		p.edgeLabels = make(map[string]model.CIStr)
+	case *ast.VertexPattern:
+		p.flag |= inVertexVariable
+	case *ast.EdgePattern:
+		p.flag |= inEdgeVariable
 	default:
 		p.flag &= ^parentIsJoin
 	}
@@ -562,6 +579,29 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 		}
 	case *ast.GraphName:
 		p.handleGraphName(x)
+	case *ast.VertexPattern:
+		p.flag &= ^inVertexVariable
+	case *ast.EdgePattern:
+		p.flag &= ^inEdgeVariable
+	case *ast.ReachabilityPathExpr:
+		for _, label := range x.Labels {
+			p.edgeLabels[label.L] = label
+		}
+	case *ast.VariableSpec:
+		for _, label := range x.Labels {
+			if p.flag&inVertexVariable > 0 {
+				p.vertexLabels[label.L] = label
+			}
+			if p.flag&inEdgeVariable > 0 {
+				p.edgeLabels[label.L] = label
+			}
+		}
+	case *ast.MatchClause:
+		p.checkMatch(x)
+		p.vertexLabels = nil
+		p.edgeLabels = nil
+	case *ast.MatchClauseList:
+		p.checkMatchList(x)
 	}
 
 	return in, p.err == nil
@@ -1145,7 +1185,7 @@ func checkDuplicateColumnName(IndexPartSpecifications []*ast.IndexPartSpecificat
 	return nil
 }
 
-// checkIndexInfo checks index name and index column names.
+// checkIndexInfo checks index name and index column names.ErrNonuniqTable
 func checkIndexInfo(indexName string, IndexPartSpecifications []*ast.IndexPartSpecification) error {
 	if strings.EqualFold(indexName, mysql.PrimaryKeyName) {
 		return ddl.ErrWrongNameForIndex.GenWithStackByArgs(indexName)
@@ -1459,17 +1499,6 @@ func (p *preprocessor) handleTableName(tn *ast.TableName) {
 	tn.DBInfo = dbInfo
 }
 
-func (p *preprocessor) handleGraphName(gn *ast.GraphName) {
-	if gn.Schema.L == "" {
-		currentDB := p.ctx.GetSessionVars().CurrentDB
-		if currentDB == "" {
-			p.err = errors.Trace(ErrNoDB)
-			return
-		}
-		gn.Schema = model.NewCIStr(currentDB)
-	}
-}
-
 func (p *preprocessor) checkNotInRepair(tn *ast.TableName) {
 	tableInfo, dbInfo := domainutil.RepairInfo.GetRepairedTableInfoByTableName(tn.Schema.L, tn.Name.L)
 	if dbInfo == nil {
@@ -1764,4 +1793,197 @@ func (p *preprocessor) initTxnContextProviderIfNecessary(node ast.Node) {
 	p.err = sessiontxn.GetTxnManager(p.ctx).SetContextProvider(&sessiontxn.SimpleTxnContextProvider{
 		InfoSchema: p.ensureInfoSchema(),
 	})
+}
+
+func (p *preprocessor) handleGraphName(gn *ast.GraphName) {
+	if gn.Schema.L == "" {
+		currentDB := p.ctx.GetSessionVars().CurrentDB
+		if currentDB == "" {
+			p.err = errors.Trace(ErrNoDB)
+			return
+		}
+		gn.Schema = model.NewCIStr(currentDB)
+	}
+}
+
+func (p *preprocessor) checkMatch(m *ast.MatchClause) {
+	graph := m.Graph
+	if graph == nil || graph.Name.L == "" {
+		p.err = errors.Trace(ErrNoGraph)
+		return
+	}
+	if err := p.checkGraph(graph); err != nil {
+		p.err = err
+		return
+	}
+}
+
+func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
+	is := p.ensureInfoSchema()
+	graphInfo, ok := is.GraphByName(graph.Schema, graph.Name)
+	if !ok {
+		return infoschema.ErrGraphNotExists.GenWithStackByArgs(graph.Schema.String(), graph.Name.String())
+	}
+
+	for _, vTbl := range graphInfo.VertexTables {
+		tn := &ast.TableName{Schema: graph.Schema, Name: vTbl.RefTable}
+		tbl, err := p.tableByName(tn)
+		if err != nil {
+			return err
+		}
+		colNames := set.NewStringSet()
+		for _, col := range tbl.VisibleCols() {
+			colNames.Insert(col.Name.L)
+		}
+		for _, col := range vTbl.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+			}
+		}
+		delete(p.vertexLabels, vTbl.Label.L)
+	}
+	for _, eTbl := range graphInfo.EdgeTables {
+		tn := &ast.TableName{Schema: graph.Schema, Name: eTbl.RefTable}
+		tbl, err := p.tableByName(tn)
+		if err != nil {
+			return err
+		}
+		colNames := set.NewStringSet()
+		for _, col := range tbl.VisibleCols() {
+			colNames.Insert(col.Name.L)
+		}
+		for _, col := range eTbl.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+			}
+		}
+		for _, col := range eTbl.Source.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+			}
+		}
+		for _, col := range eTbl.Destination.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+			}
+		}
+		delete(p.edgeLabels, eTbl.Label.L)
+	}
+	for _, arbitraryLabel := range p.vertexLabels {
+		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel.String())
+	}
+	for _, arbitraryLabel := range p.edgeLabels {
+		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel.String())
+	}
+	return nil
+}
+
+func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
+	// Edge variables or vertex variables in ParenthesizedPathPatternExpression are non-repeatable.
+	nonRepeatableVars := set.NewStringSet()
+	// Vertex variables in simple path pattern or endpoint vertex patterns of variable-length
+	// paths are repeatable. But they are not allowed to repeat among different graphs.
+	// For example:
+	//     MATCH ANY (n) ((n1) -[e1]-> (m1)) (m)
+	// n and m can be repeatable, n1, e1 and m1 are non-repeatable.
+	repeatableVertexVars := make(map[string]*ast.GraphName)
+
+	addNonRepeatableVars := func(v *ast.VariableSpec) error {
+		varName := v.Name.L
+		if nonRepeatableVars.Exist(varName) {
+			return ErrDupVariable.GenWithStackByArgs(varName)
+		}
+		if _, ok := repeatableVertexVars[varName]; ok {
+			return ErrDupVariable.GenWithStackByArgs(varName)
+		}
+		nonRepeatableVars.Insert(varName)
+		return nil
+	}
+
+	var anonymousVars []*ast.VariableSpec
+	checkAnonymousVar := func(pv **ast.VariableSpec) bool {
+		if *pv == nil {
+			*pv = &ast.VariableSpec{}
+		}
+		v := *pv
+		if v.Name.L == "" || v.Anonymous {
+			v.Anonymous = true
+			anonymousVars = append(anonymousVars, v)
+			return true
+		}
+		return false
+	}
+
+	for _, m := range matchList.Matches {
+		for _, path := range m.Paths {
+			for _, v := range path.Vertices {
+				if checkAnonymousVar(&v.Variable) {
+					continue
+				}
+
+				varName := v.Variable.Name.L
+				if nonRepeatableVars.Exist(varName) {
+					p.err = ErrDupVariable.GenWithStackByArgs(varName)
+					return
+				}
+
+				if g, ok := repeatableVertexVars[varName]; ok {
+					// Match on different graphs is not allowed to have the same variable.
+					if m.Graph.Schema.L != g.Schema.L || m.Graph.Name.L != g.Name.L {
+						p.err = ErrDupVariable.GenWithStackByArgs(varName)
+						return
+					}
+				} else {
+					repeatableVertexVars[varName] = m.Graph
+				}
+			}
+
+			for _, c := range path.Connections {
+				switch x := c.(type) {
+				case *ast.EdgePattern:
+					if !checkAnonymousVar(&x.Variable) {
+						if err := addNonRepeatableVars(x.Variable); err != nil {
+							p.err = err
+							return
+						}
+					}
+				case *ast.QuantifiedPathExpr:
+					if x.Source != nil && !checkAnonymousVar(&x.Source.Variable) {
+						if err := addNonRepeatableVars(x.Source.Variable); err != nil {
+							p.err = err
+							return
+						}
+					}
+					if x.Destination != nil && !checkAnonymousVar(&x.Destination.Variable) {
+						if err := addNonRepeatableVars(x.Destination.Variable); err != nil {
+							p.err = err
+							return
+						}
+					}
+					if !checkAnonymousVar(&x.Edge.Variable) {
+						if err := addNonRepeatableVars(x.Edge.Variable); err != nil {
+							p.err = err
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Generate name for all anonymous variables.
+	namedVars := nonRepeatableVars
+	for v := range repeatableVertexVars {
+		namedVars.Insert(v)
+	}
+	dedup := -1
+	for _, v := range anonymousVars {
+		for dedup = dedup + 1; ; dedup++ {
+			name := fmt.Sprintf("_anonymous%d", dedup)
+			if !namedVars.Exist(name) {
+				v.Name = model.NewCIStr(name)
+				break
+			}
+		}
+	}
 }

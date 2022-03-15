@@ -1017,6 +1017,10 @@ const (
 	ErrGraphNotExists                         = 8139
 	ErrFunctionalPropertyFunctionIsNotAllowed = 8140
 	ErrGraphAccessDenied                      = 8141
+	ErrNoGraph                                = 8142
+	ErrGraphInvalid                           = 8143
+	ErrDupVariable                            = 8144
+	ErrLabelNotExists                         = 8145
 
 	// Error codes used by TiDB ddl package
 	ErrUnsupportedDDLOperation            = 8200
@@ -1067,10 +1071,10 @@ const (
 	ErrAmbiguousForeignKeyForEdgeTable    = 8246
 	ErrWrongVertexTableReference          = 8247
 	ErrVertexTableNotExists               = 8248
-	ErrDuplicateVertexTable               = 8250
-	ErrDuplicateEdgeTable                 = 8251
-	ErrDuplicateProperty                  = 8252
-	ErrLabelContainsDifferentProperties   = 8253
+	ErrNonUniqVertexTable                 = 8250
+	ErrNonUniqEdgeTable                   = 8251
+	ErrNonUniqProperty                    = 8252
+	ErrInconsistentLabelDefinition        = 8253
 
 	// TiKV/PD/TiFlash errors.
 	ErrPDServerTimeout           = 9001

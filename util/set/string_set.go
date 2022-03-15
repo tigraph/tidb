@@ -65,3 +65,12 @@ func (s StringSet) Equal(rhs StringSet) bool {
 	}
 	return true
 }
+
+// Clone clones this string set.
+func (s StringSet) Clone() StringSet {
+	set := make(StringSet, len(s))
+	for v := range s {
+		set.Insert(v)
+	}
+	return set
+}

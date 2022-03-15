@@ -109,4 +109,8 @@ var (
 	ErrPartitionNoTemporary     = dbterror.ClassOptimizer.NewStd(mysql.ErrPartitionNoTemporary)
 	ErrViewSelectTemporaryTable = dbterror.ClassOptimizer.NewStd(mysql.ErrViewSelectTmptable)
 	ErrSubqueryMoreThan1Row     = dbterror.ClassOptimizer.NewStd(mysql.ErrSubqueryNo1Row)
+	ErrNoGraph                  = dbterror.ClassOptimizer.NewStd(mysql.ErrNoGraph)
+	ErrGraphInvalid             = dbterror.ClassOptimizer.NewStd(mysql.ErrGraphInvalid)
+	ErrDupVariable              = dbterror.ClassOptimizer.NewStd(mysql.ErrDupVariable)
+	ErrLabelNotExists           = dbterror.ClassOptimizer.NewStd(mysql.ErrLabelNotExists)
 )
