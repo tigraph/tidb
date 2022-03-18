@@ -60,6 +60,7 @@ import (
 	"github.com/pingcap/tidb/util/set"
 	"github.com/pingcap/tidb/util/sqlexec"
 	"go.uber.org/zap"
+	"golang.org/x/exp/slices"
 )
 
 const (
@@ -7077,10 +7078,10 @@ func buildKeyCols(key *ast.KeyClause, tblInfo *model.TableInfo) ([]model.CIStr, 
 		for _, col := range key.Cols {
 			colInfo := findColumnByName(col.Name.L, tblInfo)
 			if colInfo == nil {
-				return nil, errKeyColumnDoesNotExits.GenWithStackByArgs(col.Name.String())
+				return nil, errKeyColumnDoesNotExits.GenWithStackByArgs(col.Name)
 			}
 			if colNames.Exist(col.Name.L) {
-				return nil, infoschema.ErrColumnExists.GenWithStackByArgs(col.Name.String())
+				return nil, infoschema.ErrColumnExists.GenWithStackByArgs(col.Name)
 			}
 			colNames.Insert(col.Name.L)
 			keyCols = append(keyCols, col.Name)
@@ -7088,7 +7089,7 @@ func buildKeyCols(key *ast.KeyClause, tblInfo *model.TableInfo) ([]model.CIStr, 
 	} else {
 		keyCols = findPkColumns(tblInfo)
 		if len(keyCols) == 0 {
-			return nil, ErrPrimaryKeyRequired.GenWithStackByArgs(tblInfo.Name.String())
+			return nil, ErrPrimaryKeyRequired.GenWithStackByArgs(tblInfo.Name)
 		}
 	}
 	return keyCols, nil
@@ -7183,7 +7184,7 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 		}
 
 		if propertyNames.Exist(propertyInfo.Name.L) {
-			return nil, ErrNonUniqProperty.GenWithStackByArgs(propertyInfo.Name.String())
+			return nil, ErrNonUniqProperty.GenWithStackByArgs(propertyInfo.Name)
 		}
 		propertyNames.Insert(propertyInfo.Name.L)
 
@@ -7217,52 +7218,39 @@ func rewritePropertyExpr(expr ast.ExprNode) ast.ExprNode {
 }
 
 func buildVertexTableRef(tableRef *ast.VertexTableRef, vertexTables []*model.VertexTable, tblInfo *model.TableInfo) (*model.VertexTableRef, error) {
-	var vTbl *model.VertexTable
-	for _, v := range vertexTables {
-		if tableRef.Table.Name.L == v.Name.L {
-			vTbl = v
-			break
-		}
+	idx := slices.IndexFunc(vertexTables, func(tbl *model.VertexTable) bool {
+		return tableRef.Table.Name.Equal(tbl.Name)
+	})
+	if idx < 0 {
+		return nil, ErrVertexTableNotExists.GenWithStackByArgs(tableRef.Table.Name)
 	}
-	if vTbl == nil {
-		return nil, ErrVertexTableNotExists.GenWithStackByArgs(tableRef.Table.Name.String())
-	}
+	vTbl := vertexTables[idx]
 	var keyCols []model.CIStr
 	if tableRef.Key == nil || len(tableRef.Key.Cols) == 0 {
 		var target *model.FKInfo
 		for _, fkInfo := range tblInfo.ForeignKeys {
-			if fkInfo.RefTable.L == vTbl.RefTable.L && checkVertexRefKeyCols(fkInfo.RefCols, vTbl.KeyCols) {
+			if fkInfo.RefTable.Equal(vTbl.RefTable) &&
+				slices.EqualFunc(fkInfo.RefCols, vTbl.KeyCols,
+					func(a, b model.CIStr) bool { return a.Equal(b) }) {
 				if target != nil {
-					return nil, ErrAmbiguousForeignKeyForEdgeTable.GenWithStackByArgs(tblInfo.Name.String())
+					return nil, ErrAmbiguousForeignKeyForEdgeTable.GenWithStackByArgs(tblInfo.Name)
 				}
 				target = fkInfo
 			}
 		}
 		if target == nil {
-			return nil, ErrForeignKeyRequired.GenWithStackByArgs(tblInfo.Name.String())
+			return nil, ErrForeignKeyRequired.GenWithStackByArgs(tblInfo.Name)
 		}
 		keyCols = target.Cols
 	} else {
 		if len(tableRef.Key.Cols) != len(vTbl.KeyCols) {
-			return nil, ErrWrongVertexTableReference.GenWithStackByArgs(tblInfo.Name.String())
+			return nil, ErrWrongVertexTableReference.GenWithStackByArgs(tblInfo.Name)
 		}
 		for _, col := range tableRef.Key.Cols {
 			keyCols = append(keyCols, col.Name)
 		}
 	}
 	return &model.VertexTableRef{KeyCols: keyCols, Name: tableRef.Table.Name}, nil
-}
-
-func checkVertexRefKeyCols(refCols []model.CIStr, keyCols []model.CIStr) bool {
-	if len(refCols) != len(keyCols) {
-		return false
-	}
-	for i := 0; i < len(refCols); i++ {
-		if refCols[i].L != keyCols[i].L {
-			return false
-		}
-	}
-	return true
 }
 
 func checkGraphInfoValid(graphInfo *model.GraphInfo) error {
@@ -7280,7 +7268,7 @@ func checkVertexTablesValid(graphInfo *model.GraphInfo) error {
 	lable2Properties := make(map[string]set.StringSet)
 	for _, v := range graphInfo.VertexTables {
 		if tblNames.Exist(v.Name.L) {
-			return ErrNonUniqVertexTable.GenWithStackByArgs(v.Name.String())
+			return ErrNonUniqVertexTable.GenWithStackByArgs(v.Name)
 		}
 		tblNames.Insert(v.Name.L)
 		propertyNames := set.NewStringSet()
@@ -7289,7 +7277,7 @@ func checkVertexTablesValid(graphInfo *model.GraphInfo) error {
 		}
 		if firstPropertyNames, ok := lable2Properties[v.Label.L]; ok {
 			if !propertyNames.Equal(firstPropertyNames) {
-				return ErrInconsistentLabelDefinition.GenWithStackByArgs(v.Label.String())
+				return ErrWrongLabelDefinition.GenWithStackByArgs(v.Label)
 			}
 		}
 	}
@@ -7298,19 +7286,19 @@ func checkVertexTablesValid(graphInfo *model.GraphInfo) error {
 
 func checkEdgeTablesValid(graphInfo *model.GraphInfo) error {
 	tblNames := set.NewStringSet()
-	lable2Properties := make(map[string]set.StringSet)
+	label2Properties := make(map[string]set.StringSet)
 	for _, v := range graphInfo.EdgeTables {
 		if tblNames.Exist(v.Name.L) {
-			return ErrNonUniqEdgeTable.GenWithStackByArgs(v.Name.String())
+			return ErrNonUniqEdgeTable.GenWithStackByArgs(v.Name)
 		}
 		tblNames.Insert(v.Name.L)
-		propertyNames := set.NewStringSet()
+		properties := set.NewStringSet()
 		for _, p := range v.Properties {
-			propertyNames.Insert(p.Name.L)
+			properties.Insert(p.Name.L)
 		}
-		if firstPropertyNames, ok := lable2Properties[v.Label.L]; ok {
-			if !propertyNames.Equal(firstPropertyNames) {
-				return ErrInconsistentLabelDefinition.GenWithStackByArgs(v.Label.String())
+		if properties2, ok := label2Properties[v.Label.L]; ok {
+			if !properties.Equal(properties2) {
+				return ErrWrongLabelDefinition.GenWithStackByArgs(v.Label)
 			}
 		}
 	}

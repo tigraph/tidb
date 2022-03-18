@@ -1054,7 +1054,7 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrNonUniqVertexTable:                     mysql.Message("Not unique vertex table/alias: '%-.192s'", nil),
 	ErrNonUniqEdgeTable:                       mysql.Message("Not unique edge table/alias: '%-.192s'", nil),
 	ErrNonUniqProperty:                        mysql.Message("Not unique property: '%-.192s'", nil),
-	ErrInconsistentLabelDefinition:            mysql.Message("Inconsistent label definition: '%-.192s'. It is not allowed to have tables with the same labels but different properties", nil),
+	ErrWrongLabelDefinition:                   mysql.Message("Incorrect label definition: '%-.192s'. It is not allowed to have tables with the same labels but different properties", nil),
 	ErrNoGraph:                                mysql.Message("No graph selected, please specify ON clause for MATCH clause", nil),
 	ErrGraphInvalid:                           mysql.Message("Graph '%-.192s.%-.192s' references invalid table(s) or column(s) or function(s) or definer/invoker of graph lack rights to use them", nil),
 	ErrDupVariable:                            mysql.Message("Duplicate variable '%-.192s'", nil),

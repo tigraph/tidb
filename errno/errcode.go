@@ -1074,7 +1074,7 @@ const (
 	ErrNonUniqVertexTable                 = 8250
 	ErrNonUniqEdgeTable                   = 8251
 	ErrNonUniqProperty                    = 8252
-	ErrInconsistentLabelDefinition        = 8253
+	ErrWrongLabelDefinition               = 8253
 
 	// TiKV/PD/TiFlash errors.
 	ErrPDServerTimeout           = 9001

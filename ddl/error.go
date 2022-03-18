@@ -328,6 +328,6 @@ var (
 	ErrNonUniqEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrNonUniqEdgeTable)
 	// ErrNonUniqProperty returns when duplicate property exists.
 	ErrNonUniqProperty = dbterror.ClassDDL.NewStd(mysql.ErrNonUniqProperty)
-	// ErrInconsistentLabelDefinition returns when graph has tables with the same labels but different properties.
-	ErrInconsistentLabelDefinition = dbterror.ClassDDL.NewStd(mysql.ErrInconsistentLabelDefinition)
+	// ErrWrongLabelDefinition returns when graph has tables with the same labels but different properties.
+	ErrWrongLabelDefinition = dbterror.ClassDDL.NewStd(mysql.ErrWrongLabelDefinition)
 )

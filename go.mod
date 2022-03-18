@@ -76,6 +76,7 @@ require (
 	go.uber.org/goleak v1.1.12
 	go.uber.org/multierr v1.7.0
 	go.uber.org/zap v1.19.1
+	golang.org/x/exp v0.0.0-20220317015231-48e79f11773a
 	golang.org/x/net v0.0.0-20211015210444-4f30a5c0130f
 	golang.org/x/oauth2 v0.0.0-20210805134026-6f1e6394065a
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
@@ -166,7 +167,6 @@ require (
 	go.etcd.io/bbolt v1.3.5 // indirect
 	go.opencensus.io v0.23.0 // indirect
 	golang.org/x/crypto v0.0.0-20201016220609-9e8e0b390897 // indirect
-	golang.org/x/exp v0.0.0-20200513190911-00229845015e // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/genproto v0.0.0-20210825212027-de86158e7fda // indirect
 	google.golang.org/protobuf v1.27.1 // indirect

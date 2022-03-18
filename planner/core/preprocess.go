@@ -1822,7 +1822,7 @@ func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 	is := p.ensureInfoSchema()
 	graphInfo, ok := is.GraphByName(graph.Schema, graph.Name)
 	if !ok {
-		return infoschema.ErrGraphNotExists.GenWithStackByArgs(graph.Schema.String(), graph.Name.String())
+		return infoschema.ErrGraphNotExists.GenWithStackByArgs(graph.Schema, graph.Name)
 	}
 
 	for _, vTbl := range graphInfo.VertexTables {
@@ -1837,7 +1837,7 @@ func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 		}
 		for _, col := range vTbl.KeyCols {
 			if !colNames.Exist(col.L) {
-				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema, graphInfo.Name)
 			}
 		}
 		delete(p.vertexLabels, vTbl.Label.L)
@@ -1854,26 +1854,26 @@ func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 		}
 		for _, col := range eTbl.KeyCols {
 			if !colNames.Exist(col.L) {
-				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
 			}
 		}
 		for _, col := range eTbl.Source.KeyCols {
 			if !colNames.Exist(col.L) {
-				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
 			}
 		}
 		for _, col := range eTbl.Destination.KeyCols {
 			if !colNames.Exist(col.L) {
-				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name.String())
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
 			}
 		}
 		delete(p.edgeLabels, eTbl.Label.L)
 	}
 	for _, arbitraryLabel := range p.vertexLabels {
-		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel.String())
+		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel)
 	}
 	for _, arbitraryLabel := range p.edgeLabels {
-		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel.String())
+		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel)
 	}
 	return nil
 }
@@ -1979,7 +1979,7 @@ func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
 	dedup := -1
 	for _, v := range anonymousVars {
 		for dedup = dedup + 1; ; dedup++ {
-			name := fmt.Sprintf("_anonymous%d", dedup)
+			name := fmt.Sprintf("anonymous%d", dedup)
 			if !namedVars.Exist(name) {
 				v.Name = model.NewCIStr(name)
 				break

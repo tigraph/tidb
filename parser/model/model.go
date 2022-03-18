@@ -25,6 +25,7 @@ import (
 	"github.com/pingcap/tidb/parser/charset"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
+	"golang.org/x/exp/slices"
 )
 
 // SchemaState is the state for schema elements.
@@ -1126,7 +1127,7 @@ func (db *DBInfo) Copy() *DBInfo {
 	return &newInfo
 }
 
-// CIStr is case insensitive string.
+// CIStr is case-insensitive string.
 type CIStr struct {
 	O string `json:"O"` // Original string.
 	L string `json:"L"` // Lower case string.
@@ -1135,6 +1136,11 @@ type CIStr struct {
 // String implements fmt.Stringer interface.
 func (cis CIStr) String() string {
 	return cis.O
+}
+
+// Equal reports whether `cis` is equal to `other` in a case-insensitive way.
+func (cis CIStr) Equal(other CIStr) bool {
+	return cis.L == other.L
 }
 
 // NewCIStr creates a new CIStr.
@@ -1341,6 +1347,54 @@ type GraphInfo struct {
 	EdgeTables   []*EdgeTable   `json:"edge_tables"`
 }
 
+func (g *GraphInfo) VertexLabels() []CIStr {
+	var labels []CIStr
+	m := make(map[string]struct{})
+	for _, vTbl := range g.VertexTables {
+		if _, ok := m[vTbl.Label.L]; !ok {
+			labels = append(labels, vTbl.Label)
+			m[vTbl.Label.L] = struct{}{}
+		}
+	}
+	return labels
+}
+
+func (g *GraphInfo) EdgeLabels() []CIStr {
+	var labels []CIStr
+	m := make(map[string]struct{})
+	for _, eTbl := range g.EdgeTables {
+		if _, ok := m[eTbl.Label.L]; !ok {
+			labels = append(labels, eTbl.Label)
+			m[eTbl.Label.L] = struct{}{}
+		}
+	}
+	return labels
+}
+
+func (g *GraphInfo) VertexTablesByLabels(labels ...CIStr) []*VertexTable {
+	var tables []*VertexTable
+	for _, vTbl := range g.VertexTables {
+		if slices.IndexFunc(labels, func(label CIStr) bool {
+			return vTbl.Label.L == label.L
+		}) >= 0 {
+			tables = append(tables, vTbl)
+		}
+	}
+	return tables
+}
+
+func (g *GraphInfo) EdgeTablesByLabels(labels ...CIStr) []*EdgeTable {
+	var tables []*EdgeTable
+	for _, eTbl := range g.EdgeTables {
+		if slices.IndexFunc(labels, func(label CIStr) bool {
+			return eTbl.Label.L == label.L
+		}) >= 0 {
+			tables = append(tables, eTbl)
+		}
+	}
+	return tables
+}
+
 func (g *GraphInfo) Clone() *GraphInfo {
 	ng := *g
 	ng.VertexTables = make([]*VertexTable, len(g.VertexTables))
@@ -1377,10 +1431,9 @@ type VertexTable struct {
 
 func (v *VertexTable) Clone() *VertexTable {
 	nv := *v
-	nv.KeyCols = make([]CIStr, len(v.KeyCols))
+	nv.KeyCols = slices.Clone(v.KeyCols)
 	nv.Properties = make([]*PropertyInfo, len(v.Properties))
 
-	copy(nv.KeyCols, v.KeyCols)
 	for i := 0; i < len(v.Properties); i++ {
 		nv.Properties[i] = v.Properties[i].Clone()
 	}
@@ -1400,10 +1453,9 @@ type EdgeTable struct {
 
 func (e *EdgeTable) Clone() *EdgeTable {
 	ne := *e
-	ne.KeyCols = make([]CIStr, len(e.KeyCols))
+	ne.KeyCols = slices.Clone(e.KeyCols)
 	ne.Properties = make([]*PropertyInfo, len(e.Properties))
 
-	copy(ne.KeyCols, e.KeyCols)
 	for i := 0; i < len(e.Properties); i++ {
 		ne.Properties[i] = e.Properties[i].Clone()
 	}
@@ -1424,7 +1476,6 @@ type VertexTableRef struct {
 
 func (v *VertexTableRef) Clone() *VertexTableRef {
 	nv := *v
-	nv.KeyCols = make([]CIStr, len(v.KeyCols))
-	copy(nv.KeyCols, v.KeyCols)
+	nv.KeyCols = slices.Clone(v.KeyCols)
 	return &nv
 }
