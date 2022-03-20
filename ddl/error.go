@@ -330,4 +330,6 @@ var (
 	ErrNonUniqProperty = dbterror.ClassDDL.NewStd(mysql.ErrNonUniqProperty)
 	// ErrWrongLabelDefinition returns when graph has tables with the same labels but different properties.
 	ErrWrongLabelDefinition = dbterror.ClassDDL.NewStd(mysql.ErrWrongLabelDefinition)
+	// ErrWrongPropertyName returns for wrong property name.
+	ErrWrongPropertyName = dbterror.ClassDDL.NewStd(mysql.ErrWrongPropertyName)
 )

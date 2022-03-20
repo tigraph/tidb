@@ -1409,6 +1409,15 @@ func (g *GraphInfo) Clone() *GraphInfo {
 	return &ng
 }
 
+var (
+	// ExtraLabelPropName is the name of ExtraLabel property. ExtraLabel is a hidden property
+	// that is used to implement label related functions, such as label(n) and has_label(n, 'name').
+	ExtraLabelPropName = NewCIStr("_pgql_label")
+	// ExtraReprPropName is the name of ExtraRepr property. ExtraRepr is a hidden property
+	// that is used to show the representation of vertex or edge variables.
+	ExtraReprPropName = NewCIStr("_pgql_repr")
+)
+
 // PropertyInfo provides graph property info.
 type PropertyInfo struct {
 	Name CIStr  `json:"name"`

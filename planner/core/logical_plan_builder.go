@@ -55,8 +55,11 @@ import (
 	util2 "github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/collate"
+	"github.com/pingcap/tidb/util/generatedexpr"
 	"github.com/pingcap/tidb/util/plancodec"
 	"github.com/pingcap/tidb/util/set"
+	"github.com/pingcap/tidb/util/slicesext"
+	"golang.org/x/exp/slices"
 )
 
 const (
@@ -692,6 +695,10 @@ func (b *PlanBuilder) buildJoin(ctx context.Context, joinNode *ast.Join) (Logica
 		return nil, err
 	}
 
+	return b.buildJoinWithPlan(ctx, leftPlan, rightPlan, joinNode)
+}
+
+func (b *PlanBuilder) buildJoinWithPlan(ctx context.Context, leftPlan, rightPlan LogicalPlan, joinNode *ast.Join) (LogicalPlan, error) {
 	// The recursive part in CTE must not be on the right side of a LEFT JOIN.
 	if lc, ok := rightPlan.(*LogicalCTETable); ok && joinNode.Tp == ast.LeftJoin {
 		return nil, ErrCTERecursiveForbiddenJoinOrder.GenWithStackByArgs(lc.name)
@@ -780,12 +787,12 @@ func (b *PlanBuilder) buildJoin(ctx context.Context, joinNode *ast.Join) (Logica
 	//
 	// See https://dev.mysql.com/doc/refman/5.7/en/join.html for more detail.
 	if joinNode.NaturalJoin {
-		err = b.buildNaturalJoin(joinPlan, leftPlan, rightPlan, joinNode)
+		err := b.buildNaturalJoin(joinPlan, leftPlan, rightPlan, joinNode)
 		if err != nil {
 			return nil, err
 		}
 	} else if joinNode.Using != nil {
-		err = b.buildUsingClause(joinPlan, leftPlan, rightPlan, joinNode)
+		err := b.buildUsingClause(joinPlan, leftPlan, rightPlan, joinNode)
 		if err != nil {
 			return nil, err
 		}
@@ -6502,16 +6509,13 @@ func getResultCTESchema(seedSchema *expression.Schema, svar *variable.SessionVar
 func (b *PlanBuilder) buildMatchList(ctx context.Context, matchList *ast.MatchClauseList) (p LogicalPlan, err error) {
 	matches := rewriteMatchListToDisconnected(matchList.Matches)
 	// TODO: defer func(){ build projection }()
-	if len(matches) == 1 {
-		return b.buildMatch(ctx, matches[0])
-	}
 	// Now any two match clauses are disconnected from each other. The final result is
 	// produced by taking the Cartesian product of the result sets of the different match clause.
 	//
 	// See https://pgql-lang.org/spec/1.4/#disconnected-graph-patterns for more details.
-	join := ast.NewCrossJoin(matches[0], nil)
+	join := &ast.Join{Left: matches[0], Tp: ast.CrossJoin}
 	for i := 1; i < len(matches); i++ {
-		join = ast.NewCrossJoin(join, matches[i])
+		join = &ast.Join{Left: join, Right: matches[i], Tp: ast.CrossJoin}
 	}
 	return b.buildJoin(ctx, join)
 }
@@ -6632,12 +6636,356 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (p
 			return nil, ErrUnsupportedType.GenWithStack("Unsupported PathPatternType %d", path.Tp)
 		}
 	}
-	subgraphs := sg.propagate()
-	_ = subgraphs
 
-	return nil, ErrNotSupportedYet.GenWithStackByArgs("MATCH clause")
+	outputNames := buildSubgraphOutputNames(sg)
+
+	subgraphs := sg.propagate()
+	if len(subgraphs) == 0 {
+		plan := b.buildTableDual()
+		plan.RowCount = 0
+		cols := make([]*expression.Column, len(outputNames))
+		for i, outputName := range outputNames {
+			col := &expression.Column{UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID()}
+			if outputName.ColName == model.ExtraLabelPropName || outputName.ColName == model.ExtraReprPropName {
+				col.RetType = types.NewFieldType(mysql.TypeVarchar)
+			} else {
+				col.RetType = types.NewFieldType(mysql.TypeNull)
+			}
+			cols[i] = col
+		}
+		plan.SetSchema(expression.NewSchema(cols...))
+		plan.SetOutputNames(outputNames)
+		return plan, nil
+	}
+
+	plan, err := b.buildSubgraph(ctx, dbName, subgraphs[0], outputNames.Clone())
+	if err != nil {
+		return nil, err
+	}
+	if len(subgraphs) == 1 {
+		return plan, nil
+	}
+	subPlans := []LogicalPlan{plan}
+	for _, sg := range subgraphs[1:] {
+		subPlan, err := b.buildSubgraph(ctx, dbName, sg, outputNames.Clone())
+		if err != nil {
+			return nil, err
+		}
+		subPlans = append(subPlans, subPlan)
+	}
+	finalPlan, err := b.buildUnionAll(ctx, subPlans)
+	if err != nil {
+		return nil, err
+	}
+	finalPlan.SetOutputNames(outputNames)
+	return finalPlan, nil
 }
 
-func (b *PlanBuilder) buildSubgraph(ctx context.Context, sg *subgraph) (LogicalPlan, error) {
-	return nil, ErrNotSupportedYet.GenWithStackByArgs("MATCH clause")
+func buildSubgraphOutputNames(sg *subgraph) types.NameSlice {
+	var outputNames types.NameSlice
+	for _, vv := range sg.vertexVars {
+		var propNames []model.CIStr
+		for _, tbl := range vv.tables {
+			for _, prop := range tbl.Properties {
+				propNames = append(propNames, prop.Name)
+			}
+		}
+		slices.SortFunc(propNames, func(p1, p2 model.CIStr) bool {
+			return p1.L < p2.L
+		})
+		propNames = slices.CompactFunc(propNames, func(p1, p2 model.CIStr) bool {
+			return p1.Equal(p2)
+		})
+		newNames := buildSubgraphOutputNamesForVar(vv.name, propNames)
+		outputNames = append(outputNames, newNames...)
+	}
+	for _, ev := range sg.edgeVars {
+		var propNames []model.CIStr
+		for _, tbl := range ev.tables {
+			for _, prop := range tbl.Properties {
+				propNames = append(propNames, prop.Name)
+			}
+		}
+		slices.SortFunc(propNames, func(p1, p2 model.CIStr) bool {
+			return p1.L < p2.L
+		})
+		propNames = slices.CompactFunc(propNames, func(p1, p2 model.CIStr) bool {
+			return p1.Equal(p2)
+		})
+		newNames := buildSubgraphOutputNamesForVar(ev.name, propNames)
+		outputNames = append(outputNames, newNames...)
+	}
+	return outputNames
+}
+
+func buildSubgraphOutputNamesForVar(varName model.CIStr, propNames []model.CIStr) types.NameSlice {
+	var outputNames types.NameSlice
+
+	outputNames = append(outputNames, &types.FieldName{
+		TblName: varName,
+		ColName: model.ExtraLabelPropName,
+		Hidden:  false, // FIXME: Public for debug temporarily.
+	})
+	outputNames = append(outputNames, &types.FieldName{
+		TblName: varName,
+		ColName: model.ExtraReprPropName,
+		Hidden:  false, // FIXME: Public for debug temporarily.
+	})
+	for _, propName := range propNames {
+		outputNames = append(outputNames, &types.FieldName{
+			TblName: varName,
+			ColName: propName,
+			Hidden:  false, // FIXME: Public for debug temporarily.
+		})
+	}
+	return outputNames
+}
+
+func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg *subgraph, outputNames types.NameSlice) (LogicalPlan, error) {
+	var plan LogicalPlan
+	usedVars := make(map[string]*vertexVar)
+
+	joinVertex := func(vv *vertexVar) error {
+		tbl := vv.tables[0]
+		tn := &ast.TableName{Schema: dbName, Name: tbl.RefTable}
+		asName := model.NewCIStr(tableAsNameForVar(vv.name.O, tbl.Name.O))
+		vertexPlan, err := b.buildDataSource(ctx, tn, &asName)
+		if err != nil {
+			return err
+		}
+		for _, name := range vertexPlan.OutputNames() {
+			if name.Hidden {
+				continue
+			}
+			name.TblName = asName
+		}
+		if plan == nil {
+			plan = vertexPlan
+		} else {
+			newPlan, err := b.buildJoinWithPlan(ctx, plan, vertexPlan, &ast.Join{Tp: ast.CrossJoin})
+			if err != nil {
+				return err
+			}
+			plan = newPlan
+		}
+		return nil
+	}
+
+	buildOnCond := func(
+		srcTbl *model.VertexTable, srcTblAsName model.CIStr,
+		dstTbl *model.VertexTable, dstTblAsName model.CIStr,
+		edgeTbl *model.EdgeTable, edgeTblAsName model.CIStr,
+	) ast.ExprNode {
+		var onConds []*ast.BinaryOperationExpr
+		for i, eCol := range edgeTbl.Source.KeyCols {
+			onConds = append(onConds, &ast.BinaryOperationExpr{
+				Op: opcode.EQ,
+				L:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: srcTblAsName, Name: srcTbl.KeyCols[i]}},
+				R:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: edgeTblAsName, Name: eCol}},
+			})
+
+		}
+		for i, eCol := range edgeTbl.Destination.KeyCols {
+			onConds = append(onConds, &ast.BinaryOperationExpr{
+				Op: opcode.EQ,
+				L:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: dstTblAsName, Name: dstTbl.KeyCols[i]}},
+				R:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: edgeTblAsName, Name: eCol}},
+			})
+		}
+		onCond := onConds[0]
+		for i := 1; i < len(onConds); i++ {
+			onCond = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: onCond, R: onConds[i]}
+		}
+		return onCond
+	}
+
+	for _, ev := range sg.edgeVars {
+		srcVar, ok := usedVars[ev.srcVertexVar]
+		if !ok {
+			srcVar = sg.vertexVars[ev.srcVertexVar]
+			if err := joinVertex(srcVar); err != nil {
+				return nil, err
+			}
+			usedVars[ev.srcVertexVar] = srcVar
+		}
+		dstVar, ok := usedVars[ev.dstVertexVar]
+		if !ok {
+			dstVar = sg.vertexVars[ev.dstVertexVar]
+			if err := joinVertex(dstVar); err != nil {
+				return nil, err
+			}
+			usedVars[ev.dstVertexVar] = dstVar
+		}
+
+		srcTbl, dstTbl, edgeTbl := srcVar.tables[0], dstVar.tables[0], ev.tables[0]
+		srcTblAsName := model.NewCIStr(tableAsNameForVar(srcVar.name.O, srcTbl.Name.O))
+		dstTblAsName := model.NewCIStr(tableAsNameForVar(dstVar.name.O, dstTbl.Name.O))
+		edgeTblAsName := model.NewCIStr(tableAsNameForVar(ev.name.O, edgeTbl.Name.O))
+
+		onCond := buildOnCond(srcTbl, srcTblAsName, dstTbl, dstTblAsName, edgeTbl, edgeTblAsName)
+		if ev.anyDirected {
+			revOnCond := buildOnCond(dstTbl, dstTblAsName, srcTbl, srcTblAsName, edgeTbl, edgeTblAsName)
+			onCond = &ast.BinaryOperationExpr{Op: opcode.LogicOr, L: onCond, R: revOnCond}
+		}
+
+		tn := &ast.TableName{Schema: dbName, Name: edgeTbl.RefTable}
+		edgePlan, err := b.buildDataSource(ctx, tn, &edgeTblAsName)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range edgePlan.OutputNames() {
+			if name.Hidden {
+				continue
+			}
+			name.TblName = edgeTblAsName
+		}
+		join := &ast.Join{Tp: ast.CrossJoin, On: &ast.OnCondition{Expr: onCond}}
+		newPlan, err := b.buildJoinWithPlan(ctx, plan, edgePlan, join)
+		if err != nil {
+			return nil, err
+		}
+		plan = newPlan
+
+	}
+
+	for _, vv := range sg.vertexVars {
+		if _, ok := usedVars[vv.name.L]; !ok {
+			joinVertex(vv)
+			usedVars[vv.name.L] = vv
+		}
+	}
+
+	return b.buildProjection4Subgraph(dbName, sg, plan, outputNames)
+}
+
+type propertyExprRewriter struct {
+	tblAsName model.CIStr
+}
+
+func (p *propertyExprRewriter) Enter(inNode ast.Node) (ast.Node, bool) {
+	return inNode, false
+}
+
+func (p *propertyExprRewriter) Leave(inNode ast.Node) (node ast.Node, ok bool) {
+	switch v := inNode.(type) {
+	case *ast.ColumnName:
+		v.Table = p.tblAsName
+		return inNode, false
+	}
+	return inNode, true
+}
+
+func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph, plan LogicalPlan, outputNames types.NameSlice) (LogicalPlan, error) {
+	schemaCols := make([]*expression.Column, len(outputNames))
+	exprs := make([]expression.Expression, len(outputNames))
+	for i, outputName := range outputNames {
+		varName := outputName.TblName
+		propName := outputName.ColName
+		if vv, ok := sg.vertexVars[varName.L]; ok {
+			vTbl := vv.tables[0]
+			switch {
+			case propName.Equal(model.ExtraLabelPropName):
+				schemaCols[i] = &expression.Column{
+					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+					RetType:  types.NewFieldType(mysql.TypeVarchar),
+					IsHidden: false,
+				}
+				exprs[i] = &expression.Constant{
+					Value:   types.NewStringDatum(vTbl.Label.O),
+					RetType: types.NewFieldType(mysql.TypeVarchar),
+				}
+			case propName.Equal(model.ExtraReprPropName):
+				schemaCols[i] = &expression.Column{
+					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+					RetType:  types.NewFieldType(mysql.TypeNull),
+					IsHidden: false,
+				}
+				exprs[i] = expression.NewNull()
+			default:
+				var err error
+				schemaCols[i], exprs[i], err = b.buildPropertiesSchemaCols(
+					dbName, vv.name, vTbl.Name, propName, vTbl.RefTable, plan, vTbl.Properties)
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else if ev, ok := sg.edgeVars[varName.L]; ok {
+			eTbl := ev.tables[0]
+			switch {
+			case propName.Equal(model.ExtraLabelPropName):
+				schemaCols[i] = &expression.Column{
+					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+					RetType:  types.NewFieldType(mysql.TypeVarchar),
+					IsHidden: false,
+				}
+				exprs[i] = &expression.Constant{
+					Value:   types.NewStringDatum(eTbl.Label.O),
+					RetType: types.NewFieldType(mysql.TypeVarchar),
+				}
+			case propName.Equal(model.ExtraReprPropName):
+				schemaCols[i] = &expression.Column{
+					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+					RetType:  types.NewFieldType(mysql.TypeNull),
+					IsHidden: false,
+				}
+				exprs[i] = expression.NewNull()
+			default:
+				var err error
+				schemaCols[i], exprs[i], err = b.buildPropertiesSchemaCols(
+					dbName, ev.name, eTbl.Name, propName, eTbl.RefTable, plan, eTbl.Properties)
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			panic(fmt.Errorf("buildProjection4Subgraph: unknown variable name '%s'", varName))
+		}
+	}
+	proj := LogicalProjection{Exprs: exprs, AvoidColumnEvaluator: true}.Init(b.ctx, b.getSelectOffset())
+	proj.SetSchema(expression.NewSchema(schemaCols...))
+	proj.SetOutputNames(outputNames)
+	proj.SetChildren(plan)
+	return proj, nil
+}
+
+func (b *PlanBuilder) buildPropertiesSchemaCols(
+	dbName, varName, tblName, propName, refTblName model.CIStr,
+	plan LogicalPlan, props []*model.PropertyInfo,
+) (*expression.Column, expression.Expression, error) {
+	if prop, ok := slicesext.SearchFunc(props, func(prop *model.PropertyInfo) bool {
+		return prop.Name.Equal(propName)
+	}); ok {
+		astExpr, err := generatedexpr.ParseExpression(prop.Expr)
+		if err != nil {
+			return nil, nil, err
+		}
+		refTbl, err := b.is.TableByName(dbName, refTblName)
+		if err != nil {
+			return nil, nil, err
+		}
+		astExpr, err = generatedexpr.SimpleResolveName(astExpr, refTbl.Meta())
+		if err != nil {
+			return nil, nil, err
+		}
+		tblAsName := model.NewCIStr(tableAsNameForVar(varName.O, tblName.O))
+		w := &propertyExprRewriter{tblAsName: tblAsName}
+		newExpr, _ := astExpr.Accept(w)
+		astExpr = newExpr.(ast.ExprNode)
+
+		expr, err := rewriteAstExpr(b.ctx, astExpr, plan.Schema(), plan.OutputNames())
+		if err != nil {
+			return nil, nil, err
+		}
+		schemaCol := &expression.Column{
+			UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+			RetType:  expr.GetType(),
+			IsHidden: false,
+		}
+		return schemaCol, expr, nil
+	}
+	return &expression.Column{
+		UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+		RetType:  types.NewFieldType(mysql.TypeNull),
+		IsHidden: false,
+	}, expression.NewNull(), nil
 }

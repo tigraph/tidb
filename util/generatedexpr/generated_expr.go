@@ -41,17 +41,10 @@ func (nr *nameResolver) Enter(inNode ast.Node) (ast.Node, bool) {
 func (nr *nameResolver) Leave(inNode ast.Node) (node ast.Node, ok bool) {
 	switch v := inNode.(type) {
 	case *ast.ColumnNameExpr:
-		for _, col := range nr.tableInfo.Columns {
-			if col.Name.L == v.Name.Name.L {
-				v.Refer = &ast.ResultField{
-					Column: col,
-					Table:  nr.tableInfo,
-				}
-				return inNode, true
-			}
+		if model.FindColumnInfo(nr.tableInfo.Columns, v.Name.Name.L) == nil {
+			nr.err = errors.Errorf("can't find column %s in %s", v.Name.Name.O, nr.tableInfo.Name.O)
+			return inNode, false
 		}
-		nr.err = errors.Errorf("can't find column %s in %s", v.Name.Name.O, nr.tableInfo.Name.O)
-		return inNode, false
 	}
 	return inNode, true
 }

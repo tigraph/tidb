@@ -16,6 +16,7 @@ package core
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
@@ -36,15 +37,6 @@ type vertexVar struct {
 func (v *vertexVar) copy() *vertexVar {
 	nv := *v
 	return &nv
-}
-
-// tableMap returns a map of all vertex tables.
-func (v *vertexVar) tableMap() map[string]*model.VertexTable {
-	m := make(map[string]*model.VertexTable)
-	for _, tbl := range v.tables {
-		m[tbl.Name.L] = tbl
-	}
-	return m
 }
 
 // filterTables filter tables which match the label filter.
@@ -233,4 +225,41 @@ func propagateSubgraph(ctx *propagateCtx) {
 			joinEdge(eTbl, ev.dstVertexVar, ev.srcVertexVar)
 		}
 	}
+}
+
+// tableAsNameForVar combines variable name and table name.
+// It guarantees the two result strings are equal if and only if both varName and tblName are equal.
+//
+// This is achieved by encoding the varName first and then concat it with tblName.
+// The encoding rule is similar to codec.EncodeBytes, but with group 4 and padding char '0':
+//  [group1][marker1]...[groupN][markerN]
+//  group is 4 bytes slice which is padding with '0'.
+//  marker is `'0' + char count`
+// For example:
+//   "" -> "00000"
+//   "a" -> "a0001"
+//   "ab" -> "ab002"
+//   "abc" -> "abc03"
+//   "abcd" -> "abcd400000"
+//   "abcde" -> "abcd4e0001"
+func tableAsNameForVar(varName string, tblName string) string {
+	const (
+		encGroupSize = 4
+		paddingChar  = '0'
+	)
+	sb := strings.Builder{}
+	for i := 0; i <= len(varName); i += encGroupSize {
+		s := varName[i:]
+		if len(s) > encGroupSize {
+			s = s[:encGroupSize]
+		}
+		sb.WriteString(s)
+		for j := 0; j < encGroupSize-len(s); j++ {
+			sb.WriteByte(paddingChar)
+		}
+		sb.WriteByte(paddingChar + byte(len(s)))
+	}
+	sb.WriteByte('_')
+	sb.WriteString(tblName)
+	return sb.String()
 }

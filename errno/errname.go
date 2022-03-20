@@ -1059,6 +1059,7 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrGraphInvalid:                           mysql.Message("Graph '%-.192s.%-.192s' references invalid table(s) or column(s) or function(s) or definer/invoker of graph lack rights to use them", nil),
 	ErrDupVariable:                            mysql.Message("Duplicate variable '%-.192s'", nil),
 	ErrLabelNotExists:                         mysql.Message("Label '%-.192s' doesn't exist", nil),
+	ErrWrongPropertyName:                      mysql.Message("Incorrect property name '%-.192s'", nil),
 
 	ErrBRIEBackupFailed:  mysql.Message("Backup failed: %s", nil),
 	ErrBRIERestoreFailed: mysql.Message("Restore failed: %s", nil),

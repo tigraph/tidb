@@ -575,7 +575,7 @@ func buildColumnAndConstraint(
 	tblCharset string,
 	tblCollate string,
 ) (*table.Column, []*ast.Constraint, error) {
-	if colName := colDef.Name.Name.L; colName == model.ExtraHandleName.L {
+	if colName := colDef.Name.Name; !isCorrectColName(colName) {
 		return nil, nil, ErrWrongColumnName.GenWithStackByArgs(colName)
 	}
 
@@ -601,6 +601,11 @@ func buildColumnAndConstraint(
 		return nil, nil, errors.Trace(err)
 	}
 	return col, cts, nil
+}
+
+func isCorrectColName(name model.CIStr) bool {
+	return !name.Equal(model.ExtraHandleName) &&
+		isCorrectPropertyName(name)
 }
 
 // checkColumnDefaultValue checks the default value of the column.
@@ -4246,8 +4251,8 @@ func (d *ddl) getModifiableColumnJob(ctx context.Context, sctx sessionctx.Contex
 		return nil, infoschema.ErrColumnNotExists.GenWithStackByArgs(originalColName, ident.Name)
 	}
 	newColName := specNewColumn.Name.Name
-	if newColName.L == model.ExtraHandleName.L {
-		return nil, ErrWrongColumnName.GenWithStackByArgs(newColName.L)
+	if !isCorrectColName(newColName) {
+		return nil, ErrWrongColumnName.GenWithStackByArgs(newColName)
 	}
 	// If we want to rename the column name, we need to check whether it already exists.
 	if newColName.L != originalColName.L {
@@ -4582,8 +4587,8 @@ func (d *ddl) RenameColumn(ctx sessionctx.Context, ident ast.Ident, spec *ast.Al
 	if oldColName.L == newColName.L {
 		return nil
 	}
-	if newColName.L == model.ExtraHandleName.L {
-		return ErrWrongColumnName.GenWithStackByArgs(newColName.L)
+	if !isCorrectColName(newColName) {
+		return ErrWrongColumnName.GenWithStackByArgs(newColName)
 	}
 
 	schema, tbl, err := d.getSchemaAndTableByIdent(ctx, ident)
@@ -7130,6 +7135,9 @@ func buildPropertiesWithAllCols(tbl table.Table, exceptCols []*ast.ColumnName) (
 		if exceptColNames.Exist(col.Name.L) {
 			continue
 		}
+		if !isCorrectPropertyName(col.Name) {
+			return nil, ErrWrongPropertyName.GenWithStackByArgs(col.Name)
+		}
 		colExpr := ast.ColumnNameExpr{Name: &ast.ColumnName{Name: col.Name}}
 		restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
 		var sb strings.Builder
@@ -7172,6 +7180,9 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 				propertyInfo.Name = colNameExpr.Name.Name
 			}
 		}
+		if !isCorrectPropertyName(propertyInfo.Name) {
+			return nil, ErrWrongPropertyName.GenWithStackByArgs(propertyInfo.Name)
+		}
 
 		restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
 		var sb strings.Builder
@@ -7197,17 +7208,21 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 	return properties, nil
 }
 
+func isCorrectPropertyName(name model.CIStr) bool {
+	return !name.Equal(model.ExtraLabelPropName) && !name.Equal(model.ExtraReprPropName)
+}
+
 type propertyExprRewriter struct{}
 
 func (c *propertyExprRewriter) Enter(node ast.Node) (ast.Node, bool) {
-	switch x := node.(type) {
-	case *ast.ColumnName:
-		*x = ast.ColumnName{Name: x.Name}
-	}
 	return node, false
 }
 
 func (c *propertyExprRewriter) Leave(node ast.Node) (ast.Node, bool) {
+	switch x := node.(type) {
+	case *ast.ColumnName:
+		*x = ast.ColumnName{Name: x.Name}
+	}
 	return node, true
 }
 

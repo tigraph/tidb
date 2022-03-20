@@ -1185,7 +1185,7 @@ func checkDuplicateColumnName(IndexPartSpecifications []*ast.IndexPartSpecificat
 	return nil
 }
 
-// checkIndexInfo checks index name and index column names.ErrNonuniqTable
+// checkIndexInfo checks index name and index column names.
 func checkIndexInfo(indexName string, IndexPartSpecifications []*ast.IndexPartSpecification) error {
 	if strings.EqualFold(indexName, mysql.PrimaryKeyName) {
 		return ddl.ErrWrongNameForIndex.GenWithStackByArgs(indexName)

@@ -566,10 +566,6 @@ type ColumnNameExpr struct {
 
 	// Name is the referenced column name.
 	Name *ColumnName
-
-	// Refer is the result field the column name refers to.
-	// The value of Refer.Expr is used as the value of the expression.
-	Refer *ResultField
 }
 
 // Restore implements Node interface.

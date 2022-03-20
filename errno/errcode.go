@@ -1075,6 +1075,7 @@ const (
 	ErrNonUniqEdgeTable                   = 8251
 	ErrNonUniqProperty                    = 8252
 	ErrWrongLabelDefinition               = 8253
+	ErrWrongPropertyName                  = 8254
 
 	// TiKV/PD/TiFlash errors.
 	ErrPDServerTimeout           = 9001
