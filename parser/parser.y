@@ -415,6 +415,7 @@ import (
 	graph                 "GRAPH"
 	graphs                "GRAPHS"
 	hash                  "HASH"
+	hasLabel              "HAS_LABEL"
 	help                  "HELP"
 	histogram             "HISTOGRAM"
 	history               "HISTORY"
@@ -6149,6 +6150,7 @@ UnReservedKeyword:
 |	"CHEAPEST"
 |	"SHORTEST"
 |	"COST"
+|	"HAS_LABEL"
 
 TiDBKeyword:
 	"ADMIN"
@@ -7307,6 +7309,23 @@ FunctionCallNonKeyword:
 		$$ = &ast.FuncCallExpr{
 			FnName: model.NewCIStr($1),
 			Args:   []ast.ExprNode{$3, $5, $7},
+		}
+	}
+|	"LABEL" '(' Identifier ')'
+	{
+		varName := &ast.ColumnNameExpr{Name: &ast.ColumnName{Name: model.NewCIStr($3)}}
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr($1),
+			Args:   []ast.ExprNode{varName},
+		}
+	}
+|	"HAS_LABEL" '(' Identifier ',' stringLit ')'
+	{
+		varName := &ast.ColumnNameExpr{Name: &ast.ColumnName{Name: model.NewCIStr($3)}}
+		labelName := ast.NewValueExpr($5, parser.charset, parser.collation)
+		$$ = &ast.FuncCallExpr{
+			FnName: model.NewCIStr($1),
+			Args:   []ast.ExprNode{varName, labelName},
 		}
 	}
 

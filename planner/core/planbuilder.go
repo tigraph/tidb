@@ -516,6 +516,9 @@ type PlanBuilder struct {
 	isForUpdateRead             bool
 	allocIDForCTEStorage        int
 	buildingRecursivePartForCTE bool
+
+	// isGraphQuery indicates whether the query is graph query.
+	isGraphQuery bool
 }
 
 type handleColHelper struct {

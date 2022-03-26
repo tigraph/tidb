@@ -1020,7 +1020,9 @@ const (
 	ErrNoGraph                                = 8142
 	ErrGraphInvalid                           = 8143
 	ErrDupVariable                            = 8144
-	ErrLabelNotExists                         = 8145
+	ErrUnresolvedVariable                     = 8145
+	ErrLabelNotExists                         = 8146
+	ErrPropertyNotExists                      = 8147
 
 	// Error codes used by TiDB ddl package
 	ErrUnsupportedDDLOperation            = 8200
@@ -1076,6 +1078,7 @@ const (
 	ErrNonUniqProperty                    = 8252
 	ErrWrongLabelDefinition               = 8253
 	ErrWrongPropertyName                  = 8254
+	ErrInvalidGraphSubquery               = 8255
 
 	// TiKV/PD/TiFlash errors.
 	ErrPDServerTimeout           = 9001

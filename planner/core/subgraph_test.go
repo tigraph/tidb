@@ -15,6 +15,7 @@
 package core
 
 import (
+	"github.com/pingcap/tidb/parser/model"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,8 +35,9 @@ func TestTableAsNameForVar(t *testing.T) {
 		{"abcde", "t", "abcd4e0001_t"},
 		{"a", "b_c", "a0001_b_c"},
 		{"a_b", "c", "a_b03_c"},
+		{"a_B", "c", "a_B03_c"},
 	}
 	for _, tc := range testCases {
-		assert.Equal(t, tc.result, tableAsNameForVar(tc.varName, tc.tblName))
+		assert.Equal(t, model.NewCIStr(tc.result), tableAsNameForVar(model.NewCIStr(tc.varName), model.NewCIStr(tc.tblName)))
 	}
 }

@@ -377,8 +377,14 @@ func (b *PlanBuilder) buildResultSetNode(ctx context.Context, node ast.ResultSet
 	case *ast.SetOprStmt:
 		return b.buildSetOpr(ctx, x)
 	case *ast.MatchClause:
+		if !b.isGraphQuery {
+			return nil, ErrInternal.GenWithStackByArgs("MATCH clause shouldn't be inside a non-graph query")
+		}
 		return b.buildMatch(ctx, x)
 	case *ast.MatchClauseList:
+		if !b.isGraphQuery {
+			return nil, ErrInternal.GenWithStackByArgs("MATCH clause shouldn't be inside a non-graph query")
+		}
 		return b.buildMatchList(ctx, x)
 	default:
 		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.ResultSetNode(%T) for buildResultSetNode()", x)
@@ -1133,7 +1139,9 @@ func (b *PlanBuilder) buildProjectionField(ctx context.Context, p LogicalPlan, f
 	col, isCol := expr.(*expression.Column)
 	// Correlated column won't affect the final output names. So we can put it in any of the three logic block.
 	// Don't put it into the first block just for simplifying the codes.
-	if colNameField, ok := innerNode.(*ast.ColumnNameExpr); ok && isCol {
+	if colNameField, ok := innerNode.(*ast.ColumnNameExpr); ok && isCol &&
+		!colNameField.Name.Name.Equal(model.ExtraLabelPropName) &&
+		!colNameField.Name.Name.Equal(model.ExtraReprPropName) {
 		// Field is a column reference.
 		idx := p.Schema().ColumnIndex(col)
 		var name *types.FieldName
@@ -3168,12 +3176,28 @@ func (b *PlanBuilder) unfoldWildStar(p LogicalPlan, selectFields []*ast.SelectFi
 		if field.WildCard.Table.L == "" && i > 0 {
 			return nil, ErrInvalidWildCard
 		}
-		list := unfoldWildStar(field, p.OutputNames(), p.Schema().Columns)
+		var list []*ast.SelectField
 		// For sql like `select t1.*, t2.* from t1 join t2 using(a)` or `select t1.*, t2.* from t1 natual join t2`,
 		// the schema of the Join doesn't contain enough columns because the join keys are coalesced in this schema.
 		// We should collect the columns from the fullSchema.
 		if isJoin && join.fullSchema != nil && field.WildCard.Table.L != "" {
 			list = unfoldWildStar(field, join.fullNames, join.fullSchema.Columns)
+		} else if b.isGraphQuery && field.WildCard.Table.L == "" {
+			for i, name := range p.OutputNames() {
+				if !p.Schema().Columns[i].IsHidden && name.ColName.Equal(model.ExtraReprPropName) {
+					colName := &ast.ColumnNameExpr{
+						Name: &ast.ColumnName{
+							Table: name.TblName,
+							Name:  name.ColName,
+						},
+					}
+					varField := &ast.SelectField{Expr: colName}
+					varField.SetText(nil, name.TblName.O)
+					list = append(list, varField)
+				}
+			}
+		} else {
+			list = unfoldWildStar(field, p.OutputNames(), p.Schema().Columns)
 		}
 		if len(list) == 0 {
 			return nil, ErrBadTable.GenWithStackByArgs(field.WildCard.Table)
@@ -3534,6 +3558,32 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 		origin := b.inStraightJoin
 		b.inStraightJoin = sel.SelectStmtOpts.StraightJoin
 		defer func() { b.inStraightJoin = origin }()
+	}
+	if sel.From != nil {
+		_, isGraphQuery := sel.From.TableRefs.Left.(*ast.MatchClauseList)
+		if b.isCreateView {
+			return nil, ErrViewSelectClause.GenWithStackByArgs("MATCH")
+		}
+		parentIsGraphQuery := b.isGraphQuery
+		if parentIsGraphQuery && !isGraphQuery {
+			return nil, ErrInvalidGraphSubquery.GenWithStackByArgs()
+		}
+		// Graph subqueries shouldn't reference outer queries that are not graph query.
+		if !parentIsGraphQuery {
+			outerSchemas := b.outerSchemas
+			outerNames := b.outerNames
+			outerCTEs := b.outerCTEs
+			b.outerSchemas = nil
+			b.outerNames = nil
+			b.outerCTEs = nil
+			defer func() {
+				b.outerSchemas = outerSchemas
+				b.outerNames = outerNames
+				b.outerCTEs = outerCTEs
+			}()
+		}
+		b.isGraphQuery = isGraphQuery
+		defer func() { b.isGraphQuery = parentIsGraphQuery }()
 	}
 
 	var (
@@ -6655,6 +6705,7 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (p
 		}
 		plan.SetSchema(expression.NewSchema(cols...))
 		plan.SetOutputNames(outputNames)
+		hideAnonymousSubgraphVars(sg, plan)
 		return plan, nil
 	}
 
@@ -6663,6 +6714,7 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (p
 		return nil, err
 	}
 	if len(subgraphs) == 1 {
+		hideAnonymousSubgraphVars(sg, plan)
 		return plan, nil
 	}
 	subPlans := []LogicalPlan{plan}
@@ -6678,7 +6730,27 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (p
 		return nil, err
 	}
 	finalPlan.SetOutputNames(outputNames)
+	hideAnonymousSubgraphVars(sg, finalPlan)
 	return finalPlan, nil
+}
+
+func hideAnonymousSubgraphVars(sg *subgraph, p LogicalPlan) {
+	anonymousVars := set.NewStringSet()
+	for _, vv := range sg.vertexVars {
+		if vv.anonymous {
+			anonymousVars.Insert(vv.name.L)
+		}
+	}
+	for _, ev := range sg.edgeVars {
+		if ev.anonymous {
+			anonymousVars.Insert(ev.name.L)
+		}
+	}
+	for i, name := range p.OutputNames() {
+		if anonymousVars.Exist(name.TblName.L) {
+			p.Schema().Columns[i].IsHidden = true
+		}
+	}
 }
 
 func buildSubgraphOutputNames(sg *subgraph) types.NameSlice {
@@ -6724,18 +6796,15 @@ func buildSubgraphOutputNamesForVar(varName model.CIStr, propNames []model.CIStr
 	outputNames = append(outputNames, &types.FieldName{
 		TblName: varName,
 		ColName: model.ExtraLabelPropName,
-		Hidden:  false, // FIXME: Public for debug temporarily.
 	})
 	outputNames = append(outputNames, &types.FieldName{
 		TblName: varName,
 		ColName: model.ExtraReprPropName,
-		Hidden:  false, // FIXME: Public for debug temporarily.
 	})
 	for _, propName := range propNames {
 		outputNames = append(outputNames, &types.FieldName{
 			TblName: varName,
 			ColName: propName,
-			Hidden:  false, // FIXME: Public for debug temporarily.
 		})
 	}
 	return outputNames
@@ -6748,7 +6817,7 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 	joinVertex := func(vv *vertexVar) error {
 		tbl := vv.tables[0]
 		tn := &ast.TableName{Schema: dbName, Name: tbl.RefTable}
-		asName := model.NewCIStr(tableAsNameForVar(vv.name.O, tbl.Name.O))
+		asName := tableAsNameForVar(vv.name, tbl.Name)
 		vertexPlan, err := b.buildDataSource(ctx, tn, &asName)
 		if err != nil {
 			return err
@@ -6818,9 +6887,9 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 		}
 
 		srcTbl, dstTbl, edgeTbl := srcVar.tables[0], dstVar.tables[0], ev.tables[0]
-		srcTblAsName := model.NewCIStr(tableAsNameForVar(srcVar.name.O, srcTbl.Name.O))
-		dstTblAsName := model.NewCIStr(tableAsNameForVar(dstVar.name.O, dstTbl.Name.O))
-		edgeTblAsName := model.NewCIStr(tableAsNameForVar(ev.name.O, edgeTbl.Name.O))
+		srcTblAsName := tableAsNameForVar(srcVar.name, srcTbl.Name)
+		dstTblAsName := tableAsNameForVar(dstVar.name, dstTbl.Name)
+		edgeTblAsName := tableAsNameForVar(ev.name, edgeTbl.Name)
 
 		onCond := buildOnCond(srcTbl, srcTblAsName, dstTbl, dstTblAsName, edgeTbl, edgeTblAsName)
 		if ev.anyDirected {
@@ -6850,7 +6919,9 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 
 	for _, vv := range sg.vertexVars {
 		if _, ok := usedVars[vv.name.L]; !ok {
-			joinVertex(vv)
+			if err := joinVertex(vv); err != nil {
+				return nil, err
+			}
 			usedVars[vv.name.L] = vv
 		}
 	}
@@ -6888,7 +6959,6 @@ func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph,
 				schemaCols[i] = &expression.Column{
 					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
 					RetType:  types.NewFieldType(mysql.TypeVarchar),
-					IsHidden: false,
 				}
 				exprs[i] = &expression.Constant{
 					Value:   types.NewStringDatum(vTbl.Label.O),
@@ -6897,10 +6967,13 @@ func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph,
 			case propName.Equal(model.ExtraReprPropName):
 				schemaCols[i] = &expression.Column{
 					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
-					RetType:  types.NewFieldType(mysql.TypeNull),
-					IsHidden: false,
+					RetType:  types.NewFieldType(mysql.TypeVarchar),
 				}
-				exprs[i] = expression.NewNull()
+				expr, err := b.buildVarRepresentation("TiVertex", varName, vTbl.Name, vTbl.KeyCols, plan)
+				if err != nil {
+					return nil, err
+				}
+				exprs[i] = expr
 			default:
 				var err error
 				schemaCols[i], exprs[i], err = b.buildPropertiesSchemaCols(
@@ -6916,7 +6989,6 @@ func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph,
 				schemaCols[i] = &expression.Column{
 					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
 					RetType:  types.NewFieldType(mysql.TypeVarchar),
-					IsHidden: false,
 				}
 				exprs[i] = &expression.Constant{
 					Value:   types.NewStringDatum(eTbl.Label.O),
@@ -6925,10 +6997,13 @@ func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph,
 			case propName.Equal(model.ExtraReprPropName):
 				schemaCols[i] = &expression.Column{
 					UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
-					RetType:  types.NewFieldType(mysql.TypeNull),
-					IsHidden: false,
+					RetType:  types.NewFieldType(mysql.TypeVarchar),
 				}
-				exprs[i] = expression.NewNull()
+				expr, err := b.buildVarRepresentation("TiEdge", varName, eTbl.Name, eTbl.KeyCols, plan)
+				if err != nil {
+					return nil, err
+				}
+				exprs[i] = expr
 			default:
 				var err error
 				schemaCols[i], exprs[i], err = b.buildPropertiesSchemaCols(
@@ -6948,44 +7023,81 @@ func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph,
 	return proj, nil
 }
 
+func (b *PlanBuilder) buildVarRepresentation(
+	varTp string, varName, tblName model.CIStr,
+	keyCols []model.CIStr, plan LogicalPlan,
+) (expression.Expression, error) {
+	var exprs []expression.Expression
+	retType := types.NewFieldType(mysql.TypeVarchar)
+	sb := strings.Builder{}
+	sb.WriteString(varTp)
+	sb.WriteByte('[')
+	sb.WriteString(tblName.O)
+	sb.WriteByte('(')
+	for i, col := range keyCols {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(col.O)
+		sb.WriteByte('=')
+		exprs = append(exprs, &expression.Constant{
+			Value:   types.NewStringDatum(sb.String()),
+			RetType: retType,
+		})
+		sb.Reset()
+
+		tblAsName := tableAsNameForVar(varName, tblName)
+		for j, name := range plan.OutputNames() {
+			if name.TblName.Equal(tblAsName) && name.ColName.Equal(col) {
+				exprs = append(exprs, plan.Schema().Columns[j])
+			}
+		}
+	}
+	exprs = append(exprs, &expression.Constant{
+		Value:   types.NewStringDatum(")]"),
+		RetType: retType,
+	})
+	return expression.NewFunction(b.ctx, ast.Concat, retType, exprs...)
+}
+
 func (b *PlanBuilder) buildPropertiesSchemaCols(
 	dbName, varName, tblName, propName, refTblName model.CIStr,
 	plan LogicalPlan, props []*model.PropertyInfo,
 ) (*expression.Column, expression.Expression, error) {
-	if prop, ok := slicesext.SearchFunc(props, func(prop *model.PropertyInfo) bool {
+	prop, ok := slicesext.SearchFunc(props, func(prop *model.PropertyInfo) bool {
 		return prop.Name.Equal(propName)
-	}); ok {
-		astExpr, err := generatedexpr.ParseExpression(prop.Expr)
-		if err != nil {
-			return nil, nil, err
-		}
-		refTbl, err := b.is.TableByName(dbName, refTblName)
-		if err != nil {
-			return nil, nil, err
-		}
-		astExpr, err = generatedexpr.SimpleResolveName(astExpr, refTbl.Meta())
-		if err != nil {
-			return nil, nil, err
-		}
-		tblAsName := model.NewCIStr(tableAsNameForVar(varName.O, tblName.O))
-		w := &propertyExprRewriter{tblAsName: tblAsName}
-		newExpr, _ := astExpr.Accept(w)
-		astExpr = newExpr.(ast.ExprNode)
-
-		expr, err := rewriteAstExpr(b.ctx, astExpr, plan.Schema(), plan.OutputNames())
-		if err != nil {
-			return nil, nil, err
-		}
-		schemaCol := &expression.Column{
+	})
+	if !ok {
+		return &expression.Column{
 			UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
-			RetType:  expr.GetType(),
-			IsHidden: false,
-		}
-		return schemaCol, expr, nil
+			RetType:  types.NewFieldType(mysql.TypeNull),
+		}, expression.NewNull(), nil
 	}
-	return &expression.Column{
+
+	astExpr, err := generatedexpr.ParseExpression(prop.Expr)
+	if err != nil {
+		return nil, nil, err
+	}
+	refTbl, err := b.is.TableByName(dbName, refTblName)
+	if err != nil {
+		return nil, nil, err
+	}
+	astExpr, err = generatedexpr.SimpleResolveName(astExpr, refTbl.Meta())
+	if err != nil {
+		return nil, nil, err
+	}
+	tblAsName := tableAsNameForVar(varName, tblName)
+	w := &propertyExprRewriter{tblAsName: tblAsName}
+	newExpr, _ := astExpr.Accept(w)
+	astExpr = newExpr.(ast.ExprNode)
+
+	expr, err := rewriteAstExpr(b.ctx, astExpr, plan.Schema(), plan.OutputNames())
+	if err != nil {
+		return nil, nil, err
+	}
+	schemaCol := &expression.Column{
 		UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
-		RetType:  types.NewFieldType(mysql.TypeNull),
-		IsHidden: false,
-	}, expression.NewNull(), nil
+		RetType:  expr.GetType(),
+	}
+	return schemaCol, expr, nil
 }

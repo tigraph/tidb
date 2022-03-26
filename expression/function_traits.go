@@ -117,6 +117,8 @@ var IllegalFunctions4GeneratedColumns = map[string]struct{}{
 	ast.SetVar:           {},
 	ast.GetVar:           {},
 	ast.ReleaseAllLocks:  {},
+	ast.Label:            {},
+	ast.HasLabel:         {},
 }
 
 // DeferredFunctions stores functions which are foldable but should be deferred as well when plan cache is enabled.

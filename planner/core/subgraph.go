@@ -29,9 +29,6 @@ type vertexVar struct {
 	name      model.CIStr
 	anonymous bool
 	tables    []*model.VertexTable
-	// labels is the original labels specified in match clause.
-	// It is used to build Plan.Schema and Plan.OutputNames.
-	labels []model.CIStr
 }
 
 func (v *vertexVar) copy() *vertexVar {
@@ -50,12 +47,9 @@ func (v *vertexVar) filterTables(labels []model.CIStr) {
 
 // edgeVar represents an edge variable.
 type edgeVar struct {
-	name      model.CIStr
-	anonymous bool
-	tables    []*model.EdgeTable
-	// labels is the original labels specified in match clause.
-	// It is used to build Plan.Schema and Plan.OutputNames.
-	labels       []model.CIStr
+	name         model.CIStr
+	anonymous    bool
+	tables       []*model.EdgeTable
 	srcVertexVar string
 	dstVertexVar string
 	// anyDirected indicates the source vertex and destination vertex can
@@ -102,7 +96,6 @@ func (s *subgraph) addVertex(astVar *ast.VariableSpec) {
 			name:      varName,
 			anonymous: astVar.Anonymous,
 			tables:    s.graphInfo.VertexTablesByLabels(labels...),
-			labels:    labels,
 		}
 	}
 }
@@ -120,7 +113,6 @@ func (s *subgraph) addEdge(astVar *ast.VariableSpec, srcVertexVar, dstVertexVar 
 		name:         varName,
 		anonymous:    astVar.Anonymous,
 		tables:       s.graphInfo.EdgeTablesByLabels(labels...),
-		labels:       labels,
 		srcVertexVar: srcVertexVar,
 		dstVertexVar: dstVertexVar,
 		anyDirected:  anyDirected,
@@ -242,14 +234,14 @@ func propagateSubgraph(ctx *propagateCtx) {
 //   "abc" -> "abc03"
 //   "abcd" -> "abcd400000"
 //   "abcde" -> "abcd4e0001"
-func tableAsNameForVar(varName string, tblName string) string {
+func tableAsNameForVar(varName model.CIStr, tblName model.CIStr) model.CIStr {
 	const (
 		encGroupSize = 4
 		paddingChar  = '0'
 	)
 	sb := strings.Builder{}
-	for i := 0; i <= len(varName); i += encGroupSize {
-		s := varName[i:]
+	for i := 0; i <= len(varName.O); i += encGroupSize {
+		s := varName.O[i:]
 		if len(s) > encGroupSize {
 			s = s[:encGroupSize]
 		}
@@ -260,6 +252,6 @@ func tableAsNameForVar(varName string, tblName string) string {
 		sb.WriteByte(paddingChar + byte(len(s)))
 	}
 	sb.WriteByte('_')
-	sb.WriteString(tblName)
-	return sb.String()
+	sb.WriteString(tblName.O)
+	return model.NewCIStr(sb.String())
 }

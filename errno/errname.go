@@ -1058,8 +1058,11 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrNoGraph:                                mysql.Message("No graph selected, please specify ON clause for MATCH clause", nil),
 	ErrGraphInvalid:                           mysql.Message("Graph '%-.192s.%-.192s' references invalid table(s) or column(s) or function(s) or definer/invoker of graph lack rights to use them", nil),
 	ErrDupVariable:                            mysql.Message("Duplicate variable '%-.192s'", nil),
+	ErrUnresolvedVariable:                     mysql.Message("Unresolved variable '%-.192s'", nil),
 	ErrLabelNotExists:                         mysql.Message("Label '%-.192s' doesn't exist", nil),
+	ErrPropertyNotExists:                      mysql.Message("Property '%-.192s' doesn't exist", nil),
 	ErrWrongPropertyName:                      mysql.Message("Incorrect property name '%-.192s'", nil),
+	ErrInvalidGraphSubquery:                   mysql.Message("Invalid subquery in a graph query. Graph's subquery must be a valid graphquery", nil),
 
 	ErrBRIEBackupFailed:  mysql.Message("Backup failed: %s", nil),
 	ErrBRIERestoreFailed: mysql.Message("Restore failed: %s", nil),

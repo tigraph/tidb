@@ -300,7 +300,6 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		if node.FnName.L == ast.NextVal || node.FnName.L == ast.LastVal || node.FnName.L == ast.SetVal {
 			p.flag |= inSequenceFunction
 		}
-
 	case *ast.BRIEStmt:
 		if node.Kind == ast.BRIEKindRestore {
 			p.flag |= inCreateOrDropTable
@@ -539,9 +538,10 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 			p.tableAliasInJoin = p.tableAliasInJoin[:len(p.tableAliasInJoin)-1]
 		}
 	case *ast.FuncCallExpr:
-		// The arguments for builtin NAME_CONST should be constants
-		// See https://dev.mysql.com/doc/refman/5.7/en/miscellaneous-functions.html#function_name-const for details
-		if x.FnName.L == ast.NameConst {
+		switch x.FnName.L {
+		case ast.NameConst:
+			// The arguments for builtin NAME_CONST should be constants
+			// See https://dev.mysql.com/doc/refman/5.7/en/miscellaneous-functions.html#function_name-const for details.
 			if len(x.Args) != 2 {
 				p.err = expression.ErrIncorrectParameterCount.GenWithStackByArgs(x.FnName.L)
 			} else {
@@ -556,17 +556,14 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 					p.err = ErrWrongArguments.GenWithStackByArgs("NAME_CONST")
 				}
 			}
-			break
-		}
-
-		// no need sleep when retry transaction and avoid unexpect sleep caused by retry.
-		if p.flag&inTxnRetry > 0 && x.FnName.L == ast.Sleep {
-			if len(x.Args) == 1 {
-				x.Args[0] = ast.NewValueExpr(0, "", "")
+		case ast.Sleep:
+			// no need sleep when retry transaction and avoid unexpect sleep caused by retry.
+			if p.flag&inTxnRetry > 0 {
+				if len(x.Args) == 1 {
+					x.Args[0] = ast.NewValueExpr(0, "", "")
+				}
 			}
-		}
-
-		if x.FnName.L == ast.NextVal || x.FnName.L == ast.LastVal || x.FnName.L == ast.SetVal {
+		case ast.NextVal, ast.LastVal, ast.SetVal:
 			p.flag &= ^inSequenceFunction
 		}
 	case *ast.RepairTableStmt:
@@ -1829,6 +1826,9 @@ func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 		tn := &ast.TableName{Schema: graph.Schema, Name: vTbl.RefTable}
 		tbl, err := p.tableByName(tn)
 		if err != nil {
+			if ErrTableaccessDenied.Equal(err) || infoschema.ErrTableNotExists.Equal(err) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema, graphInfo.Name)
+			}
 			return err
 		}
 		colNames := set.NewStringSet()
@@ -1979,7 +1979,7 @@ func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
 	dedup := -1
 	for _, v := range anonymousVars {
 		for dedup = dedup + 1; ; dedup++ {
-			name := fmt.Sprintf("anonymous%d", dedup)
+			name := fmt.Sprintf("_anonymous%d", dedup)
 			if !namedVars.Exist(name) {
 				v.Name = model.NewCIStr(name)
 				break

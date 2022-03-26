@@ -372,6 +372,7 @@ var tokenMap = map[string]int{
 	"GROUP_CONCAT":             groupConcat,
 	"GROUP":                    group,
 	"HASH":                     hash,
+	"HAS_LABEL":                hasLabel,
 	"HAVING":                   having,
 	"HELP":                     help,
 	"HIGH_PRIORITY":            highPriority,
