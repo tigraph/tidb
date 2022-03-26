@@ -14172,6 +14172,11 @@ SelectStmtFromMatch:
 		st.From = &ast.TableRefsClause{
 			TableRefs: &ast.Join{Left: $3.(ast.ResultSetNode)},
 		}
+		lastField := st.Fields.Fields[len(st.Fields.Fields)-1]
+		if lastField.Expr != nil && lastField.AsName.O == "" {
+			lastEnd := parser.endOffset(&yyS[yypt-4])
+			lastField.SetText(parser.lexer.client, parser.src[lastField.Offset:lastEnd])
+		}
 		if $4 != nil {
 			st.Where = $4.(ast.ExprNode)
 		}
