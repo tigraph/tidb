@@ -28,7 +28,7 @@ import (
 type vertexVar struct {
 	name      model.CIStr
 	anonymous bool
-	tables    []*model.VertexTable
+	tables    []*model.GraphTable
 }
 
 func (v *vertexVar) copy() *vertexVar {
@@ -38,7 +38,7 @@ func (v *vertexVar) copy() *vertexVar {
 
 // filterTables filter tables which match the label filter.
 func (v *vertexVar) filterTables(labels []model.CIStr) {
-	v.tables = slicesext.FilterFunc(v.tables, func(tbl *model.VertexTable) bool {
+	v.tables = slicesext.FilterFunc(v.tables, func(tbl *model.GraphTable) bool {
 		return slicesext.ContainsFunc(labels, func(label model.CIStr) bool {
 			return tbl.Label.Equal(label)
 		})
@@ -49,7 +49,7 @@ func (v *vertexVar) filterTables(labels []model.CIStr) {
 type edgeVar struct {
 	name         model.CIStr
 	anonymous    bool
-	tables       []*model.EdgeTable
+	tables       []*model.GraphTable
 	srcVertexVar string
 	dstVertexVar string
 	// anyDirected indicates the source vertex and destination vertex can
@@ -150,7 +150,7 @@ func propagateSubgraph(ctx *propagateCtx) {
 		delete(ctx.parent.vertexVars, vv.name.L)
 		for _, tbl := range vv.tables {
 			nv := vv.copy()
-			nv.tables = []*model.VertexTable{tbl}
+			nv.tables = []*model.GraphTable{tbl}
 			ctx.child.vertexVars[vv.name.L] = nv
 			propagateSubgraph(ctx)
 			delete(ctx.child.vertexVars, vv.name.L)
@@ -164,17 +164,17 @@ func propagateSubgraph(ctx *propagateCtx) {
 		break
 	}
 
-	joinEdge := func(eTbl *model.EdgeTable, srcVarName, dstVarName string) {
+	joinEdge := func(eTbl *model.GraphTable, srcVarName, dstVarName string) {
 		if _, ok := ctx.child.vertexVars[srcVarName]; !ok {
 			srcVar := ctx.parent.vertexVars[srcVarName]
-			srcTbl, ok := slicesext.SearchFunc(srcVar.tables, func(vTbl *model.VertexTable) bool {
+			srcTbl, ok := slicesext.SearchFunc(srcVar.tables, func(vTbl *model.GraphTable) bool {
 				return vTbl.Name.Equal(eTbl.Source.Name)
 			})
 			if !ok {
 				return
 			}
 			nv := srcVar.copy()
-			nv.tables = []*model.VertexTable{srcTbl}
+			nv.tables = []*model.GraphTable{srcTbl}
 			delete(ctx.parent.vertexVars, srcVarName)
 			ctx.child.vertexVars[srcVarName] = nv
 			defer func() {
@@ -184,14 +184,14 @@ func propagateSubgraph(ctx *propagateCtx) {
 		}
 		if _, ok := ctx.child.vertexVars[dstVarName]; !ok {
 			dstVar := ctx.parent.vertexVars[dstVarName]
-			dstTbl, ok := slicesext.SearchFunc(dstVar.tables, func(vTbl *model.VertexTable) bool {
+			dstTbl, ok := slicesext.SearchFunc(dstVar.tables, func(vTbl *model.GraphTable) bool {
 				return vTbl.Name.Equal(eTbl.Destination.Name)
 			})
 			if !ok {
 				return
 			}
 			nv := dstVar.copy()
-			nv.tables = []*model.VertexTable{dstTbl}
+			nv.tables = []*model.GraphTable{dstTbl}
 			delete(ctx.parent.vertexVars, dstVarName)
 			ctx.child.vertexVars[dstVarName] = nv
 			defer func() {
@@ -200,7 +200,7 @@ func propagateSubgraph(ctx *propagateCtx) {
 			}()
 		}
 		nv := ev.copy()
-		nv.tables = []*model.EdgeTable{eTbl}
+		nv.tables = []*model.GraphTable{eTbl}
 		nv.srcVertexVar = srcVarName
 		nv.dstVertexVar = dstVarName
 		nv.anyDirected = ev.anyDirected && eTbl.Source.Name.Equal(eTbl.Destination.Name)

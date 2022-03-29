@@ -1,3 +1,16 @@
+// Copyright 2022 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package ast
 
 import (
@@ -10,8 +23,7 @@ var (
 	_ DDLNode = &CreatePropertyGraphStmt{}
 	_ DDLNode = &DropPropertyGraphStmt{}
 
-	_ Node = &VertexTable{}
-	_ Node = &EdgeTable{}
+	_ Node = &GraphTable{}
 	_ Node = &GraphName{}
 	_ Node = &KeyClause{}
 	_ Node = &LabelClause{}
@@ -37,8 +49,8 @@ type CreatePropertyGraphStmt struct {
 	ddlNode
 
 	Graph        *GraphName
-	VertexTables []*VertexTable
-	EdgeTables   []*EdgeTable
+	VertexTables []*GraphTable
+	EdgeTables   []*GraphTable
 }
 
 func (n *CreatePropertyGraphStmt) Restore(ctx *format.RestoreCtx) error {
@@ -54,7 +66,7 @@ func (n *CreatePropertyGraphStmt) Restore(ctx *format.RestoreCtx) error {
 			ctx.WritePlain(",")
 		}
 		if err := tbl.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore CreatePropertyGraphStmt.VertexTables")
+			return errors.Annotatef(err, "An error occurred while restore CreatePropertyGraphStmt.VertexTables[%d]", i)
 		}
 	}
 	ctx.WritePlain(")")
@@ -67,7 +79,7 @@ func (n *CreatePropertyGraphStmt) Restore(ctx *format.RestoreCtx) error {
 				ctx.WritePlain(",")
 			}
 			if err := tbl.Restore(ctx); err != nil {
-				return errors.Annotate(err, "An error occurred while restore CreatePropertyGraphStmt.EdgeTables")
+				return errors.Annotatef(err, "An error occurred while restore CreatePropertyGraphStmt.EdgeTables[%d]", i)
 			}
 		}
 		ctx.WritePlain(")")
@@ -94,14 +106,14 @@ func (n *CreatePropertyGraphStmt) Accept(v Visitor) (Node, bool) {
 		if !ok {
 			return nn, false
 		}
-		nn.VertexTables[i] = node.(*VertexTable)
+		nn.VertexTables[i] = node.(*GraphTable)
 	}
 	for i, tbl := range nn.EdgeTables {
 		node, ok := tbl.Accept(v)
 		if !ok {
 			return nn, false
 		}
-		nn.EdgeTables[i] = node.(*EdgeTable)
+		nn.EdgeTables[i] = node.(*GraphTable)
 	}
 	return v.Leave(nn)
 }
@@ -157,7 +169,7 @@ func (n *GraphName) Accept(v Visitor) (node Node, ok bool) {
 	return v.Leave(newNode)
 }
 
-type VertexTable struct {
+type GraphTable struct {
 	node
 
 	Table      *TableName
@@ -165,87 +177,14 @@ type VertexTable struct {
 	Key        *KeyClause
 	Label      *LabelClause
 	Properties *PropertiesClause
-}
-
-func (n *VertexTable) Restore(ctx *format.RestoreCtx) error {
-	if err := n.Table.Restore(ctx); err != nil {
-		return errors.Annotate(err, "An error occurred while restore VertexTable.Table")
-	}
-	if asName := n.AsName.String(); asName != "" {
-		ctx.WriteKeyWord(" AS ")
-		ctx.WriteName(asName)
-	}
-	if n.Key != nil {
-		ctx.WritePlain(" ")
-		if err := n.Key.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore VertexTable.Key")
-		}
-	}
-	if n.Label != nil {
-		ctx.WritePlain(" ")
-		if err := n.Label.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore VertexTable.Label")
-		}
-	}
-	if n.Properties != nil {
-		ctx.WritePlain(" ")
-		if err := n.Properties.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore VertexTable.Properties")
-		}
-	}
-	return nil
-}
-
-func (n *VertexTable) Accept(v Visitor) (Node, bool) {
-	newNode, skipChildren := v.Enter(n)
-	if skipChildren {
-		return v.Leave(newNode)
-	}
-	nn := newNode.(*VertexTable)
-	node, ok := nn.Table.Accept(v)
-	if !ok {
-		return nn, false
-	}
-	nn.Table = node.(*TableName)
-	if nn.Key != nil {
-		node, ok = nn.Key.Accept(v)
-		if !ok {
-			return nn, false
-		}
-		nn.Key = node.(*KeyClause)
-	}
-	if nn.Label != nil {
-		node, ok = nn.Label.Accept(v)
-		if !ok {
-			return nn, false
-		}
-		nn.Label = node.(*LabelClause)
-	}
-	if nn.Properties != nil {
-		node, ok = nn.Properties.Accept(v)
-		if !ok {
-			return nn, false
-		}
-		nn.Properties = node.(*PropertiesClause)
-	}
-	return v.Leave(nn)
-}
-
-type EdgeTable struct {
-	node
-
-	Table       *TableName
-	AsName      model.CIStr
-	Key         *KeyClause
+	// For edge table only. Source and Destination must be both non-nil or both nil.
 	Source      *VertexTableRef
 	Destination *VertexTableRef
-	Label       *LabelClause
-	Properties  *PropertiesClause
 }
 
-func (n *EdgeTable) Restore(ctx *format.RestoreCtx) error {
+func (n *GraphTable) Restore(ctx *format.RestoreCtx) error {
 	if err := n.Table.Restore(ctx); err != nil {
-		return errors.Annotate(err, "An error occurred while restore EdgeTable.Table")
+		return errors.Annotate(err, "An error occurred while restore GraphTable.Table")
 	}
 	if asName := n.AsName.String(); asName != "" {
 		ctx.WriteKeyWord(" AS ")
@@ -254,40 +193,45 @@ func (n *EdgeTable) Restore(ctx *format.RestoreCtx) error {
 	if n.Key != nil {
 		ctx.WritePlain(" ")
 		if err := n.Key.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore EdgeTable.Key")
+			return errors.Annotate(err, "An error occurred while restore GraphTable.Key")
 		}
 	}
 
-	ctx.WriteKeyWord(" SOURCE ")
-	if err := n.Source.Restore(ctx); err != nil {
-		return errors.Annotate(err, "An error occurred while restore EdgeTable.Source")
+	if (n.Source == nil) != (n.Destination == nil) {
+		return errors.New("GraphTable.Source and GraphTable.Destination must be both nil for vertex tables or both non-nil for edge tables")
 	}
-	ctx.WriteKeyWord(" DESTINATION ")
-	if err := n.Destination.Restore(ctx); err != nil {
-		return errors.Annotate(err, "An error occurred while restore EdgeTable.Destination")
+	if n.Source != nil {
+		ctx.WriteKeyWord(" SOURCE ")
+		if err := n.Source.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore GraphTable.Source")
+		}
+		ctx.WriteKeyWord(" DESTINATION ")
+		if err := n.Destination.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore GraphTable.Destination")
+		}
 	}
 
 	if n.Label != nil {
 		ctx.WritePlain(" ")
 		if err := n.Label.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore EdgeTable.Label")
+			return errors.Annotate(err, "An error occurred while restore GraphTable.Label")
 		}
 	}
 	if n.Properties != nil {
 		ctx.WritePlain(" ")
 		if err := n.Properties.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore EdgeTable.Properties")
+			return errors.Annotate(err, "An error occurred while restore GraphTable.Properties")
 		}
 	}
 	return nil
 }
 
-func (n *EdgeTable) Accept(v Visitor) (Node, bool) {
+func (n *GraphTable) Accept(v Visitor) (Node, bool) {
 	newNode, skipChildren := v.Enter(n)
 	if skipChildren {
 		return v.Leave(newNode)
 	}
-	nn := newNode.(*EdgeTable)
+	nn := newNode.(*GraphTable)
 	node, ok := nn.Table.Accept(v)
 	if !ok {
 		return nn, false
@@ -300,16 +244,20 @@ func (n *EdgeTable) Accept(v Visitor) (Node, bool) {
 		}
 		nn.Key = node.(*KeyClause)
 	}
-	node, ok = nn.Source.Accept(v)
-	if !ok {
-		return nn, false
+	if nn.Source != nil {
+		node, ok = nn.Source.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Source = node.(*VertexTableRef)
 	}
-	nn.Source = node.(*VertexTableRef)
-	node, ok = nn.Destination.Accept(v)
-	if !ok {
-		return nn, false
+	if nn.Destination != nil {
+		node, ok = nn.Destination.Accept(v)
+		if !ok {
+			return nn, false
+		}
+		nn.Destination = node.(*VertexTableRef)
 	}
-	nn.Destination = node.(*VertexTableRef)
 	if nn.Label != nil {
 		node, ok = nn.Label.Accept(v)
 		if !ok {
@@ -341,7 +289,7 @@ func (n *KeyClause) Restore(ctx *format.RestoreCtx) error {
 			ctx.WritePlain(",")
 		}
 		if err := col.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore KeyClause.Cols")
+			return errors.Annotatef(err, "An error occurred while restore KeyClause.Cols[%d]", i)
 		}
 	}
 	ctx.WritePlain(")")
@@ -432,7 +380,7 @@ func (n *PropertiesClause) Restore(ctx *format.RestoreCtx) error {
 					ctx.WritePlain(",")
 				}
 				if err := col.Restore(ctx); err != nil {
-					return errors.Annotate(err, "An error occurred while restore PropertiesClause.ExceptCols")
+					return errors.Annotatef(err, "An error occurred while restore PropertiesClause.ExceptCols[%d]", i)
 				}
 			}
 			ctx.WritePlain(")")
@@ -445,14 +393,12 @@ func (n *PropertiesClause) Restore(ctx *format.RestoreCtx) error {
 				ctx.WritePlain(",")
 			}
 			if err := prop.Restore(ctx); err != nil {
-				return errors.Annotate(err, "An error occurred while restore PropertiesClause.Properties")
+				return errors.Annotatef(err, "An error occurred while restore PropertiesClause.Properties[%d]", i)
 			}
 		}
 		ctx.WritePlain(")")
 	case n.NoProperties:
 		ctx.WriteKeyWord("NO PROPERTIES")
-	default:
-		return errors.New("incomplete properties clause")
 	}
 	return nil
 }
@@ -530,7 +476,7 @@ func (n *MatchClauseList) Restore(ctx *format.RestoreCtx) error {
 			ctx.WritePlain(",")
 		}
 		if err := m.Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore MatchClauseList.Matches")
+			return errors.Annotatef(err, "An error occurred while restore MatchClauseList.Matches[%d]", i)
 		}
 	}
 	return nil
@@ -577,7 +523,7 @@ func (n *MatchClause) Restore(ctx *format.RestoreCtx) error {
 				ctx.WritePlain(",")
 			}
 			if err := p.Restore(ctx); err != nil {
-				return errors.Annotate(err, "An error occurred while restore MatchClause.Paths")
+				return errors.Annotatef(err, "An error occurred while restore MatchClause.Paths[%d]", i)
 			}
 		}
 		ctx.WritePlain(")")
@@ -673,16 +619,16 @@ func (n *PathPattern) Restore(ctx *format.RestoreCtx) error {
 		return errors.Errorf("unknown PathPatternType: %v", n.Tp)
 	}
 	if err := n.Vertices[0].Restore(ctx); err != nil {
-		return errors.Annotate(err, "An error occurred while restore PathPattern.Vertices")
+		return errors.Annotate(err, "An error occurred while restore PathPattern.Vertices[0]")
 	}
 	for i := 0; i < len(n.Connections); i++ {
 		ctx.WritePlain(" ")
 		if err := n.Connections[i].Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore PathPattern.Connections")
+			return errors.Annotatef(err, "An error occurred while restore PathPattern.Connections[%d]", i)
 		}
 		ctx.WritePlain(" ")
 		if err := n.Vertices[i+1].Restore(ctx); err != nil {
-			return errors.Annotate(err, "An error occurred while restore PathPattern.Vertices")
+			return errors.Annotatef(err, "An error occurred while restore PathPattern.Vertices[%d]", i+1)
 		}
 	}
 	return nil

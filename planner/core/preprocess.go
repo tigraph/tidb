@@ -341,6 +341,8 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		p.stmtTp = TypeCreate
 	case *ast.DropPropertyGraphStmt:
 		p.stmtTp = TypeDrop
+	case *ast.VertexTableRef:
+		return in, true
 	case *ast.MatchClause:
 		p.vertexLabels = make(map[string]model.CIStr)
 		p.edgeLabels = make(map[string]model.CIStr)

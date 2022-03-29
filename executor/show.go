@@ -1885,6 +1885,7 @@ func (e *ShowExec) fetchShowCreateGraph() error {
 // ConstructResultOfShowCreateGraph constructs the result for show create graph.
 func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.GraphInfo, buf *bytes.Buffer) {
 	sqlMode := ctx.GetSessionVars().SQLMode
+
 	joinCols := func(cols []model.CIStr) string {
 		var sb strings.Builder
 		for i, col := range cols {
@@ -1895,20 +1896,20 @@ func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.G
 		}
 		return sb.String()
 	}
-	fmt.Fprintf(buf, "CREATE PROPERTY GRAPH %s\n", stringutil.Escape(graphInfo.Name.O, sqlMode))
-	buf.WriteString("  VERTEX TABLES (\n")
-	for i, vTbl := range graphInfo.VertexTables {
-		if i > 0 {
-			buf.WriteString(",\n")
+
+	appendGraphTable := func(graphTable *model.GraphTable, buf *bytes.Buffer, indent string) {
+		fmt.Fprintf(buf, "    %s AS %s\n", stringutil.Escape(graphTable.RefTable.O, sqlMode), stringutil.Escape(graphTable.Name.O, sqlMode))
+		fmt.Fprintf(buf, "      KEY (%s)\n", joinCols(graphTable.KeyCols))
+		if graphTable.IsEdge() {
+			fmt.Fprintf(buf, "      SOURCE KEY (%s) REFERENCES %s\n", joinCols(graphTable.Source.KeyCols), stringutil.Escape(graphTable.Source.Name.O, sqlMode))
+			fmt.Fprintf(buf, "      DESTINATION KEY (%s) REFERENCES %s\n", joinCols(graphTable.Destination.KeyCols), stringutil.Escape(graphTable.Destination.Name.O, sqlMode))
 		}
-		fmt.Fprintf(buf, "    %s AS %s\n", stringutil.Escape(vTbl.RefTable.O, sqlMode), stringutil.Escape(vTbl.Name.O, sqlMode))
-		fmt.Fprintf(buf, "      KEY (%s)\n", joinCols(vTbl.KeyCols))
-		fmt.Fprintf(buf, "      LABEL %s", stringutil.Escape(vTbl.Label.O, sqlMode))
-		if len(vTbl.Properties) == 0 {
+		fmt.Fprintf(buf, "      LABEL %s", stringutil.Escape(graphTable.Label.O, sqlMode))
+		if len(graphTable.Properties) == 0 {
 			buf.WriteString(" NO PROPERTIES")
 		} else {
 			buf.WriteString(" PROPERTIES (\n")
-			for i, p := range vTbl.Properties {
+			for i, p := range graphTable.Properties {
 				if i > 0 {
 					buf.WriteString(",\n")
 				}
@@ -1919,6 +1920,15 @@ func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.G
 			buf.WriteString("\n      )")
 		}
 	}
+
+	fmt.Fprintf(buf, "CREATE PROPERTY GRAPH %s\n", stringutil.Escape(graphInfo.Name.O, sqlMode))
+	buf.WriteString("  VERTEX TABLES (\n")
+	for i, vTbl := range graphInfo.VertexTables {
+		if i > 0 {
+			buf.WriteString(",\n")
+		}
+		appendGraphTable(vTbl, buf, "  ")
+	}
 	buf.WriteString("\n  )")
 	if len(graphInfo.EdgeTables) > 0 {
 		buf.WriteString("\n  EDGE TABLES (\n")
@@ -1926,25 +1936,7 @@ func ConstructResultOfShowCreateGraph(ctx sessionctx.Context, graphInfo *model.G
 			if i > 0 {
 				buf.WriteString(",\n")
 			}
-			fmt.Fprintf(buf, "    %s AS %s\n", stringutil.Escape(eTbl.RefTable.O, sqlMode), stringutil.Escape(eTbl.Name.O, sqlMode))
-			fmt.Fprintf(buf, "      KEY (%s)\n", joinCols(eTbl.KeyCols))
-			fmt.Fprintf(buf, "      SOURCE KEY (%s) REFERENCES %s\n", joinCols(eTbl.Source.KeyCols), stringutil.Escape(eTbl.Source.Name.O, sqlMode))
-			fmt.Fprintf(buf, "      DESTINATION KEY (%s) REFERENCES %s\n", joinCols(eTbl.Destination.KeyCols), stringutil.Escape(eTbl.Destination.Name.O, sqlMode))
-			fmt.Fprintf(buf, "      LABEL %s", stringutil.Escape(eTbl.Label.O, sqlMode))
-			if len(eTbl.Properties) == 0 {
-				buf.WriteString(" NO PROPERTIES")
-			} else {
-				buf.WriteString(" PROPERTIES (\n")
-				for i, p := range eTbl.Properties {
-					if i > 0 {
-						buf.WriteString(",\n")
-					}
-					buf.WriteString("        ")
-					buf.WriteString(p.Expr)
-					fmt.Fprintf(buf, " AS %s", stringutil.Escape(p.Name.O, sqlMode))
-				}
-				buf.WriteString("\n      )")
-			}
+			appendGraphTable(eTbl, buf, "    ")
 		}
 		buf.WriteString("\n  )")
 	}

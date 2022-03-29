@@ -5654,7 +5654,7 @@ func (d *ddl) CreateIndex(ctx sessionctx.Context, ti ast.Ident, keyType ast.Inde
 
 func buildFKInfo(fkName model.CIStr, keys []*ast.IndexPartSpecification, refer *ast.ReferenceDef, cols []*table.Column, tbInfo *model.TableInfo) (*model.FKInfo, error) {
 	if len(keys) != len(refer.IndexPartSpecifications) {
-		return nil, infoschema.ErrForeignKeyNotMatch.GenWithStackByArgs("foreign key without name")
+		return nil, infoschema.ErrForeignKeyNotMatch.GenWithStackByArgs("foreign key without name", "reference and table don't match")
 	}
 
 	// all base columns of stored generated columns
@@ -6952,16 +6952,36 @@ func (d *ddl) CreatePropertyGraph(ctx sessionctx.Context, stmt *ast.CreateProper
 		return infoschema.ErrGraphExists.GenWithStackByArgs(stmt.Graph.Schema, stmt.Graph.Name)
 	}
 
-	graphInfo := &model.GraphInfo{
-		Name: stmt.Graph.Name,
-	}
-	if err := buildVertexTables(graphInfo, stmt.VertexTables, schema.Name, is); err != nil {
+	vertexTables, err := buildGraphTables(stmt.VertexTables, schema.Name, is)
+	if err != nil {
 		return err
 	}
-	if err := buildEdgeTables(graphInfo, stmt.EdgeTables, schema.Name, is); err != nil {
+	edgeTables, err := buildGraphTables(stmt.EdgeTables, schema.Name, is)
+	if err != nil {
 		return err
+	}
+	// Build source and destination vertex table references for edge tables.
+	for i, astETbl := range stmt.EdgeTables {
+		tbl, err := is.TableByName(schema.Name, astETbl.Table.Name)
+		if err != nil {
+			return err
+		}
+		tblInfo := tbl.Meta()
+		edgeTables[i].Source, err = buildVertexTableRef(edgeTables[i].Name, astETbl.Source, vertexTables, tblInfo)
+		if err != nil {
+			return err
+		}
+		edgeTables[i].Destination, err = buildVertexTableRef(edgeTables[i].Name, astETbl.Destination, vertexTables, tblInfo)
+		if err != nil {
+			return err
+		}
 	}
 
+	graphInfo := &model.GraphInfo{
+		Name:         stmt.Graph.Name,
+		VertexTables: vertexTables,
+		EdgeTables:   edgeTables,
+	}
 	if err := checkGraphInfoValid(graphInfo); err != nil {
 		return err
 	}
@@ -6976,9 +6996,7 @@ func (d *ddl) CreatePropertyGraph(ctx sessionctx.Context, stmt *ast.CreateProper
 		BinlogInfo: &model.HistoryInfo{},
 		Args:       []interface{}{graphInfo},
 	}
-
-	err := d.doDDLJob(ctx, job)
-	return d.callHookOnChanged(err)
+	return d.callHookOnChanged(d.doDDLJob(ctx, job))
 }
 
 func (d *ddl) assignGraphID(graphInfo *model.GraphInfo) error {
@@ -6990,90 +7008,79 @@ func (d *ddl) assignGraphID(graphInfo *model.GraphInfo) error {
 	return nil
 }
 
-func buildVertexTables(graphInfo *model.GraphInfo, astVertexTables []*ast.VertexTable, schema model.CIStr, is infoschema.InfoSchema) error {
-	for _, astVTbl := range astVertexTables {
-		tbl, err := is.TableByName(schema, astVTbl.Table.Name)
+func buildGraphTables(astGraphTables []*ast.GraphTable, schema model.CIStr, is infoschema.InfoSchema) ([]*model.GraphTable, error) {
+	var graphTables []*model.GraphTable
+	for _, astGraphTable := range astGraphTables {
+		tbl, err := is.TableByName(schema, astGraphTable.Table.Name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		tblInfo := tbl.Meta()
 		if tblInfo.IsView() || tblInfo.IsSequence() {
-			return ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
+			return nil, ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
 		}
 		if tblInfo.TempTableType != model.TempTableNone {
-			return ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
+			return nil, ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
 		}
-		vTbl := &model.VertexTable{
+		graphTable := &model.GraphTable{
 			Name:     tblInfo.Name,
 			RefTable: tblInfo.Name,
 			Label:    tblInfo.Name,
 		}
-		if astVTbl.AsName.String() != "" {
-			vTbl.Name = astVTbl.AsName
-			vTbl.Label = astVTbl.AsName
+		if astGraphTable.AsName.String() != "" {
+			graphTable.Name = astGraphTable.AsName
+			graphTable.Label = astGraphTable.AsName
 		}
-		if astVTbl.Label != nil && astVTbl.Label.Name.String() != "" {
-			vTbl.Label = astVTbl.Label.Name
+		if astGraphTable.Label != nil && astGraphTable.Label.Name.String() != "" {
+			graphTable.Label = astGraphTable.Label.Name
 		}
-		keyCols, err := buildKeyCols(astVTbl.Key, tblInfo)
+		graphTable.KeyCols, err = buildKeyCols(astGraphTable.Key, tblInfo)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		vTbl.KeyCols = keyCols
-		properties, err := buildProperties(astVTbl.Properties, schema, tbl)
+		graphTable.Properties, err = buildProperties(astGraphTable.Properties, schema, tbl)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		vTbl.Properties = properties
-		graphInfo.VertexTables = append(graphInfo.VertexTables, vTbl)
+		graphTables = append(graphTables, graphTable)
 	}
-	return nil
+	return graphTables, nil
 }
 
-func buildEdgeTables(graphInfo *model.GraphInfo, astEdgeTables []*ast.EdgeTable, schema model.CIStr, is infoschema.InfoSchema) error {
-	for _, astETbl := range astEdgeTables {
-		tbl, err := is.TableByName(schema, astETbl.Table.Name)
-		if err != nil {
-			return err
-		}
-		tblInfo := tbl.Meta()
-		if tblInfo.IsView() || tblInfo.IsSequence() {
-			return ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
-		}
-		if tblInfo.TempTableType != model.TempTableNone {
-			return ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
-		}
-		eTbl := &model.EdgeTable{
-			Name:     tblInfo.Name,
-			RefTable: tblInfo.Name,
-			Label:    tblInfo.Name,
-		}
-		if astETbl.AsName.String() != "" {
-			eTbl.Name = astETbl.AsName
-			eTbl.Label = astETbl.AsName
-		}
-		if astETbl.Label != nil && astETbl.Label.Name.String() != "" {
-			eTbl.Label = astETbl.Label.Name
-		}
-		eTbl.KeyCols, err = buildKeyCols(astETbl.Key, tblInfo)
-		if err != nil {
-			return err
-		}
-		eTbl.Properties, err = buildProperties(astETbl.Properties, schema, tbl)
-		if err != nil {
-			return err
-		}
-		eTbl.Source, err = buildVertexTableRef(astETbl.Source, graphInfo.VertexTables, tblInfo)
-		if err != nil {
-			return err
-		}
-		eTbl.Destination, err = buildVertexTableRef(astETbl.Destination, graphInfo.VertexTables, tblInfo)
-		if err != nil {
-			return err
-		}
-		graphInfo.EdgeTables = append(graphInfo.EdgeTables, eTbl)
+func buildVertexTableRef(eTblName model.CIStr, tableRef *ast.VertexTableRef, vertexTables []*model.GraphTable, tblInfo *model.TableInfo) (*model.VertexTableRef, error) {
+	idx := slices.IndexFunc(vertexTables, func(tbl *model.GraphTable) bool {
+		return tableRef.Table.Name.Equal(tbl.Name)
+	})
+	if idx < 0 {
+		return nil, ErrVertexTableNotExists.GenWithStackByArgs(tableRef.Table.Name)
 	}
-	return nil
+	vTbl := vertexTables[idx]
+	var keyCols []model.CIStr
+	if tableRef.Key == nil || len(tableRef.Key.Cols) == 0 {
+		var target *model.FKInfo
+		for _, fkInfo := range tblInfo.ForeignKeys {
+			if fkInfo.RefTable.Equal(vTbl.RefTable) &&
+				slices.EqualFunc(fkInfo.RefCols, vTbl.KeyCols,
+					func(a, b model.CIStr) bool { return a.Equal(b) }) {
+				if target != nil {
+					return nil, ErrAmbiguousForeignKeyForEdgeTable.GenWithStackByArgs(tblInfo.Name)
+				}
+				target = fkInfo
+			}
+		}
+		if target == nil {
+			return nil, ErrForeignKeyRequired.GenWithStackByArgs(tblInfo.Name)
+		}
+		keyCols = target.Cols
+	} else {
+		if len(tableRef.Key.Cols) != len(vTbl.KeyCols) {
+			return nil, ErrVertexTableRefNotMatch.GenWithStackByArgs(eTblName)
+		}
+		for _, col := range tableRef.Key.Cols {
+			keyCols = append(keyCols, col.Name)
+		}
+	}
+	return &model.VertexTableRef{KeyCols: keyCols, Name: tableRef.Table.Name}, nil
 }
 
 func buildKeyCols(key *ast.KeyClause, tblInfo *model.TableInfo) ([]model.CIStr, error) {
@@ -7209,7 +7216,7 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 }
 
 func isCorrectPropertyName(name model.CIStr) bool {
-	return !name.Equal(model.ExtraLabelPropName) && !name.Equal(model.ExtraReprPropName)
+	return !name.Equal(model.ExtraLabelPropName) && !name.Equal(model.ExtraDescPropName)
 }
 
 type propertyExprRewriter struct{}
@@ -7232,87 +7239,36 @@ func rewritePropertyExpr(expr ast.ExprNode) ast.ExprNode {
 	return newExpr.(ast.ExprNode)
 }
 
-func buildVertexTableRef(tableRef *ast.VertexTableRef, vertexTables []*model.VertexTable, tblInfo *model.TableInfo) (*model.VertexTableRef, error) {
-	idx := slices.IndexFunc(vertexTables, func(tbl *model.VertexTable) bool {
-		return tableRef.Table.Name.Equal(tbl.Name)
-	})
-	if idx < 0 {
-		return nil, ErrVertexTableNotExists.GenWithStackByArgs(tableRef.Table.Name)
-	}
-	vTbl := vertexTables[idx]
-	var keyCols []model.CIStr
-	if tableRef.Key == nil || len(tableRef.Key.Cols) == 0 {
-		var target *model.FKInfo
-		for _, fkInfo := range tblInfo.ForeignKeys {
-			if fkInfo.RefTable.Equal(vTbl.RefTable) &&
-				slices.EqualFunc(fkInfo.RefCols, vTbl.KeyCols,
-					func(a, b model.CIStr) bool { return a.Equal(b) }) {
-				if target != nil {
-					return nil, ErrAmbiguousForeignKeyForEdgeTable.GenWithStackByArgs(tblInfo.Name)
-				}
-				target = fkInfo
-			}
-		}
-		if target == nil {
-			return nil, ErrForeignKeyRequired.GenWithStackByArgs(tblInfo.Name)
-		}
-		keyCols = target.Cols
-	} else {
-		if len(tableRef.Key.Cols) != len(vTbl.KeyCols) {
-			return nil, ErrWrongVertexTableReference.GenWithStackByArgs(tblInfo.Name)
-		}
-		for _, col := range tableRef.Key.Cols {
-			keyCols = append(keyCols, col.Name)
-		}
-	}
-	return &model.VertexTableRef{KeyCols: keyCols, Name: tableRef.Table.Name}, nil
-}
-
 func checkGraphInfoValid(graphInfo *model.GraphInfo) error {
-	if err := checkVertexTablesValid(graphInfo); err != nil {
+	if err := checkGraphTablesValid(graphInfo.VertexTables); err != nil {
 		return err
 	}
-	if err := checkEdgeTablesValid(graphInfo); err != nil {
+	if err := checkGraphTablesValid(graphInfo.EdgeTables); err != nil {
 		return err
 	}
 	return nil
 }
 
-func checkVertexTablesValid(graphInfo *model.GraphInfo) error {
-	tblNames := set.NewStringSet()
-	lable2Properties := make(map[string]set.StringSet)
-	for _, v := range graphInfo.VertexTables {
-		if tblNames.Exist(v.Name.L) {
-			return ErrNonUniqVertexTable.GenWithStackByArgs(v.Name)
-		}
-		tblNames.Insert(v.Name.L)
-		propertyNames := set.NewStringSet()
-		for _, p := range v.Properties {
-			propertyNames.Insert(p.Name.L)
-		}
-		if firstPropertyNames, ok := lable2Properties[v.Label.L]; ok {
-			if !propertyNames.Equal(firstPropertyNames) {
-				return ErrWrongLabelDefinition.GenWithStackByArgs(v.Label)
-			}
-		}
-	}
-	return nil
-}
-
-func checkEdgeTablesValid(graphInfo *model.GraphInfo) error {
+func checkGraphTablesValid(graphTables []*model.GraphTable) error {
 	tblNames := set.NewStringSet()
 	label2Properties := make(map[string]set.StringSet)
-	for _, v := range graphInfo.EdgeTables {
+	for _, v := range graphTables {
 		if tblNames.Exist(v.Name.L) {
-			return ErrNonUniqEdgeTable.GenWithStackByArgs(v.Name)
+			if v.IsVertex() {
+				return ErrNonUniqVertexTable.GenWithStackByArgs(v.Name)
+			} else if v.IsEdge() {
+				return ErrNonUniqEdgeTable.GenWithStackByArgs(v.Name)
+			} else {
+				return ErrInvalidEdgeTable.GenWithStackByArgs(v.Name)
+			}
 		}
 		tblNames.Insert(v.Name.L)
 		properties := set.NewStringSet()
 		for _, p := range v.Properties {
 			properties.Insert(p.Name.L)
 		}
-		if properties2, ok := label2Properties[v.Label.L]; ok {
-			if !properties.Equal(properties2) {
+		if firstProperties, ok := label2Properties[v.Label.L]; ok {
+			if !properties.Equal(firstProperties) {
 				return ErrWrongLabelDefinition.GenWithStackByArgs(v.Label)
 			}
 		}

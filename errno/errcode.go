@@ -1071,8 +1071,9 @@ const (
 	ErrPrimaryKeyRequired                 = 8244
 	ErrForeignKeyRequired                 = 8245
 	ErrAmbiguousForeignKeyForEdgeTable    = 8246
-	ErrWrongVertexTableReference          = 8247
-	ErrVertexTableNotExists               = 8248
+	ErrVertexTableRefNotMatch             = 8247
+	ErrInvalidEdgeTable                   = 8248
+	ErrVertexTableNotExists               = 8249
 	ErrNonUniqVertexTable                 = 8250
 	ErrNonUniqEdgeTable                   = 8251
 	ErrNonUniqProperty                    = 8252

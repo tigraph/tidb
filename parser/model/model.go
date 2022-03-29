@@ -1340,11 +1340,11 @@ func (s WindowRepeatType) String() string {
 
 // GraphInfo provides meta data describing a graph.
 type GraphInfo struct {
-	ID           int64          `json:"id"`
-	Name         CIStr          `json:"name"`
-	State        SchemaState    `json:"state"`
-	VertexTables []*VertexTable `json:"vertex_tables"`
-	EdgeTables   []*EdgeTable   `json:"edge_tables"`
+	ID           int64         `json:"id"`
+	Name         CIStr         `json:"name"`
+	State        SchemaState   `json:"state"`
+	VertexTables []*GraphTable `json:"vertex_tables"`
+	EdgeTables   []*GraphTable `json:"edge_tables"`
 }
 
 func (g *GraphInfo) VertexLabels() []CIStr {
@@ -1371,8 +1371,8 @@ func (g *GraphInfo) EdgeLabels() []CIStr {
 	return labels
 }
 
-func (g *GraphInfo) VertexTablesByLabels(labels ...CIStr) []*VertexTable {
-	var tables []*VertexTable
+func (g *GraphInfo) VertexTablesByLabels(labels ...CIStr) []*GraphTable {
+	var tables []*GraphTable
 	for _, vTbl := range g.VertexTables {
 		if slices.IndexFunc(labels, func(label CIStr) bool {
 			return vTbl.Label.L == label.L
@@ -1383,8 +1383,8 @@ func (g *GraphInfo) VertexTablesByLabels(labels ...CIStr) []*VertexTable {
 	return tables
 }
 
-func (g *GraphInfo) EdgeTablesByLabels(labels ...CIStr) []*EdgeTable {
-	var tables []*EdgeTable
+func (g *GraphInfo) EdgeTablesByLabels(labels ...CIStr) []*GraphTable {
+	var tables []*GraphTable
 	for _, eTbl := range g.EdgeTables {
 		if slices.IndexFunc(labels, func(label CIStr) bool {
 			return eTbl.Label.L == label.L
@@ -1397,8 +1397,8 @@ func (g *GraphInfo) EdgeTablesByLabels(labels ...CIStr) []*EdgeTable {
 
 func (g *GraphInfo) Clone() *GraphInfo {
 	ng := *g
-	ng.VertexTables = make([]*VertexTable, len(g.VertexTables))
-	ng.EdgeTables = make([]*EdgeTable, len(g.EdgeTables))
+	ng.VertexTables = make([]*GraphTable, len(g.VertexTables))
+	ng.EdgeTables = make([]*GraphTable, len(g.EdgeTables))
 
 	for i := 0; i < len(g.VertexTables); i++ {
 		ng.VertexTables[i] = g.VertexTables[i].Clone()
@@ -1413,9 +1413,9 @@ var (
 	// ExtraLabelPropName is the name of ExtraLabel property. ExtraLabel is a hidden property
 	// that is used to implement label related functions, such as label(n) and has_label(n, 'name').
 	ExtraLabelPropName = NewCIStr("_pgql_label")
-	// ExtraReprPropName is the name of ExtraRepr property. ExtraRepr is a hidden property
-	// that is used to show the representation of vertex or edge variables.
-	ExtraReprPropName = NewCIStr("_pgql_repr")
+	// ExtraDescPropName is the name of ExtraDesc property. ExtraDesc is a hidden property
+	// that is used to show the description of vertex or edge variables.
+	ExtraDescPropName = NewCIStr("_pgql_desc")
 )
 
 // PropertyInfo provides graph property info.
@@ -1429,38 +1429,19 @@ func (p *PropertyInfo) Clone() *PropertyInfo {
 	return &np
 }
 
-// VertexTable provides meta data describing a vertex table.
-type VertexTable struct {
+// GraphTable provides meta data describing a vertex table or edge table.
+type GraphTable struct {
 	Name       CIStr           `json:"name"`
 	KeyCols    []CIStr         `json:"key_cols"`
 	RefTable   CIStr           `json:"ref_table"`
 	Label      CIStr           `json:"label"`
 	Properties []*PropertyInfo `json:"properties"`
-}
-
-func (v *VertexTable) Clone() *VertexTable {
-	nv := *v
-	nv.KeyCols = slices.Clone(v.KeyCols)
-	nv.Properties = make([]*PropertyInfo, len(v.Properties))
-
-	for i := 0; i < len(v.Properties); i++ {
-		nv.Properties[i] = v.Properties[i].Clone()
-	}
-	return &nv
-}
-
-// EdgeTable provides meta data describing a edge table.
-type EdgeTable struct {
-	Name        CIStr           `json:"name"`
-	KeyCols     []CIStr         `json:"key_cols"`
-	RefTable    CIStr           `json:"ref_table"`
-	Label       CIStr           `json:"label"`
-	Properties  []*PropertyInfo `json:"properties"`
+	// Source and Destination must be both non-nil or both nil.
 	Source      *VertexTableRef `json:"source"`
 	Destination *VertexTableRef `json:"destination"`
 }
 
-func (e *EdgeTable) Clone() *EdgeTable {
+func (e *GraphTable) Clone() *GraphTable {
 	ne := *e
 	ne.KeyCols = slices.Clone(e.KeyCols)
 	ne.Properties = make([]*PropertyInfo, len(e.Properties))
@@ -1475,6 +1456,14 @@ func (e *EdgeTable) Clone() *EdgeTable {
 		ne.Destination = e.Destination.Clone()
 	}
 	return &ne
+}
+
+func (e *GraphTable) IsVertex() bool {
+	return e.Source == nil && e.Destination == nil
+}
+
+func (e *GraphTable) IsEdge() bool {
+	return e.Source != nil && e.Destination != nil
 }
 
 // VertexTableRef describes the source or destination vertex table reference for a edge table.

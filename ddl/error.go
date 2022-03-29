@@ -316,8 +316,10 @@ var (
 	ErrForeignKeyRequired = dbterror.ClassDDL.NewStd(mysql.ErrForeignKeyRequired)
 	// ErrAmbiguousForeignKeyForEdgeTable returns when graph underlying table contains ambiguous foreign keys.
 	ErrAmbiguousForeignKeyForEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrAmbiguousForeignKeyForEdgeTable)
-	// ErrWrongVertexTableReference returns when vertex table reference is incorrect.
-	ErrWrongVertexTableReference = dbterror.ClassDDL.NewStd(mysql.ErrWrongVertexTableReference)
+	// ErrVertexTableRefNotMatch returns when edge table's source/destination key cols doesn't match vertex table's key cols.
+	ErrVertexTableRefNotMatch = dbterror.ClassDDL.NewStd(mysql.ErrVertexTableRefNotMatch)
+	// ErrInvalidEdgeTable returns when edge table is invalid.
+	ErrInvalidEdgeTable = dbterror.ClassDDL.NewStd(mysql.ErrInvalidEdgeTable)
 	// ErrVertexTableNotExists returns when vertex table doesn't exist.
 	ErrVertexTableNotExists = dbterror.ClassDDL.NewStd(mysql.ErrVertexTableNotExists)
 	// ErrFunctionalPropertyFunctionIsNotAllowed returns for unsupported functions for functional property.

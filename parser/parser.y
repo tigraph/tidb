@@ -13962,8 +13962,8 @@ CreatePropertyGraphStmt:
 	{
 		$$ = &ast.CreatePropertyGraphStmt{
 			Graph:        $4.(*ast.GraphName),
-			VertexTables: $5.([]*ast.VertexTable),
-			EdgeTables:   $6.([]*ast.EdgeTable),
+			VertexTables: $5.([]*ast.GraphTable),
+			EdgeTables:   $6.([]*ast.GraphTable),
 		}
 	}
 
@@ -13991,20 +13991,10 @@ VertexTables:
 		$$ = $4
 	}
 
-VertexTableList:
-	VertexTable
-	{
-		$$ = []*ast.VertexTable{$1.(*ast.VertexTable)}
-	}
-|	VertexTableList ',' VertexTable
-	{
-		$$ = append($1.([]*ast.VertexTable), $3.(*ast.VertexTable))
-	}
-
 VertexTable:
 	TableName TableAsNameOpt KeyClauseOpt LabelClauseOpt PropertiesClauseOpt
 	{
-		$$ = &ast.VertexTable{
+		$$ = &ast.GraphTable{
 			Table:      $1.(*ast.TableName),
 			AsName:     $2.(model.CIStr),
 			Key:        $3.(*ast.KeyClause),
@@ -14013,37 +14003,47 @@ VertexTable:
 		}
 	}
 
-EdgeTablesOpt:
+VertexTableList:
+	VertexTable
 	{
-		$$ = []*ast.EdgeTable(nil)
+		$$ = []*ast.GraphTable{$1.(*ast.GraphTable)}
 	}
-|	"EDGE" "TABLES" '(' EdgeTableList ')'
+|	VertexTableList ',' VertexTable
 	{
-		$$ = $4
-	}
-
-EdgeTableList:
-	EdgeTable
-	{
-		$$ = []*ast.EdgeTable{$1.(*ast.EdgeTable)}
-	}
-|	EdgeTableList ',' EdgeTable
-	{
-		$$ = append($1.([]*ast.EdgeTable), $3.(*ast.EdgeTable))
+		$$ = append($1.([]*ast.GraphTable), $3.(*ast.GraphTable))
 	}
 
 EdgeTable:
 	TableName TableAsNameOpt KeyClauseOpt "SOURCE" VertexTableRef "DESTINATION" VertexTableRef LabelClauseOpt PropertiesClauseOpt
 	{
-		$$ = &ast.EdgeTable{
+		$$ = &ast.GraphTable{
 			Table:       $1.(*ast.TableName),
 			AsName:      $2.(model.CIStr),
 			Key:         $3.(*ast.KeyClause),
-			Source:      $5.(*ast.VertexTableRef),
-			Destination: $7.(*ast.VertexTableRef),
 			Label:       $8.(*ast.LabelClause),
 			Properties:  $9.(*ast.PropertiesClause),
+			Source:      $5.(*ast.VertexTableRef),
+			Destination: $7.(*ast.VertexTableRef),
 		}
+	}
+
+EdgeTableList:
+	EdgeTable
+	{
+		$$ = []*ast.GraphTable{$1.(*ast.GraphTable)}
+	}
+|	EdgeTableList ',' EdgeTable
+	{
+		$$ = append($1.([]*ast.GraphTable), $3.(*ast.GraphTable))
+	}
+
+EdgeTablesOpt:
+	{
+		$$ = []*ast.GraphTable(nil)
+	}
+|	"EDGE" "TABLES" '(' EdgeTableList ')'
+	{
+		$$ = $4
 	}
 
 VertexTableRef:

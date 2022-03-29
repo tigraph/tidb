@@ -1049,7 +1049,8 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrPrimaryKeyRequired:                     mysql.Message("Primary key is required on table '%-.192s'", nil),
 	ErrForeignKeyRequired:                     mysql.Message("Foreign key is required on table '%-.192s'", nil),
 	ErrAmbiguousForeignKeyForEdgeTable:        mysql.Message("Ambiguous foreign keys defined on the underlying edge table '%-.192s', please specify key clause for vertex table reference explicitly", nil),
-	ErrWrongVertexTableReference:              mysql.Message("Incorrect vertex table reference definition for edge table '%-.192s'", nil),
+	ErrVertexTableRefNotMatch:                 mysql.Message("The source/destination key columns of edge table '%-.192s' doesn't match the vertex table", nil),
+	ErrInvalidEdgeTable:                       mysql.Message("Invalid edge table '%-.192s'. The edge table must reference both a valid source and destination vertex table", nil),
 	ErrVertexTableNotExists:                   mysql.Message("Vertex table '%-.192s' doesn't exist", nil),
 	ErrNonUniqVertexTable:                     mysql.Message("Not unique vertex table/alias: '%-.192s'", nil),
 	ErrNonUniqEdgeTable:                       mysql.Message("Not unique edge table/alias: '%-.192s'", nil),
@@ -1060,7 +1061,7 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrDupVariable:                            mysql.Message("Duplicate variable '%-.192s'", nil),
 	ErrUnresolvedVariable:                     mysql.Message("Unresolved variable '%-.192s'", nil),
 	ErrLabelNotExists:                         mysql.Message("Label '%-.192s' doesn't exist", nil),
-	ErrPropertyNotExists:                      mysql.Message("Property '%-.192s' doesn't exist", nil),
+	ErrPropertyNotExists:                      mysql.Message("Property '%-.192s.%-.192s' doesn't exist", nil),
 	ErrWrongPropertyName:                      mysql.Message("Incorrect property name '%-.192s'", nil),
 	ErrInvalidGraphSubquery:                   mysql.Message("Invalid subquery in a graph query. Graph's subquery must be a valid graphquery", nil),
 

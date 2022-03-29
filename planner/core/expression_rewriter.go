@@ -1115,10 +1115,10 @@ func (er *expressionRewriter) Leave(originInNode ast.Node) (retNode ast.Node, ok
 				if v.Table.L != "" {
 					er.toColumn(v)
 					if er.err != nil {
-						er.err = ErrPropertyNotExists.GenWithStackByArgs(v.Name)
+						er.err = ErrPropertyNotExists.GenWithStackByArgs(v.Table, v.Name)
 					}
 				} else {
-					er.toColumn(&ast.ColumnName{Schema: v.Schema, Table: v.Name, Name: model.ExtraReprPropName})
+					er.toColumn(&ast.ColumnName{Schema: v.Schema, Table: v.Name, Name: model.ExtraDescPropName})
 					if er.err != nil {
 						er.err = ErrUnresolvedVariable.GenWithStackByArgs(v.Name)
 					}
