@@ -117,4 +117,6 @@ var (
 	ErrInvalidGraphSubquery     = dbterror.ClassOptimizer.NewStd(mysql.ErrInvalidGraphSubquery)
 	ErrUnresolvedVariable       = dbterror.ClassOptimizer.NewStd(mysql.ErrUnresolvedVariable)
 	ErrPropertyNotExists        = dbterror.ClassOptimizer.NewStd(mysql.ErrPropertyNotExists)
+	ErrNoVariables              = dbterror.ClassOptimizer.NewStd(mysql.ErrNoVariables)
+	ErrNoProperties             = dbterror.ClassOptimizer.NewStd(mysql.ErrNoProperties)
 )

@@ -1139,9 +1139,7 @@ func (b *PlanBuilder) buildProjectionField(ctx context.Context, p LogicalPlan, f
 	col, isCol := expr.(*expression.Column)
 	// Correlated column won't affect the final output names. So we can put it in any of the three logic block.
 	// Don't put it into the first block just for simplifying the codes.
-	if colNameField, ok := innerNode.(*ast.ColumnNameExpr); ok && isCol &&
-		!colNameField.Name.Name.Equal(model.ExtraLabelPropName) &&
-		!colNameField.Name.Name.Equal(model.ExtraDescPropName) {
+	if colNameField, ok := innerNode.(*ast.ColumnNameExpr); ok && isCol {
 		// Field is a column reference.
 		idx := p.Schema().ColumnIndex(col)
 		var name *types.FieldName
@@ -3183,15 +3181,19 @@ func (b *PlanBuilder) unfoldWildStar(p LogicalPlan, selectFields []*ast.SelectFi
 		if isJoin && join.fullSchema != nil && field.WildCard.Table.L != "" {
 			list = unfoldWildStar(field, join.fullNames, join.fullSchema.Columns)
 		} else if b.isGraphQuery && field.WildCard.Table.L == "" {
-			for i, name := range p.OutputNames() {
-				if !p.Schema().Columns[i].IsHidden && name.ColName.Equal(model.ExtraDescPropName) {
+			for j, name := range p.OutputNames() {
+				if !p.Schema().Columns[j].IsHidden && name.ColName.Equal(model.PGQLDescPropName) {
 					colName := &ast.ColumnNameExpr{
 						Name: &ast.ColumnName{
-							Table: name.TblName,
-							Name:  name.ColName,
+							Schema: name.DBName,
+							Table:  name.TblName,
+							Name:   name.ColName,
 						},
 					}
-					varField := &ast.SelectField{Expr: colName}
+					varField := &ast.SelectField{
+						Expr:   colName,
+						AsName: name.TblName, // TblName is the graph variable name.
+					}
 					varField.SetText(nil, name.TblName.O)
 					list = append(list, varField)
 				}
@@ -3200,6 +3202,18 @@ func (b *PlanBuilder) unfoldWildStar(p LogicalPlan, selectFields []*ast.SelectFi
 			list = unfoldWildStar(field, p.OutputNames(), p.Schema().Columns)
 		}
 		if len(list) == 0 {
+			if b.isGraphQuery {
+				if field.WildCard.Table.L == "" {
+					return nil, ErrNoVariables.GenWithStackByArgs()
+				} else {
+					for _, name := range p.OutputNames() {
+						if name.TblName.Equal(field.WildCard.Table) {
+							return nil, ErrNoProperties.GenWithStackByArgs(field.WildCard.Table)
+						}
+					}
+					return nil, ErrUnresolvedVariable.GenWithStackByArgs(field.WildCard.Table)
+				}
+			}
 			return nil, ErrBadTable.GenWithStackByArgs(field.WildCard.Table)
 		}
 		resultList = append(resultList, list...)
@@ -3211,6 +3225,11 @@ func unfoldWildStar(field *ast.SelectField, outputName types.NameSlice, column [
 	dbName := field.WildCard.Schema
 	tblName := field.WildCard.Table
 	for i, name := range outputName {
+		// Ignore hidden graph property columns.
+		if name.ColName.Equal(model.PGQLLabelPropName) ||
+			name.ColName.Equal(model.PGQLDescPropName) {
+			continue
+		}
 		col := column[i]
 		if col.IsHidden {
 			continue
@@ -3231,6 +3250,187 @@ func unfoldWildStar(field *ast.SelectField, outputName types.NameSlice, column [
 		}
 	}
 	return resultList
+}
+
+type graphExprRewriter struct {
+	names       [][]*types.FieldName
+	asNames     []model.CIStr
+	err         error
+	inLabelFunc bool
+}
+
+func (g *graphExprRewriter) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
+	switch v := in.(type) {
+	case *ast.SubqueryExpr, *ast.CompareSubqueryExpr, *ast.ExistsSubqueryExpr:
+		return in, true
+	case *ast.FuncCallExpr:
+		if v.FnName.L == ast.Label || v.FnName.L == ast.HasLabel {
+			g.inLabelFunc = true
+		}
+	}
+	return in, false
+}
+
+func (g *graphExprRewriter) Leave(in ast.Node) (out ast.Node, ok bool) {
+	switch v := in.(type) {
+	case *ast.ColumnNameExpr:
+		colName := v.Name
+		// The column is like a variable, but we also need to check the asNames in select fields first.
+		// e.g. SELECT n.name as name FROM MATCH (n) order by name.
+		if colName.Table.L == "" {
+			idx := -1
+			for i, asName := range g.asNames {
+				if asName.Equal(colName.Name) {
+					if idx == -1 {
+						idx = i
+					} else {
+						g.err = ErrAmbiguous.GenWithStackByArgs(colName, clauseMsg[fieldList])
+						return in, false
+					}
+				}
+			}
+			if idx >= 0 {
+				return in, true
+			}
+		}
+		result, err := g.resolveCol(colName)
+		if err != nil {
+			g.err = err
+			return in, false
+		}
+		if colName.Table.L == "" {
+			if result.ColName.Equal(model.PGQLDescPropName) ||
+				result.ColName.Equal(model.PGQLLabelPropName) {
+				v.Name = &ast.ColumnName{
+					Table: result.TblName,
+					Name:  result.ColName,
+				}
+				return v, true
+			}
+		}
+	case *ast.FuncCallExpr:
+		switch v.FnName.L {
+		case ast.Label:
+			if len(v.Args) != 1 {
+				g.err = expression.ErrIncorrectParameterCount.GenWithStackByArgs(v.FnName.O)
+				return in, false
+			}
+			g.inLabelFunc = false
+			// Rewrite label(n) to n._pgql_label.
+			return v.Args[0], true
+		case ast.HasLabel:
+			if len(v.Args) != 2 {
+				g.err = expression.ErrIncorrectParameterCount.GenWithStackByArgs(v.FnName.O)
+				return in, false
+			}
+			g.inLabelFunc = false
+			// Rewrite has_label(n, 'name') to n._pgql_label = 'name'.
+			out = &ast.BinaryOperationExpr{
+				Op: opcode.EQ,
+				L:  v.Args[0],
+				R:  v.Args[1],
+			}
+			return out, true
+		}
+	}
+	return in, true
+}
+
+func (g *graphExprRewriter) resolveCol(colName *ast.ColumnName) (*types.FieldName, error) {
+	for i := len(g.names) - 1; i >= 0; i-- {
+		var result *types.FieldName
+		for _, name := range g.names[i] {
+			if name.NotExplicitUsable {
+				continue
+			}
+			if graphColMatch(name, colName) {
+				if colName.Table.L == "" {
+					if g.inLabelFunc && !name.ColName.Equal(model.PGQLLabelPropName) ||
+						!g.inLabelFunc && !name.ColName.Equal(model.PGQLDescPropName) {
+						continue
+					}
+				}
+				if result == nil {
+					result = name
+				} else {
+					if name.Redundant || result.Redundant {
+						if !name.Redundant {
+							result = name
+						}
+						continue
+					}
+					return nil, ErrAmbiguous.GenWithStackByArgs(colName, clauseMsg[fieldList])
+				}
+			}
+		}
+		if result != nil {
+			return result, nil
+		}
+	}
+	if colName.Table.L == "" {
+		return nil, ErrUnresolvedVariable.GenWithStackByArgs(colName.Name)
+	}
+	return nil, ErrPropertyNotExists.GenWithStackByArgs(colName.Table, colName.Name)
+}
+
+func graphColMatch(fieldName *types.FieldName, colName *ast.ColumnName) bool {
+	if colName.Table.L == "" {
+		// The column matches an alias name.
+		// e.g. select n.name as name from match (n) order by name.
+		if fieldName.TblName.L == "" && fieldName.ColName.Equal(colName.Name) {
+			return true
+		}
+		// The column matches a variable name.
+		return fieldName.TblName.Equal(colName.Name)
+	}
+	return (colName.Schema.L == "" || colName.Schema.Equal(fieldName.DBName)) &&
+		colName.Table.Equal(fieldName.TblName) && colName.Name.Equal(fieldName.ColName)
+}
+
+func (b *PlanBuilder) rewriteGraphExpr(p LogicalPlan, sel *ast.SelectStmt) (*ast.SelectStmt, error) {
+	names := append(b.outerNames[:len(b.outerNames):len(b.outerNames)], p.OutputNames())
+	var asNames []model.CIStr
+	for _, field := range sel.Fields.Fields {
+		if field.AsName.L != "" {
+			asNames = append(asNames, field.AsName)
+		}
+	}
+
+	// Don't rewrite select fields and where clause with alias names,
+	// because the alias names are invisible for them.
+	newSel := new(ast.SelectStmt)
+	*newSel = *sel
+	newSel.Fields = nil
+	newSel.Where = nil
+	rewriter := &graphExprRewriter{
+		names:   names,
+		asNames: asNames,
+	}
+	newNode, _ := newSel.Accept(rewriter)
+	if rewriter.err != nil {
+		return nil, rewriter.err
+	}
+	newSel = newNode.(*ast.SelectStmt)
+
+	if sel.Fields != nil {
+		rewriter = &graphExprRewriter{names: names}
+		newNode, _ = sel.Fields.Accept(rewriter)
+		if rewriter.err != nil {
+			return nil, rewriter.err
+		}
+		newSel.Fields = newNode.(*ast.FieldList)
+	}
+
+	if sel.Where != nil {
+		rewriter = &graphExprRewriter{names: names}
+		newNode, _ = sel.Where.Accept(rewriter)
+		if rewriter.err != nil {
+			return nil, rewriter.err
+		}
+		newSel.Where = newNode.(ast.ExprNode)
+	}
+
+	return newSel, nil
 }
 
 func (b *PlanBuilder) addAliasName(ctx context.Context, selectStmt *ast.SelectStmt, p LogicalPlan) (resultList []*ast.SelectField, err error) {
@@ -3628,6 +3828,28 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 			return nil, err
 		}
 		originalFields = sel.Fields.Fields
+	}
+
+	if b.isGraphQuery {
+		for _, field := range sel.Fields.Fields {
+			if field.AsName.L != "" {
+				continue
+			}
+			innerNode := getInnerFromParenthesesAndUnaryPlus(field.Expr)
+			col, isCol := innerNode.(*ast.ColumnNameExpr)
+			if isCol && col.Name.Table.L == "" {
+				field.AsName = col.Name.Name
+				continue
+			}
+			funcExpr, isFuncExpr := innerNode.(*ast.FuncCallExpr)
+			if isFuncExpr && funcExpr.FnName.L == ast.Label {
+				field.AsName = model.NewCIStr(field.Text())
+			}
+		}
+		sel, err = b.rewriteGraphExpr(p, sel)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if sel.GroupBy != nil {
@@ -6714,7 +6936,7 @@ func hideAnonymousSubgraphVars(sg *subgraph, p LogicalPlan) {
 }
 
 func (b *PlanBuilder) buildGenericSubgraph(ctx context.Context, dbName model.CIStr, sg *subgraph) (LogicalPlan, error) {
-	outputNames := buildSubgraphOutputNames(sg)
+	outputNames := buildSubgraphOutputNames(dbName, sg)
 
 	subgraphs := sg.propagate()
 	if len(subgraphs) == 0 {
@@ -6723,7 +6945,7 @@ func (b *PlanBuilder) buildGenericSubgraph(ctx context.Context, dbName model.CIS
 		cols := make([]*expression.Column, len(outputNames))
 		for i, outputName := range outputNames {
 			col := &expression.Column{UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID()}
-			if outputName.ColName == model.ExtraLabelPropName || outputName.ColName == model.ExtraDescPropName {
+			if outputName.ColName == model.PGQLLabelPropName || outputName.ColName == model.PGQLDescPropName {
 				col.RetType = types.NewFieldType(mysql.TypeVarchar)
 			} else {
 				col.RetType = types.NewFieldType(mysql.TypeNull)
@@ -6759,7 +6981,7 @@ func (b *PlanBuilder) buildGenericSubgraph(ctx context.Context, dbName model.CIS
 	return finalPlan, nil
 }
 
-func buildSubgraphOutputNames(sg *subgraph) types.NameSlice {
+func buildSubgraphOutputNames(dbName model.CIStr, sg *subgraph) types.NameSlice {
 	var outputNames types.NameSlice
 	for _, vv := range sg.vertexVars {
 		var propNames []model.CIStr
@@ -6774,7 +6996,7 @@ func buildSubgraphOutputNames(sg *subgraph) types.NameSlice {
 		propNames = slices.CompactFunc(propNames, func(p1, p2 model.CIStr) bool {
 			return p1.Equal(p2)
 		})
-		newNames := buildSubgraphOutputNames4Props(vv.name, propNames)
+		newNames := buildSubgraphOutputNames4Props(dbName, vv.name, propNames)
 		outputNames = append(outputNames, newNames...)
 	}
 	for _, ev := range sg.edgeVars {
@@ -6790,25 +7012,28 @@ func buildSubgraphOutputNames(sg *subgraph) types.NameSlice {
 		propNames = slices.CompactFunc(propNames, func(p1, p2 model.CIStr) bool {
 			return p1.Equal(p2)
 		})
-		newNames := buildSubgraphOutputNames4Props(ev.name, propNames)
+		newNames := buildSubgraphOutputNames4Props(dbName, ev.name, propNames)
 		outputNames = append(outputNames, newNames...)
 	}
 	return outputNames
 }
 
-func buildSubgraphOutputNames4Props(varName model.CIStr, propNames []model.CIStr) types.NameSlice {
+func buildSubgraphOutputNames4Props(dbName, varName model.CIStr, propNames []model.CIStr) types.NameSlice {
 	var outputNames types.NameSlice
 
 	outputNames = append(outputNames, &types.FieldName{
+		DBName:  dbName,
 		TblName: varName,
-		ColName: model.ExtraLabelPropName,
+		ColName: model.PGQLLabelPropName,
 	})
 	outputNames = append(outputNames, &types.FieldName{
+		DBName:  dbName,
 		TblName: varName,
-		ColName: model.ExtraDescPropName,
+		ColName: model.PGQLDescPropName,
 	})
 	for _, propName := range propNames {
 		outputNames = append(outputNames, &types.FieldName{
+			DBName:  dbName,
 			TblName: varName,
 			ColName: propName,
 		})
@@ -6945,9 +7170,9 @@ func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph,
 		propName := outputName.ColName
 		var err error
 		if vv, ok := sg.vertexVars[varName.L]; ok {
-			schemaCols[i], exprs[i], err = b.buildColAndExpr4Prop(dbName, varName, propName, vv.tables[0], plan)
+			schemaCols[i], exprs[i], err = b.buildPropColAndExpr(dbName, varName, propName, vv.tables[0], plan)
 		} else if ev, ok := sg.edgeVars[varName.L]; ok {
-			schemaCols[i], exprs[i], err = b.buildColAndExpr4Prop(dbName, varName, propName, ev.tables[0], plan)
+			schemaCols[i], exprs[i], err = b.buildPropColAndExpr(dbName, varName, propName, ev.tables[0], plan)
 		} else {
 			panic(fmt.Errorf("buildProjection4Subgraph: unknown variable name '%s'", varName))
 		}
@@ -6966,25 +7191,25 @@ type propertyExprRewriter struct {
 	tblAsName model.CIStr
 }
 
-func (p *propertyExprRewriter) Enter(inNode ast.Node) (ast.Node, bool) {
-	return inNode, false
+func (p *propertyExprRewriter) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
+	return in, false
 }
 
-func (p *propertyExprRewriter) Leave(inNode ast.Node) (node ast.Node, ok bool) {
-	switch v := inNode.(type) {
+func (p *propertyExprRewriter) Leave(in ast.Node) (out ast.Node, ok bool) {
+	switch v := in.(type) {
 	case *ast.ColumnName:
 		v.Table = p.tblAsName
-		return inNode, false
+		return in, false
 	}
-	return inNode, true
+	return in, true
 }
 
-func (b *PlanBuilder) buildColAndExpr4Prop(
+func (b *PlanBuilder) buildPropColAndExpr(
 	dbName, varName, propName model.CIStr,
 	graphTable *model.GraphTable, plan LogicalPlan,
 ) (*expression.Column, expression.Expression, error) {
 	// Hidden property for label name.
-	if propName.Equal(model.ExtraLabelPropName) {
+	if propName.Equal(model.PGQLLabelPropName) {
 		col := &expression.Column{
 			UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
 			RetType:  types.NewFieldType(mysql.TypeVarchar),
@@ -6997,7 +7222,7 @@ func (b *PlanBuilder) buildColAndExpr4Prop(
 	}
 
 	// Hidden property for describing a graph variable.
-	if propName.Equal(model.ExtraDescPropName) {
+	if propName.Equal(model.PGQLDescPropName) {
 		col := &expression.Column{
 			UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
 			RetType:  types.NewFieldType(mysql.TypeVarchar),

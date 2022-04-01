@@ -1023,6 +1023,8 @@ const (
 	ErrUnresolvedVariable                     = 8145
 	ErrLabelNotExists                         = 8146
 	ErrPropertyNotExists                      = 8147
+	ErrNoVariables                            = 8148
+	ErrNoProperties                           = 8149
 
 	// Error codes used by TiDB ddl package
 	ErrUnsupportedDDLOperation            = 8200

@@ -7216,7 +7216,7 @@ func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, 
 }
 
 func isCorrectPropertyName(name model.CIStr) bool {
-	return !name.Equal(model.ExtraLabelPropName) && !name.Equal(model.ExtraDescPropName)
+	return !name.Equal(model.PGQLLabelPropName) && !name.Equal(model.PGQLDescPropName)
 }
 
 type propertyExprRewriter struct{}

@@ -1006,8 +1006,6 @@ type PositionExpr struct {
 	N int
 	// P is the parameterized position.
 	P ExprNode
-	// Refer is the result field the position refers to.
-	Refer *ResultField
 }
 
 // Restore implements Node interface.

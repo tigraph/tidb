@@ -1410,12 +1410,12 @@ func (g *GraphInfo) Clone() *GraphInfo {
 }
 
 var (
-	// ExtraLabelPropName is the name of ExtraLabel property. ExtraLabel is a hidden property
+	// PGQLLabelPropName is the name of PGQLLabel property. PGQLLabel is a hidden property
 	// that is used to implement label related functions, such as label(n) and has_label(n, 'name').
-	ExtraLabelPropName = NewCIStr("_pgql_label")
-	// ExtraDescPropName is the name of ExtraDesc property. ExtraDesc is a hidden property
+	PGQLLabelPropName = NewCIStr("_pgql_label")
+	// PGQLDescPropName is the name of PGQLDesc property. ExtraDesc is a hidden property
 	// that is used to show the description of vertex or edge variables.
-	ExtraDescPropName = NewCIStr("_pgql_desc")
+	PGQLDescPropName = NewCIStr("_pgql_desc")
 )
 
 // PropertyInfo provides graph property info.

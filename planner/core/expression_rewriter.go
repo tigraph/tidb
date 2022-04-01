@@ -243,10 +243,6 @@ type expressionRewriter struct {
 	// NOTE: This value can be changed during expression rewritten.
 	disableFoldCounter int
 	tryFoldCounter     int
-
-	// inLabelFunction is set when visiting a label function.
-	// This flag indicates the columnName in these function should be specially treated.
-	inLabelFunction bool
 }
 
 func (er *expressionRewriter) ctxStackLen() int {
@@ -442,14 +438,6 @@ func (er *expressionRewriter) Enter(inNode ast.Node) (ast.Node, bool) {
 		}
 		if _, ok := expression.TryFoldFunctions[v.FnName.L]; ok {
 			er.tryFoldCounter++
-		}
-		if v.FnName.L == ast.Label || v.FnName.L == ast.HasLabel {
-			if er.b.isGraphQuery {
-				er.inLabelFunction = true
-			} else {
-				er.err = ErrUnsupportedType.GenWithStack("Unsupported function %s in non-graph query", v.FnName)
-				return inNode, true
-			}
 		}
 	case *ast.CaseExpr:
 		er.asScalar = true
@@ -1101,32 +1089,10 @@ func (er *expressionRewriter) Leave(originInNode ast.Node) (retNode ast.Node, ok
 		if _, ok := expression.DisableFoldFunctions[v.FnName.L]; ok {
 			er.disableFoldCounter--
 		}
-		er.inLabelFunction = false
 	case *ast.TableName:
 		er.toTable(v)
 	case *ast.ColumnName:
-		if er.b.isGraphQuery {
-			if er.inLabelFunction {
-				er.toColumn(&ast.ColumnName{Schema: v.Schema, Table: v.Name, Name: model.ExtraLabelPropName})
-				if er.err != nil {
-					er.err = ErrUnresolvedVariable.GenWithStackByArgs(v.Name)
-				}
-			} else {
-				if v.Table.L != "" {
-					er.toColumn(v)
-					if er.err != nil {
-						er.err = ErrPropertyNotExists.GenWithStackByArgs(v.Table, v.Name)
-					}
-				} else {
-					er.toColumn(&ast.ColumnName{Schema: v.Schema, Table: v.Name, Name: model.ExtraDescPropName})
-					if er.err != nil {
-						er.err = ErrUnresolvedVariable.GenWithStackByArgs(v.Name)
-					}
-				}
-			}
-		} else {
-			er.toColumn(v)
-		}
+		er.toColumn(v)
 	case *ast.UnaryOperationExpr:
 		er.unaryOpToExpression(v)
 	case *ast.BinaryOperationExpr:
@@ -1869,28 +1835,6 @@ func (er *expressionRewriter) rewriteFuncCall(v *ast.FuncCallExpr) bool {
 		}
 		er.ctxStackPop(len(v.Args))
 		er.ctxStackAppend(funcIf, types.EmptyName)
-		return true
-	case ast.Label:
-		if len(v.Args) != 1 {
-			er.err = expression.ErrIncorrectParameterCount.GenWithStackByArgs(v.FnName.O)
-			return true
-		}
-		return true
-	case ast.HasLabel:
-		if len(v.Args) != 2 {
-			er.err = expression.ErrIncorrectParameterCount.GenWithStackByArgs(v.FnName.O)
-			return true
-		}
-		stackLen := len(er.ctxStack)
-		param1 := er.ctxStack[stackLen-2]
-		param2 := er.ctxStack[stackLen-1]
-		fn, err := er.newFunction(ast.EQ, types.NewFieldType(mysql.TypeTiny), param1, param2)
-		if err != nil {
-			er.err = err
-			return true
-		}
-		er.ctxStackPop(len(v.Args))
-		er.ctxStackAppend(fn, types.EmptyName)
 		return true
 	default:
 		return false
