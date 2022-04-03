@@ -3253,7 +3253,7 @@ func unfoldWildStar(field *ast.SelectField, outputName types.NameSlice, column [
 }
 
 type graphExprRewriter struct {
-	names       [][]*types.FieldName
+	names       []types.NameSlice
 	asNames     []model.CIStr
 	err         error
 	inLabelFunc bool
@@ -3388,7 +3388,23 @@ func graphColMatch(fieldName *types.FieldName, colName *ast.ColumnName) bool {
 }
 
 func (b *PlanBuilder) rewriteGraphExpr(p LogicalPlan, sel *ast.SelectStmt) (*ast.SelectStmt, error) {
-	names := append(b.outerNames[:len(b.outerNames):len(b.outerNames)], p.OutputNames())
+	var names []types.NameSlice
+	for i := 0; i < len(b.outerNames); i++ {
+		var ns types.NameSlice
+		for j := 0; j < len(b.outerNames[i]); j++ {
+			if !b.outerSchemas[i].Columns[i].IsHidden {
+				ns = append(ns, b.outerNames[i][j])
+			}
+		}
+		names = append(names, ns)
+	}
+	var ns types.NameSlice
+	for i, name := range p.OutputNames() {
+		if !p.Schema().Columns[i].IsHidden {
+			ns = append(ns, name)
+		}
+		names = append(names, ns)
+	}
 	var asNames []model.CIStr
 	for _, field := range sel.Fields.Fields {
 		if field.AsName.L != "" {
@@ -6867,27 +6883,29 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 			for i, conn := range path.Connections {
 				switch x := conn.(type) {
 				case *ast.EdgePattern:
-					var (
-						srcVarName  string
-						dstVarName  string
-						anyDirected bool
-					)
-					switch x.Direction {
-					case ast.EdgeDirectionOutgoing:
-						srcVarName = path.Vertices[i].Variable.Name.L
-						dstVarName = path.Vertices[i+1].Variable.Name.L
-					case ast.EdgeDirectionIncoming:
-						srcVarName = path.Vertices[i+1].Variable.Name.L
-						dstVarName = path.Vertices[i].Variable.Name.L
-					case ast.EdgeDirectionAnyDirected:
-						srcVarName = path.Vertices[i].Variable.Name.L
-						dstVarName = path.Vertices[i+1].Variable.Name.L
-						anyDirected = true
-					default:
-						return nil, ErrUnsupportedType.GenWithStack("Unsupported EdgeDirection %d", x.Direction)
+					srcVarName, dstVarName, anyDirected, err := resolveSrcDstVarName(
+						path.Vertices[i].Variable.Name.L, path.Vertices[i+1].Variable.Name.L, x.Direction)
+					if err != nil {
+						return nil, err
 					}
 					sg.addEdge(x.Variable, srcVarName, dstVarName, anyDirected)
 				case *ast.ReachabilityPathExpr:
+					srcVarName, dstVarName, anyDirected, err := resolveSrcDstVarName(
+						path.Vertices[i].Variable.Name.L, path.Vertices[i+1].Variable.Name.L, x.Direction)
+					if err != nil {
+						return nil, err
+					}
+					astVar := &ast.VariableSpec{
+						Name:      x.AnonymousName,
+						Labels:    x.Labels,
+						Anonymous: true,
+					}
+					eg := &edgeGroup{tp: path.Tp}
+					if x.Quantifier != nil {
+						eg.minHops = x.Quantifier.N
+						eg.maxHops = x.Quantifier.M
+					}
+					sg.addGroupEdge(astVar, srcVarName, dstVarName, anyDirected, eg)
 					return nil, ErrNotSupportedYet.GenWithStackByArgs("ReachabilityPathExpr")
 				default:
 					return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) for simple path pattern", x)
@@ -6895,9 +6913,36 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 			}
 		case ast.PathPatternAny, ast.PathPatternAnyShortest, ast.PathPatternAllShortest, ast.PathPatternTopKShortest,
 			ast.PathPatternAnyCheapest, ast.PathPatternAllCheapest, ast.PathPatternTopKCheapest, ast.PathPatternAll:
-			for _, conn := range path.Connections {
+			for i, conn := range path.Connections {
 				switch x := conn.(type) {
 				case *ast.QuantifiedPathExpr:
+					srcVarName, dstVarName, anyDirected, err := resolveSrcDstVarName(
+						path.Vertices[i].Variable.Name.L, path.Vertices[i+1].Variable.Name.L, x.Edge.Direction)
+					if err != nil {
+						return nil, err
+					}
+					astVar := x.Edge.Variable
+
+					var hopSrcVar, hopDstVar *vertexVar
+					if x.Source != nil {
+						hopSrcVar = sg.newVertex(x.Source.Variable)
+					}
+					if x.Destination != nil {
+						hopDstVar = sg.newVertex(x.Destination.Variable)
+					}
+					eg := &edgeGroup{
+						tp:        path.Tp,
+						topk:      path.TopK,
+						hopSrcVar: hopSrcVar,
+						hopDstVar: hopDstVar,
+						where:     x.Where,
+						cost:      x.Cost,
+					}
+					if x.Quantifier != nil {
+						eg.minHops = x.Quantifier.N
+						eg.maxHops = x.Quantifier.M
+					}
+					sg.addGroupEdge(astVar, srcVarName, dstVarName, anyDirected, eg)
 				default:
 					return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) for variable-length path pattern", x)
 				}
@@ -6933,6 +6978,24 @@ func hideAnonymousSubgraphVars(sg *subgraph, p LogicalPlan) {
 			p.Schema().Columns[i].IsHidden = true
 		}
 	}
+}
+
+func resolveSrcDstVarName(leftVarName, rightVarName string, direction ast.EdgeDirection) (srcVarName, dstVarName string, anyDirected bool, err error) {
+	switch direction {
+	case ast.EdgeDirectionOutgoing:
+		srcVarName = leftVarName
+		dstVarName = rightVarName
+	case ast.EdgeDirectionIncoming:
+		srcVarName = rightVarName
+		dstVarName = leftVarName
+	case ast.EdgeDirectionAnyDirected:
+		srcVarName = leftVarName
+		dstVarName = rightVarName
+		anyDirected = true
+	default:
+		err = ErrUnsupportedType.GenWithStack("Unsupported EdgeDirection %d", direction)
+	}
+	return
 }
 
 func (b *PlanBuilder) buildGenericSubgraph(ctx context.Context, dbName model.CIStr, sg *subgraph) (LogicalPlan, error) {
@@ -7044,122 +7107,118 @@ func buildSubgraphOutputNames4Props(dbName, varName model.CIStr, propNames []mod
 // buildSimpleSubgraph builds a simple subgraph.
 // A subgraph is simple if and only if each of its variables holds exactly one underlying table.
 func (b *PlanBuilder) buildSimpleSubgraph(ctx context.Context, dbName model.CIStr, sg *subgraph, outputNames types.NameSlice) (LogicalPlan, error) {
-	var plan LogicalPlan
+	var p LogicalPlan
 	usedVars := make(map[string]*vertexVar)
 
-	joinVertex := func(vv *vertexVar) error {
-		tbl := vv.tables[0]
-		tn := &ast.TableName{Schema: dbName, Name: tbl.RefTable}
-		asName := tableAsNameForVar(vv.name, tbl.Name)
-		vertexPlan, err := b.buildDataSource(ctx, tn, &asName)
-		if err != nil {
-			return err
-		}
-		for _, name := range vertexPlan.OutputNames() {
-			if name.Hidden {
-				continue
-			}
-			name.TblName = asName
-		}
-		if plan == nil {
-			plan = vertexPlan
-		} else {
-			newPlan, err := b.buildJoinWithPlan(ctx, plan, vertexPlan, &ast.Join{Tp: ast.CrossJoin})
-			if err != nil {
-				return err
-			}
-			plan = newPlan
-		}
-		return nil
-	}
-
-	buildOnCond := func(
-		srcTbl *model.GraphTable, srcTblAsName model.CIStr,
-		dstTbl *model.GraphTable, dstTblAsName model.CIStr,
-		edgeTbl *model.GraphTable, edgeTblAsName model.CIStr,
-	) ast.ExprNode {
-		var onConds []*ast.BinaryOperationExpr
-		for i, eCol := range edgeTbl.Source.KeyCols {
-			onConds = append(onConds, &ast.BinaryOperationExpr{
-				Op: opcode.EQ,
-				L:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: srcTblAsName, Name: srcTbl.KeyCols[i]}},
-				R:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: edgeTblAsName, Name: eCol}},
-			})
-
-		}
-		for i, eCol := range edgeTbl.Destination.KeyCols {
-			onConds = append(onConds, &ast.BinaryOperationExpr{
-				Op: opcode.EQ,
-				L:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: dstTblAsName, Name: dstTbl.KeyCols[i]}},
-				R:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: edgeTblAsName, Name: eCol}},
-			})
-		}
-		onCond := onConds[0]
-		for i := 1; i < len(onConds); i++ {
-			onCond = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: onCond, R: onConds[i]}
-		}
-		return onCond
-	}
-
 	for _, ev := range sg.edgeVars {
-		srcVar, ok := usedVars[ev.srcVertexVar]
+		srcVar, ok := usedVars[ev.srcVarName]
 		if !ok {
-			srcVar = sg.vertexVars[ev.srcVertexVar]
-			if err := joinVertex(srcVar); err != nil {
+			srcVar = sg.vertexVars[ev.srcVarName]
+			np, err := b.buildAndJoinVertexVar(ctx, dbName, p, srcVar)
+			if err != nil {
 				return nil, err
 			}
-			usedVars[ev.srcVertexVar] = srcVar
+			p = np
+			usedVars[ev.srcVarName] = srcVar
 		}
-		dstVar, ok := usedVars[ev.dstVertexVar]
+		dstVar, ok := usedVars[ev.dstVarName]
 		if !ok {
-			dstVar = sg.vertexVars[ev.dstVertexVar]
-			if err := joinVertex(dstVar); err != nil {
+			dstVar = sg.vertexVars[ev.dstVarName]
+			np, err := b.buildAndJoinVertexVar(ctx, dbName, p, dstVar)
+			if err != nil {
 				return nil, err
 			}
-			usedVars[ev.dstVertexVar] = dstVar
+			p = np
+			usedVars[ev.dstVarName] = dstVar
 		}
 
-		srcTbl, dstTbl, edgeTbl := srcVar.tables[0], dstVar.tables[0], ev.tables[0]
-		srcTblAsName := tableAsNameForVar(srcVar.name, srcTbl.Name)
-		dstTblAsName := tableAsNameForVar(dstVar.name, dstTbl.Name)
+		edgeTbl := ev.tables[0]
 		edgeTblAsName := tableAsNameForVar(ev.name, edgeTbl.Name)
-
-		onCond := buildOnCond(srcTbl, srcTblAsName, dstTbl, dstTblAsName, edgeTbl, edgeTblAsName)
-		if ev.anyDirected {
-			revOnCond := buildOnCond(dstTbl, dstTblAsName, srcTbl, srcTblAsName, edgeTbl, edgeTblAsName)
-			onCond = &ast.BinaryOperationExpr{Op: opcode.LogicOr, L: onCond, R: revOnCond}
-		}
-
 		tn := &ast.TableName{Schema: dbName, Name: edgeTbl.RefTable}
-		edgePlan, err := b.buildDataSource(ctx, tn, &edgeTblAsName)
+		ep, err := b.buildDataSource(ctx, tn, &edgeTblAsName)
 		if err != nil {
 			return nil, err
 		}
-		for _, name := range edgePlan.OutputNames() {
+		for _, name := range ep.OutputNames() {
 			if name.Hidden {
 				continue
 			}
 			name.TblName = edgeTblAsName
 		}
+
+		onCond := buildOnCond4JoinEdge(ev, srcVar, dstVar)
+		if ev.anyDirected {
+			revOnCond := buildOnCond4JoinEdge(ev, dstVar, srcVar)
+			onCond = &ast.BinaryOperationExpr{Op: opcode.LogicOr, L: onCond, R: revOnCond}
+		}
 		join := &ast.Join{Tp: ast.CrossJoin, On: &ast.OnCondition{Expr: onCond}}
-		newPlan, err := b.buildJoinWithPlan(ctx, plan, edgePlan, join)
+		np, err := b.buildJoinWithPlan(ctx, p, ep, join)
 		if err != nil {
 			return nil, err
 		}
-		plan = newPlan
-
+		p = np
 	}
 
 	for _, vv := range sg.vertexVars {
 		if _, ok := usedVars[vv.name.L]; !ok {
-			if err := joinVertex(vv); err != nil {
+			np, err := b.buildAndJoinVertexVar(ctx, dbName, p, vv)
+			if err != nil {
 				return nil, err
 			}
+			p = np
 			usedVars[vv.name.L] = vv
 		}
 	}
 
-	return b.buildProjection4Subgraph(dbName, sg, plan, outputNames)
+	return b.buildProjection4Subgraph(dbName, sg, p, outputNames)
+}
+
+func buildOnCond4JoinEdge(edgeVar *edgeVar, srcVar, dstVar *vertexVar) ast.ExprNode {
+	var onConds []*ast.BinaryOperationExpr
+	edgeTbl, srcTbl, dstTbl := edgeVar.tables[0], srcVar.tables[0], dstVar.tables[0]
+	edgeTblAsName := tableAsNameForVar(edgeVar.name, edgeTbl.Name)
+	srcTblAsName := tableAsNameForVar(srcVar.name, srcTbl.Name)
+	dstTblAsName := tableAsNameForVar(dstVar.name, dstTbl.Name)
+	for i, eCol := range edgeTbl.Source.KeyCols {
+		onConds = append(onConds, &ast.BinaryOperationExpr{
+			Op: opcode.EQ,
+			L:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: srcTblAsName, Name: srcTbl.KeyCols[i]}},
+			R:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: edgeTblAsName, Name: eCol}},
+		})
+
+	}
+	for i, eCol := range edgeTbl.Destination.KeyCols {
+		onConds = append(onConds, &ast.BinaryOperationExpr{
+			Op: opcode.EQ,
+			L:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: dstTblAsName, Name: dstTbl.KeyCols[i]}},
+			R:  &ast.ColumnNameExpr{Name: &ast.ColumnName{Table: edgeTblAsName, Name: eCol}},
+		})
+	}
+	onCond := onConds[0]
+	for i := 1; i < len(onConds); i++ {
+		onCond = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: onCond, R: onConds[i]}
+	}
+	return onCond
+}
+
+func (b *PlanBuilder) buildAndJoinVertexVar(ctx context.Context, dbName model.CIStr, p LogicalPlan, vv *vertexVar) (LogicalPlan, error) {
+	tbl := vv.tables[0]
+	tn := &ast.TableName{Schema: dbName, Name: tbl.RefTable}
+	asName := tableAsNameForVar(vv.name, tbl.Name)
+	vp, err := b.buildDataSource(ctx, tn, &asName)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range vp.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		name.TblName = asName
+	}
+	if p == nil {
+		return vp, nil
+	}
+	return b.buildJoinWithPlan(ctx, p, vp, &ast.Join{Tp: ast.CrossJoin})
 }
 
 func (b *PlanBuilder) buildProjection4Subgraph(dbName model.CIStr, sg *subgraph, plan LogicalPlan, outputNames types.NameSlice) (LogicalPlan, error) {

@@ -1902,7 +1902,7 @@ func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
 		return nil
 	}
 
-	var anonymousVars []*ast.VariableSpec
+	var anonymousNames []*model.CIStr
 	checkAnonymousVar := func(pv **ast.VariableSpec) bool {
 		if *pv == nil {
 			*pv = &ast.VariableSpec{}
@@ -1910,7 +1910,7 @@ func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
 		v := *pv
 		if v.Name.L == "" || v.Anonymous {
 			v.Anonymous = true
-			anonymousVars = append(anonymousVars, v)
+			anonymousNames = append(anonymousNames, &v.Name)
 			return true
 		}
 		return false
@@ -1968,6 +1968,8 @@ func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
 							return
 						}
 					}
+				case *ast.ReachabilityPathExpr:
+					anonymousNames = append(anonymousNames, &x.AnonymousName)
 				}
 			}
 		}
@@ -1979,11 +1981,11 @@ func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
 		namedVars.Insert(v)
 	}
 	dedup := -1
-	for _, v := range anonymousVars {
+	for _, v := range anonymousNames {
 		for dedup = dedup + 1; ; dedup++ {
 			name := fmt.Sprintf("_anonymous%d", dedup)
 			if !namedVars.Exist(name) {
-				v.Name = model.NewCIStr(name)
+				*v = model.NewCIStr(name)
 				break
 			}
 		}

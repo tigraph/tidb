@@ -769,6 +769,9 @@ type ReachabilityPathExpr struct {
 	Labels     []model.CIStr
 	Direction  EdgeDirection
 	Quantifier *PatternQuantifier
+	// Variable name is not supported in ReachabilityPathExpr.
+	// But we need an anonymous name for building logical plan.
+	AnonymousName model.CIStr
 }
 
 func (n *ReachabilityPathExpr) vertexPairConnection() {}

@@ -47,14 +47,15 @@ func (v *vertexVar) filterTables(labels []model.CIStr) {
 
 // edgeVar represents an edge variable.
 type edgeVar struct {
-	name         model.CIStr
-	anonymous    bool
-	tables       []*model.GraphTable
-	srcVertexVar string
-	dstVertexVar string
+	name       model.CIStr
+	anonymous  bool
+	tables     []*model.GraphTable
+	srcVarName string
+	dstVarName string
 	// anyDirected indicates the source vertex and destination vertex can
 	// swap position when they are connected with this edge.
 	anyDirected bool
+	group       *edgeGroup
 }
 
 func (e *edgeVar) copy() *edgeVar {
@@ -62,17 +63,38 @@ func (e *edgeVar) copy() *edgeVar {
 	return &ne
 }
 
+func (e *edgeVar) isGroup() bool {
+	return e.group != nil
+}
+
+// edgeGroup holds group information for a group edge variable.
+// See https://pgql-lang.org/spec/1.4/#group-variables for more details.
+type edgeGroup struct {
+	tp        ast.PathPatternType
+	topk      uint64
+	hopSrcVar *vertexVar
+	hopDstVar *vertexVar
+	minHops   uint64
+	maxHops   uint64
+	where     ast.ExprNode
+	cost      ast.ExprNode
+}
+
 type subgraph struct {
-	graphInfo  *model.GraphInfo
-	vertexVars map[string]*vertexVar
-	edgeVars   map[string]*edgeVar
+	graphInfo    *model.GraphInfo
+	vertexLabels []model.CIStr
+	edgeLabels   []model.CIStr
+	vertexVars   map[string]*vertexVar
+	edgeVars     map[string]*edgeVar
 }
 
 func newSubgraph(graphInfo *model.GraphInfo) *subgraph {
 	return &subgraph{
-		graphInfo:  graphInfo,
-		vertexVars: make(map[string]*vertexVar),
-		edgeVars:   make(map[string]*edgeVar),
+		graphInfo:    graphInfo,
+		vertexLabels: graphInfo.VertexLabels(),
+		edgeLabels:   graphInfo.EdgeLabels(),
+		vertexVars:   make(map[string]*vertexVar),
+		edgeVars:     make(map[string]*edgeVar),
 	}
 }
 
@@ -85,37 +107,51 @@ func (s *subgraph) clone() *subgraph {
 
 func (s *subgraph) addVertex(astVar *ast.VariableSpec) {
 	varName := astVar.Name
-	labels := astVar.Labels
-	if len(labels) == 0 {
-		labels = s.graphInfo.VertexLabels()
-	}
 	if v, ok := s.vertexVars[varName.L]; ok {
-		v.filterTables(labels)
-	} else {
-		s.vertexVars[varName.L] = &vertexVar{
-			name:      varName,
-			anonymous: astVar.Anonymous,
-			tables:    s.graphInfo.VertexTablesByLabels(labels...),
+		if len(astVar.Labels) > 0 {
+			v.filterTables(astVar.Labels)
 		}
+	} else {
+		s.vertexVars[varName.L] = s.newVertex(astVar)
 	}
 }
 
-func (s *subgraph) addEdge(astVar *ast.VariableSpec, srcVertexVar, dstVertexVar string, anyDirected bool) {
+func (s *subgraph) addEdge(astVar *ast.VariableSpec, srcVarName, dstVarName string, anyDirected bool) {
 	varName := astVar.Name
 	if _, ok := s.edgeVars[varName.L]; ok {
 		panic(fmt.Sprintf("subgraph: duplicate edge variable %v", varName))
 	}
 	labels := astVar.Labels
 	if len(labels) == 0 {
-		labels = s.graphInfo.EdgeLabels()
+		labels = s.edgeLabels
 	}
 	s.edgeVars[varName.L] = &edgeVar{
-		name:         varName,
-		anonymous:    astVar.Anonymous,
-		tables:       s.graphInfo.EdgeTablesByLabels(labels...),
-		srcVertexVar: srcVertexVar,
-		dstVertexVar: dstVertexVar,
-		anyDirected:  anyDirected,
+		name:        varName,
+		anonymous:   astVar.Anonymous,
+		tables:      s.graphInfo.EdgeTablesByLabels(labels...),
+		srcVarName:  srcVarName,
+		dstVarName:  dstVarName,
+		anyDirected: anyDirected,
+	}
+}
+
+func (s *subgraph) addGroupEdge(astVar *ast.VariableSpec, srcVarName, dstVarName string, anyDirected bool, group *edgeGroup) {
+	varName := astVar.Name
+	s.addEdge(astVar, srcVarName, dstVarName, anyDirected)
+	ev := s.edgeVars[varName.L]
+	ev.group = group
+}
+
+func (s *subgraph) newVertex(astVar *ast.VariableSpec) *vertexVar {
+	varName := astVar.Name
+	labels := astVar.Labels
+	if len(labels) == 0 {
+		labels = s.vertexLabels
+	}
+	return &vertexVar{
+		name:      varName,
+		anonymous: astVar.Anonymous,
+		tables:    s.graphInfo.VertexTablesByLabels(labels...),
 	}
 }
 
@@ -201,8 +237,8 @@ func propagateSubgraph(ctx *propagateCtx) {
 		}
 		nv := ev.copy()
 		nv.tables = []*model.GraphTable{eTbl}
-		nv.srcVertexVar = srcVarName
-		nv.dstVertexVar = dstVarName
+		nv.srcVarName = srcVarName
+		nv.dstVarName = dstVarName
 		nv.anyDirected = ev.anyDirected && eTbl.Source.Name.Equal(eTbl.Destination.Name)
 		delete(ctx.parent.edgeVars, ev.name.L)
 		ctx.child.edgeVars[nv.name.L] = nv
@@ -211,10 +247,14 @@ func propagateSubgraph(ctx *propagateCtx) {
 		ctx.parent.edgeVars[ev.name.L] = ev
 	}
 
-	for _, eTbl := range ev.tables {
-		joinEdge(eTbl, ev.srcVertexVar, ev.dstVertexVar)
-		if ev.anyDirected && ev.srcVertexVar != ev.dstVertexVar && !eTbl.Source.Name.Equal(eTbl.Destination.Name) {
-			joinEdge(eTbl, ev.dstVertexVar, ev.srcVertexVar)
+	if ev.isGroup() {
+		// TODO: handle group edge variable.
+	} else {
+		for _, eTbl := range ev.tables {
+			joinEdge(eTbl, ev.srcVarName, ev.dstVarName)
+			if ev.anyDirected && ev.srcVarName != ev.dstVarName && !eTbl.Source.Name.Equal(eTbl.Destination.Name) {
+				joinEdge(eTbl, ev.dstVarName, ev.srcVarName)
+			}
 		}
 	}
 }
