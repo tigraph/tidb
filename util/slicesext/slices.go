@@ -33,7 +33,7 @@ func FilterFunc[S ~[]E, E any](s S, f func(E) bool) S {
 	return s[:n]
 }
 
-func SearchFunc[S ~[]E, E any](s S, f func(E) bool) (e E, ok bool) {
+func FindFunc[S ~[]E, E any](s S, f func(E) bool) (e E, ok bool) {
 	for _, v := range s {
 		if f(v) {
 			return v, true

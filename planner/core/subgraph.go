@@ -20,6 +20,7 @@ import (
 
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
+	"github.com/pingcap/tidb/util/set"
 	"github.com/pingcap/tidb/util/slicesext"
 	"golang.org/x/exp/maps"
 )
@@ -155,9 +156,11 @@ func (s *subgraph) newVertex(astVar *ast.VariableSpec) *vertexVar {
 	}
 }
 
-// propagate propagates multiple subgraphs, with each variable in each subgraph holding exactly one table.
-// For each edge variable in each result subgraph, it's always directed if source variable and destination
-// variable hold different tables.
+// propagate generates multiple simple subgraphs. The union matching results of multiple subgraphs is equivalent to
+// the original subgraph matching results.
+// A simple subgraph has the following properties:
+// 1. All of its simple singleton variables holds *exactly one* graph table.
+// 2. A singleton edge variable is always directed if source key and destination key reference different vertex tables.
 func (s *subgraph) propagate() []*subgraph {
 	ctx := &propagateCtx{
 		parent: s.clone(),
@@ -183,15 +186,7 @@ func propagateSubgraph(ctx *propagateCtx) {
 		for _, vv = range ctx.parent.vertexVars {
 			break
 		}
-		delete(ctx.parent.vertexVars, vv.name.L)
-		for _, tbl := range vv.tables {
-			nv := vv.copy()
-			nv.tables = []*model.GraphTable{tbl}
-			ctx.child.vertexVars[vv.name.L] = nv
-			propagateSubgraph(ctx)
-			delete(ctx.child.vertexVars, vv.name.L)
-		}
-		ctx.parent.vertexVars[vv.name.L] = vv
+		propagateVertex(ctx, vv)
 		return
 	}
 
@@ -199,64 +194,122 @@ func propagateSubgraph(ctx *propagateCtx) {
 	for _, ev = range ctx.parent.edgeVars {
 		break
 	}
+	propagateEdge(ctx, ev)
+}
 
-	joinEdge := func(eTbl *model.GraphTable, srcVarName, dstVarName string) {
-		if _, ok := ctx.child.vertexVars[srcVarName]; !ok {
-			srcVar := ctx.parent.vertexVars[srcVarName]
-			srcTbl, ok := slicesext.SearchFunc(srcVar.tables, func(vTbl *model.GraphTable) bool {
-				return vTbl.Name.Equal(eTbl.Source.Name)
-			})
-			if !ok {
-				return
-			}
-			nv := srcVar.copy()
-			nv.tables = []*model.GraphTable{srcTbl}
-			delete(ctx.parent.vertexVars, srcVarName)
-			ctx.child.vertexVars[srcVarName] = nv
-			defer func() {
-				delete(ctx.child.vertexVars, srcVarName)
-				ctx.parent.vertexVars[srcVarName] = srcVar
-			}()
-		}
-		if _, ok := ctx.child.vertexVars[dstVarName]; !ok {
-			dstVar := ctx.parent.vertexVars[dstVarName]
-			dstTbl, ok := slicesext.SearchFunc(dstVar.tables, func(vTbl *model.GraphTable) bool {
-				return vTbl.Name.Equal(eTbl.Destination.Name)
-			})
-			if !ok {
-				return
-			}
-			nv := dstVar.copy()
-			nv.tables = []*model.GraphTable{dstTbl}
-			delete(ctx.parent.vertexVars, dstVarName)
-			ctx.child.vertexVars[dstVarName] = nv
-			defer func() {
-				delete(ctx.child.vertexVars, dstVarName)
-				ctx.parent.vertexVars[dstVarName] = dstVar
-			}()
-		}
-		nv := ev.copy()
-		nv.tables = []*model.GraphTable{eTbl}
-		nv.srcVarName = srcVarName
-		nv.dstVarName = dstVarName
-		nv.anyDirected = ev.anyDirected && eTbl.Source.Name.Equal(eTbl.Destination.Name)
-		delete(ctx.parent.edgeVars, ev.name.L)
-		ctx.child.edgeVars[nv.name.L] = nv
-		propagateSubgraph(ctx)
-		delete(ctx.child.edgeVars, nv.name.L)
-		ctx.parent.edgeVars[ev.name.L] = ev
+func propagateEdge(ctx *propagateCtx, ev *edgeVar) {
+	srcVar, ok := ctx.child.vertexVars[ev.srcVarName]
+	if !ok {
+		vv := ctx.parent.vertexVars[ev.srcVarName]
+		propagateVertex(ctx, vv)
+		return
 	}
+	dstVar, ok := ctx.child.vertexVars[ev.dstVarName]
+	if !ok {
+		vv := ctx.parent.vertexVars[ev.dstVarName]
+		propagateVertex(ctx, vv)
+		return
+	}
+	srcTblName := srcVar.tables[0].Name
+	dstTblName := dstVar.tables[0].Name
 
 	if ev.isGroup() {
-		// TODO: handle group edge variable.
-	} else {
-		for _, eTbl := range ev.tables {
-			joinEdge(eTbl, ev.srcVarName, ev.dstVarName)
-			if ev.anyDirected && ev.srcVarName != ev.dstVarName && !eTbl.Source.Name.Equal(eTbl.Destination.Name) {
-				joinEdge(eTbl, ev.dstVarName, ev.srcVarName)
+		propagateEdgeGroup(ctx, ev, srcTblName, dstTblName)
+		return
+	}
+
+	delete(ctx.parent.edgeVars, ev.name.L)
+	defer func() { ctx.parent.edgeVars[ev.name.L] = ev }()
+	for _, tbl := range ev.tables {
+		if tbl.Source.Name.Equal(srcTblName) && tbl.Destination.Name.Equal(dstTblName) ||
+			ev.anyDirected && tbl.Source.Name.Equal(dstTblName) && tbl.Destination.Name.Equal(srcTblName) {
+			nv := ev.copy()
+			nv.tables = []*model.GraphTable{tbl}
+			if nv.anyDirected && !srcTblName.Equal(dstTblName) {
+				if tbl.Source.Name.Equal(dstTblName) {
+					nv.srcVarName = dstVar.name.L
+					nv.dstVarName = srcVar.name.L
+				}
+				nv.anyDirected = false
+			}
+			ctx.child.edgeVars[ev.name.L] = nv
+			propagateSubgraph(ctx)
+			delete(ctx.child.edgeVars, ev.name.L)
+		}
+	}
+}
+
+func propagateEdgeGroup(ctx *propagateCtx, ev *edgeVar, srcTblName, dstTblName model.CIStr) {
+	eg := ev.group
+	if eg.minHops > eg.maxHops {
+		return
+	}
+
+	queue := []model.CIStr{srcTblName}
+	visited := set.NewStringSet(srcTblName.L)
+	minHops := -1
+bfsLoop:
+	for hops := 0; len(queue) > 0; hops++ {
+		l := len(queue)
+		for i := 0; i < l; i++ {
+			curTblName := queue[0]
+			queue = queue[1:]
+			if curTblName.Equal(dstTblName) {
+				minHops = hops
+				break bfsLoop
+			}
+			if eg.hopSrcVar != nil {
+				if _, ok := slicesext.FindFunc(eg.hopSrcVar.tables, func(tbl *model.GraphTable) bool {
+					return tbl.Name.Equal(curTblName)
+				}); !ok {
+					continue
+				}
+			}
+			for _, tbl := range ev.tables {
+				var nextTblName model.CIStr
+				if tbl.Source.Name.Equal(curTblName) {
+					nextTblName = tbl.Destination.Name
+				} else if ev.anyDirected && tbl.Destination.Name.Equal(curTblName) {
+					nextTblName = tbl.Source.Name
+				} else {
+					continue
+				}
+				if visited.Exist(nextTblName.L) {
+					continue
+				}
+				if eg.hopDstVar != nil {
+					if _, ok := slicesext.FindFunc(eg.hopDstVar.tables, func(tbl *model.GraphTable) bool {
+						return tbl.Name.Equal(nextTblName)
+					}); !ok {
+						continue
+					}
+				}
+				visited.Insert(nextTblName.L)
+				queue = append(queue, nextTblName)
 			}
 		}
 	}
+
+	if minHops != -1 && uint64(minHops) <= eg.maxHops {
+		nv := ev.copy()
+		delete(ctx.parent.edgeVars, ev.name.L)
+		ctx.child.edgeVars[ev.name.L] = nv
+		propagateSubgraph(ctx)
+		delete(ctx.child.edgeVars, ev.name.L)
+		ctx.parent.edgeVars[ev.name.L] = ev
+	}
+}
+
+func propagateVertex(ctx *propagateCtx, vv *vertexVar) {
+	delete(ctx.parent.vertexVars, vv.name.L)
+	for _, tbl := range vv.tables {
+		nv := vv.copy()
+		nv.tables = []*model.GraphTable{tbl}
+		ctx.child.vertexVars[vv.name.L] = nv
+		propagateSubgraph(ctx)
+		delete(ctx.child.vertexVars, vv.name.L)
+	}
+	ctx.parent.vertexVars[vv.name.L] = vv
 }
 
 // tableAsNameForVar combines variable name and table name.

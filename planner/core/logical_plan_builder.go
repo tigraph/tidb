@@ -6906,7 +6906,6 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 						eg.maxHops = x.Quantifier.M
 					}
 					sg.addGroupEdge(astVar, srcVarName, dstVarName, anyDirected, eg)
-					return nil, ErrNotSupportedYet.GenWithStackByArgs("ReachabilityPathExpr")
 				default:
 					return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) for simple path pattern", x)
 				}
@@ -6947,7 +6946,6 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 					return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) for variable-length path pattern", x)
 				}
 			}
-			return nil, ErrNotSupportedYet.GenWithStackByArgs("Match Variable-Length Paths")
 		default:
 			return nil, ErrUnsupportedType.GenWithStack("Unsupported PathPatternType %d", path.Tp)
 		}
@@ -7008,7 +7006,7 @@ func (b *PlanBuilder) buildGenericSubgraph(ctx context.Context, dbName model.CIS
 		cols := make([]*expression.Column, len(outputNames))
 		for i, outputName := range outputNames {
 			col := &expression.Column{UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID()}
-			if outputName.ColName == model.PGQLLabelPropName || outputName.ColName == model.PGQLDescPropName {
+			if outputName.ColName.Equal(model.PGQLLabelPropName) || outputName.ColName.Equal(model.PGQLDescPropName) {
 				col.RetType = types.NewFieldType(mysql.TypeVarchar)
 			} else {
 				col.RetType = types.NewFieldType(mysql.TypeNull)
@@ -7104,8 +7102,6 @@ func buildSubgraphOutputNames4Props(dbName, varName model.CIStr, propNames []mod
 	return outputNames
 }
 
-// buildSimpleSubgraph builds a simple subgraph.
-// A subgraph is simple if and only if each of its variables holds exactly one underlying table.
 func (b *PlanBuilder) buildSimpleSubgraph(ctx context.Context, dbName model.CIStr, sg *subgraph, outputNames types.NameSlice) (LogicalPlan, error) {
 	var p LogicalPlan
 	usedVars := make(map[string]*vertexVar)
@@ -7130,6 +7126,10 @@ func (b *PlanBuilder) buildSimpleSubgraph(ctx context.Context, dbName model.CISt
 			}
 			p = np
 			usedVars[ev.dstVarName] = dstVar
+		}
+
+		if ev.isGroup() {
+			return nil, ErrNotSupportedYet.GenWithStackByArgs("ReachabilityPathExpr or Variable-Length Paths")
 		}
 
 		edgeTbl := ev.tables[0]
@@ -7297,7 +7297,7 @@ func (b *PlanBuilder) buildPropColAndExpr(
 		return col, expr, nil
 	}
 
-	prop, ok := slicesext.SearchFunc(graphTable.Properties, func(prop *model.PropertyInfo) bool {
+	prop, ok := slicesext.FindFunc(graphTable.Properties, func(prop *model.PropertyInfo) bool {
 		return prop.Name.Equal(propName)
 	})
 	// This property may exist in other simple subgraph. Return a NULL type so that this column
