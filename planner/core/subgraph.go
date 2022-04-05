@@ -239,6 +239,18 @@ func propagateEdge(ctx *propagateCtx, ev *edgeVar) {
 	}
 }
 
+func propagateVertex(ctx *propagateCtx, vv *vertexVar) {
+	delete(ctx.parent.vertexVars, vv.name.L)
+	for _, tbl := range vv.tables {
+		nv := vv.copy()
+		nv.tables = []*model.GraphTable{tbl}
+		ctx.child.vertexVars[vv.name.L] = nv
+		propagateSubgraph(ctx)
+		delete(ctx.child.vertexVars, vv.name.L)
+	}
+	ctx.parent.vertexVars[vv.name.L] = vv
+}
+
 func propagateEdgeGroup(ctx *propagateCtx, ev *edgeVar, srcTblName, dstTblName model.CIStr) {
 	eg := ev.group
 	if eg.minHops > eg.maxHops {
@@ -258,58 +270,123 @@ bfsLoop:
 				minHops = hops
 				break bfsLoop
 			}
-			if eg.hopSrcVar != nil {
-				if _, ok := slicesext.FindFunc(eg.hopSrcVar.tables, func(tbl *model.GraphTable) bool {
-					return tbl.Name.Equal(curTblName)
-				}); !ok {
-					continue
+			iterRightTbl(ev, curTblName, func(nextTblName model.CIStr) {
+				if !visited.Exist(nextTblName.L) {
+					visited.Insert(nextTblName.L)
+					queue = append(queue, nextTblName)
 				}
-			}
-			for _, tbl := range ev.tables {
-				var nextTblName model.CIStr
-				if tbl.Source.Name.Equal(curTblName) {
-					nextTblName = tbl.Destination.Name
-				} else if ev.anyDirected && tbl.Destination.Name.Equal(curTblName) {
-					nextTblName = tbl.Source.Name
-				} else {
-					continue
-				}
-				if visited.Exist(nextTblName.L) {
-					continue
-				}
-				if eg.hopDstVar != nil {
-					if _, ok := slicesext.FindFunc(eg.hopDstVar.tables, func(tbl *model.GraphTable) bool {
-						return tbl.Name.Equal(nextTblName)
-					}); !ok {
-						continue
+			})
+		}
+	}
+	if minHops == -1 || uint64(minHops) > eg.maxHops {
+		return
+	}
+
+	// If minHops < eg.minHops, we can't guarantee that we will reach the dstTbl with at least eg.minHops.
+	// So we need to check if we can reach dstTbl step by step. In case eg.minHops is too large, an upper limit
+	// will be set here.
+	if uint64(minHops) < eg.minHops {
+		const hopsLimit = 1024
+		maxHops := hopsLimit
+		if uint64(maxHops) > eg.minHops {
+			maxHops = int(eg.minHops)
+		}
+		leftVisited := visited
+		queue := []model.CIStr{dstTblName}
+		hops := 0
+		for ; hops < maxHops && len(queue) > 0; hops++ {
+			l := len(queue)
+			nextVisit := set.NewStringSet()
+			for i := 0; i < l; i++ {
+				curTblName := queue[0]
+				queue = queue[1:]
+				iterLeftTbl(ev, curTblName, func(nextTblName model.CIStr) {
+					// We need to ensure nextTbl can reach srcTbl by checking if it exists in leftVisited set.
+					if leftVisited.Exist(nextTblName.L) && !nextVisit.Exist(nextTblName.L) {
+						nextVisit.Insert(nextTblName.L)
+						queue = append(queue, nextTblName)
 					}
-				}
-				visited.Insert(nextTblName.L)
-				queue = append(queue, nextTblName)
+				})
+			}
+		}
+		// We can't reach dstTbl.
+		if hops < maxHops || len(queue) == 0 {
+			return
+		}
+		// hops == eg.maxHops == eg.minHops.
+		if uint64(hops) == eg.maxHops {
+			if _, ok := slicesext.FindFunc(queue, func(tblName model.CIStr) bool {
+				return tblName.Equal(srcTblName)
+			}); !ok {
+				return
 			}
 		}
 	}
 
-	if minHops != -1 && uint64(minHops) <= eg.maxHops {
-		nv := ev.copy()
-		delete(ctx.parent.edgeVars, ev.name.L)
-		ctx.child.edgeVars[ev.name.L] = nv
-		propagateSubgraph(ctx)
-		delete(ctx.child.edgeVars, ev.name.L)
-		ctx.parent.edgeVars[ev.name.L] = ev
+	nv := ev.copy()
+	delete(ctx.parent.edgeVars, ev.name.L)
+	ctx.child.edgeVars[ev.name.L] = nv
+	propagateSubgraph(ctx)
+	delete(ctx.child.edgeVars, ev.name.L)
+	ctx.parent.edgeVars[ev.name.L] = ev
+}
+
+func iterRightTbl(ev *edgeVar, curTblName model.CIStr, f func(nextTblName model.CIStr)) {
+	eg := ev.group
+	if eg.hopSrcVar != nil {
+		if _, ok := slicesext.FindFunc(eg.hopSrcVar.tables, func(tbl *model.GraphTable) bool {
+			return tbl.Name.Equal(curTblName)
+		}); !ok {
+			return
+		}
+	}
+	for _, tbl := range ev.tables {
+		var nextTblName model.CIStr
+		if tbl.Source.Name.Equal(curTblName) {
+			nextTblName = tbl.Destination.Name
+		} else if ev.anyDirected && tbl.Destination.Name.Equal(curTblName) {
+			nextTblName = tbl.Source.Name
+		} else {
+			continue
+		}
+		if eg.hopDstVar != nil {
+			if _, ok := slicesext.FindFunc(eg.hopDstVar.tables, func(tbl *model.GraphTable) bool {
+				return tbl.Name.Equal(nextTblName)
+			}); !ok {
+				continue
+			}
+		}
+		f(nextTblName)
 	}
 }
 
-func propagateVertex(ctx *propagateCtx, vv *vertexVar) {
-	delete(ctx.parent.vertexVars, vv.name.L)
-	for _, tbl := range vv.tables {
-		nv := vv.copy()
-		nv.tables = []*model.GraphTable{tbl}
-		ctx.child.vertexVars[vv.name.L] = nv
-		propagateSubgraph(ctx)
-		delete(ctx.child.vertexVars, vv.name.L)
+func iterLeftTbl(ev *edgeVar, curTblName model.CIStr, f func(nextTblName model.CIStr)) {
+	eg := ev.group
+	if eg.hopDstVar != nil {
+		if _, ok := slicesext.FindFunc(eg.hopDstVar.tables, func(tbl *model.GraphTable) bool {
+			return tbl.Name.Equal(curTblName)
+		}); !ok {
+			return
+		}
 	}
-	ctx.parent.vertexVars[vv.name.L] = vv
+	for _, tbl := range ev.tables {
+		var nextTblName model.CIStr
+		if tbl.Destination.Name.Equal(curTblName) {
+			nextTblName = tbl.Source.Name
+		} else if ev.anyDirected && tbl.Source.Name.Equal(curTblName) {
+			nextTblName = tbl.Destination.Name
+		} else {
+			continue
+		}
+		if eg.hopSrcVar != nil {
+			if _, ok := slicesext.FindFunc(eg.hopSrcVar.tables, func(tbl *model.GraphTable) bool {
+				return tbl.Name.Equal(nextTblName)
+			}); !ok {
+				continue
+			}
+		}
+		f(nextTblName)
+	}
 }
 
 // tableAsNameForVar combines variable name and table name.

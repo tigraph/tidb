@@ -6904,6 +6904,9 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 					if x.Quantifier != nil {
 						eg.minHops = x.Quantifier.N
 						eg.maxHops = x.Quantifier.M
+					} else {
+						eg.minHops = 1
+						eg.maxHops = 1
 					}
 					sg.addGroupEdge(astVar, srcVarName, dstVarName, anyDirected, eg)
 				default:
@@ -6940,6 +6943,9 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 					if x.Quantifier != nil {
 						eg.minHops = x.Quantifier.N
 						eg.maxHops = x.Quantifier.M
+					} else {
+						eg.minHops = 1
+						eg.maxHops = 1
 					}
 					sg.addGroupEdge(astVar, srcVarName, dstVarName, anyDirected, eg)
 				default:

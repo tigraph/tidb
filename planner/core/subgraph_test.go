@@ -15,9 +15,9 @@
 package core
 
 import (
-	"github.com/pingcap/tidb/parser/model"
 	"testing"
 
+	"github.com/pingcap/tidb/parser/model"
 	"github.com/stretchr/testify/assert"
 )
 
