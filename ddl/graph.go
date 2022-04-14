@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/meta"
 	"github.com/pingcap/tidb/parser/model"
+	"github.com/pingcap/tidb/util/dbterror"
 )
 
 func onCreateGraph(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ error) {
@@ -55,7 +56,7 @@ func onCreateGraph(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ error)
 		job.SchemaState = model.StatePublic
 		return ver, nil
 	default:
-		return ver, ErrInvalidDDLState.GenWithStackByArgs("graph", graphInfo.State)
+		return ver, dbterror.ErrInvalidDDLState.GenWithStackByArgs("graph", graphInfo.State)
 	}
 }
 
@@ -155,7 +156,7 @@ func onDropGraph(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 		job.State = model.JobStateDone
 		job.SchemaState = model.StateNone
 	default:
-		return ver, ErrInvalidDDLState.GenWithStackByArgs("graph", graphInfo.State)
+		return ver, dbterror.ErrInvalidDDLState.GenWithStackByArgs("graph", graphInfo.State)
 	}
 
 	return ver, nil

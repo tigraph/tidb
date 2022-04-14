@@ -291,6 +291,7 @@ const (
 	VitessHash      = "vitess_hash"
 	Label           = "label"
 	HasLabel        = "has_label"
+	TiDBShard       = "tidb_shard"
 	// get_lock() and release_lock() is parsed but do nothing.
 	// It is used for preventing error in Ruby's activerecord migrations.
 	GetLock     = "get_lock"

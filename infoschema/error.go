@@ -78,6 +78,8 @@ var (
 	ErrWrongObject = dbterror.ClassSchema.NewStd(mysql.ErrWrongObject)
 	// ErrAdminCheckTable returns when the check table in temporary mode.
 	ErrAdminCheckTable = dbterror.ClassSchema.NewStd(mysql.ErrAdminCheckTable)
+	// ErrEmptyDatabase returns when the database is unexpectedly empty.
+	ErrEmptyDatabase = dbterror.ClassSchema.NewStd(mysql.ErrBadDB)
 	// ErrGraphExists returns for graph already exists.
 	ErrGraphExists = dbterror.ClassSchema.NewStd(mysql.ErrGraphExists)
 	// ErrGraphNotExists returns for graph not exists.

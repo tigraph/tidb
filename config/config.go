@@ -109,15 +109,16 @@ type Config struct {
 	MemQuotaQuery    int64  `toml:"mem-quota-query" json:"mem-quota-query"`
 	// TempStorageQuota describe the temporary storage Quota during query exector when OOMUseTmpStorage is enabled
 	// If the quota exceed the capacity of the TempStoragePath, the tidb-server would exit with fatal error
-	TempStorageQuota int64 `toml:"tmp-storage-quota" json:"tmp-storage-quota"` // Bytes
-	// Deprecated
-	EnableStreaming bool                    `toml:"-" json:"-"`
-	EnableBatchDML  bool                    `toml:"enable-batch-dml" json:"enable-batch-dml"`
-	TxnLocalLatches tikvcfg.TxnLocalLatches `toml:"-" json:"-"`
+	TempStorageQuota int64                   `toml:"tmp-storage-quota" json:"tmp-storage-quota"` // Bytes
+	EnableBatchDML   bool                    `toml:"enable-batch-dml" json:"enable-batch-dml"`
+	TxnLocalLatches  tikvcfg.TxnLocalLatches `toml:"-" json:"-"`
 	// Set sys variable lower-case-table-names, ref: https://dev.mysql.com/doc/refman/5.7/en/identifier-case-sensitivity.html.
 	// TODO: We actually only support mode 2, which keeps the original case, but the comparison is case-insensitive.
 	LowerCaseTableNames        int                `toml:"lower-case-table-names" json:"lower-case-table-names"`
 	ServerVersion              string             `toml:"server-version" json:"server-version"`
+	VersionComment             string             `toml:"version-comment" json:"version-comment"`
+	TiDBEdition                string             `toml:"tidb-edition" json:"tidb-edition"`
+	TiDBReleaseVersion         string             `toml:"tidb-release-version" json:"tidb-release-version"`
 	Log                        Log                `toml:"log" json:"log"`
 	Security                   Security           `toml:"security" json:"security"`
 	Status                     Status             `toml:"status" json:"status"`
@@ -131,7 +132,7 @@ type Config struct {
 	CompatibleKillQuery        bool               `toml:"compatible-kill-query" json:"compatible-kill-query"`
 	Plugin                     Plugin             `toml:"plugin" json:"plugin"`
 	PessimisticTxn             PessimisticTxn     `toml:"pessimistic-txn" json:"pessimistic-txn"`
-	CheckMb4ValueInUTF8        bool               `toml:"check-mb4-value-in-utf8" json:"check-mb4-value-in-utf8"`
+	CheckMb4ValueInUTF8        AtomicBool         `toml:"check-mb4-value-in-utf8" json:"check-mb4-value-in-utf8"`
 	MaxIndexLength             int                `toml:"max-index-length" json:"max-index-length"`
 	IndexLimit                 int                `toml:"index-limit" json:"index-limit"`
 	TableColumnCountLimit      uint32             `toml:"table-column-count-limit" json:"table-column-count-limit"`
@@ -229,11 +230,9 @@ func (c *Config) getTiKVConfig() *tikvcfg.Config {
 
 func encodeDefTempStorageDir(tempDir string, host, statusHost string, port, statusPort uint) string {
 	dirName := base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%v:%v/%v:%v", host, port, statusHost, statusPort)))
-	var osUID string
+	osUID := ""
 	currentUser, err := user.Current()
-	if err != nil {
-		osUID = ""
-	} else {
+	if err == nil {
 		osUID = currentUser.Uid
 	}
 	return filepath.Join(tempDir, osUID+"_tidb", dirName, "tmp-storage")
@@ -571,6 +570,8 @@ type PessimisticTxn struct {
 	DeadlockHistoryCapacity uint `toml:"deadlock-history-capacity" json:"deadlock-history-capacity"`
 	// Whether retryable deadlocks (in-statement deadlocks) are collected to the information_schema.deadlocks table.
 	DeadlockHistoryCollectRetryable bool `toml:"deadlock-history-collect-retryable" json:"deadlock-history-collect-retryable"`
+	// PessimisticAutoCommit represents if true it means the auto-commit transactions will be in pessimistic mode.
+	PessimisticAutoCommit AtomicBool `toml:"pessimistic-auto-commit" json:"pessimistic-auto-commit"`
 }
 
 // DefaultPessimisticTxn returns the default configuration for PessimisticTxn
@@ -579,6 +580,7 @@ func DefaultPessimisticTxn() PessimisticTxn {
 		MaxRetryCount:                   256,
 		DeadlockHistoryCapacity:         10,
 		DeadlockHistoryCollectRetryable: false,
+		PessimisticAutoCommit:           *NewAtomicBool(false),
 	}
 }
 
@@ -629,9 +631,8 @@ var defaultConf = Config{
 	TempStoragePath:              tempStorageDirName,
 	OOMAction:                    OOMActionCancel,
 	MemQuotaQuery:                1 << 30,
-	EnableStreaming:              false,
 	EnableBatchDML:               false,
-	CheckMb4ValueInUTF8:          true,
+	CheckMb4ValueInUTF8:          *NewAtomicBool(true),
 	MaxIndexLength:               3072,
 	IndexLimit:                   64,
 	TableColumnCountLimit:        1017,
@@ -647,6 +648,9 @@ var defaultConf = Config{
 	LowerCaseTableNames:          2,
 	GracefulWaitBeforeShutdown:   0,
 	ServerVersion:                "",
+	TiDBEdition:                  "",
+	VersionComment:               "",
+	TiDBReleaseVersion:           "",
 	Log: Log{
 		Level:               "info",
 		Format:              "text",
@@ -746,10 +750,11 @@ var defaultConf = Config{
 		AutoTLS:                     false,
 		RSAKeySize:                  4096,
 	},
-	DeprecateIntegerDisplayWidth: false,
-	EnableEnumLengthLimit:        true,
-	StoresRefreshInterval:        defTiKVCfg.StoresRefreshInterval,
-	EnableForwarding:             defTiKVCfg.EnableForwarding,
+	DeprecateIntegerDisplayWidth:         false,
+	EnableEnumLengthLimit:                true,
+	StoresRefreshInterval:                defTiKVCfg.StoresRefreshInterval,
+	EnableForwarding:                     defTiKVCfg.EnableForwarding,
+	NewCollationsEnabledOnFirstBootstrap: true,
 }
 
 var (
@@ -777,21 +782,28 @@ func StoreGlobalConfig(config *Config) {
 }
 
 var deprecatedConfig = map[string]struct{}{
-	"pessimistic-txn.ttl":              {},
-	"pessimistic-txn.enable":           {},
-	"log.file.log-rotate":              {},
-	"log.log-slow-query":               {},
-	"txn-local-latches":                {},
-	"txn-local-latches.enabled":        {},
-	"txn-local-latches.capacity":       {},
-	"performance.max-memory":           {},
-	"max-txn-time-use":                 {},
-	"experimental.allow-auto-random":   {},
-	"enable-redact-log":                {}, // use variable tidb_redact_log instead
-	"tikv-client.copr-cache.enable":    {},
-	"alter-primary-key":                {}, // use NONCLUSTERED keyword instead
-	"enable-streaming":                 {},
-	"performance.mem-profile-interval": {},
+	"pessimistic-txn.ttl":                {},
+	"pessimistic-txn.enable":             {},
+	"log.file.log-rotate":                {},
+	"log.log-slow-query":                 {},
+	"txn-local-latches":                  {},
+	"txn-local-latches.enabled":          {},
+	"txn-local-latches.capacity":         {},
+	"performance.max-memory":             {},
+	"max-txn-time-use":                   {},
+	"experimental.allow-auto-random":     {},
+	"enable-redact-log":                  {}, // use variable tidb_redact_log instead
+	"tikv-client.copr-cache.enable":      {},
+	"alter-primary-key":                  {}, // use NONCLUSTERED keyword instead
+	"enable-streaming":                   {},
+	"performance.mem-profile-interval":   {},
+	"stmt-summary":                       {},
+	"stmt-summary.enable":                {},
+	"stmt-summary.enable-internal-query": {},
+	"stmt-summary.max-stmt-count":        {},
+	"stmt-summary.max-sql-length":        {},
+	"stmt-summary.refresh-interval":      {},
+	"stmt-summary.history-size":          {},
 }
 
 func isAllDeprecatedConfigItems(items []string) bool {
@@ -1062,7 +1074,7 @@ func initByLDFlags(edition, checkBeforeDropLDFlag string) {
 }
 
 // The following constants represents the valid action configurations for OOMAction.
-// NOTE: Although the values is case insensitive, we should use lower-case
+// NOTE: Although the values is case-insensitive, we should use lower-case
 // strings because the configuration value will be transformed to lower-case
 // string and compared with these constants in the further usage.
 const (
