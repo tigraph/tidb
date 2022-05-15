@@ -1440,13 +1440,26 @@ func (g *GraphInfo) Clone() *GraphInfo {
 }
 
 var (
+	PGQLHiddenColPrefix = "_pgql_"
 	// PGQLLabelPropName is the name of PGQLLabel property. PGQLLabel is a hidden property
 	// that is used to implement label related functions, such as label(n) and has_label(n, 'name').
-	PGQLLabelPropName = NewCIStr("_pgql_label")
-	// PGQLDescPropName is the name of PGQLDesc property. ExtraDesc is a hidden property
+	PGQLLabelPropName = NewCIStr(PGQLHiddenColPrefix + "label")
+	// PGQLDescPropName is the name of PGQLDesc property. PGQLDesc is a hidden property
 	// that is used to show the description of vertex or edge variables.
-	PGQLDescPropName = NewCIStr("_pgql_desc")
+	PGQLDescPropName = NewCIStr(PGQLHiddenColPrefix + "desc")
 )
+
+func PGQLKeyColName(colName CIStr) CIStr {
+	return NewCIStr(fmt.Sprintf("%skeycol_%s", PGQLHiddenColPrefix, colName.O))
+}
+
+func PGQLSrcKeyColName(colName CIStr) CIStr {
+	return NewCIStr(fmt.Sprintf("%ssrckeycol_%s", PGQLHiddenColPrefix, colName.O))
+}
+
+func PGQLDstKeyColName(colName CIStr) CIStr {
+	return NewCIStr(fmt.Sprintf("%sdstkeycol_%s", PGQLHiddenColPrefix, colName.O))
+}
 
 // PropertyInfo provides graph property info.
 type PropertyInfo struct {

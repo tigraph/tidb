@@ -15,413 +15,768 @@
 package core
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/util/set"
 	"github.com/pingcap/tidb/util/slicesext"
 	"golang.org/x/exp/maps"
+	"math"
+	"sort"
 )
 
-// vertexVar represents a vertex variable.
-type vertexVar struct {
-	name      model.CIStr
-	anonymous bool
-	tables    []*model.GraphTable
+type Vertex struct {
+	Name  model.CIStr
+	Table *model.GraphTable
 }
 
-func (v *vertexVar) copy() *vertexVar {
-	nv := *v
-	return &nv
+type VertexPairConnection interface {
+	Name() model.CIStr
+	SrcTblName() model.CIStr
+	SrcKeyCols() []model.CIStr
+	DstTblName() model.CIStr
+	DstKeyCols() []model.CIStr
+	AnyDirected() bool
+	SetAnyDirected(anyDirected bool)
+	SelfConnected() bool
+	SrcVarName() model.CIStr
+	SetSrcVarName(name model.CIStr)
+	DstVarName() model.CIStr
+	SetDstVarName(name model.CIStr)
+	Copy() VertexPairConnection
 }
 
-// filterTables filter tables which match the label filter.
-func (v *vertexVar) filterTables(labels []model.CIStr) {
-	v.tables = slicesext.FilterFunc(v.tables, func(tbl *model.GraphTable) bool {
-		return slicesext.ContainsFunc(labels, func(label model.CIStr) bool {
-			return tbl.Label.Equal(label)
-		})
-	})
-}
+var (
+	_ VertexPairConnection = &Edge{}
+	_ VertexPairConnection = &CommonPathExpression{}
+	_ VertexPairConnection = &VariableLengthPath{}
+)
 
-// edgeVar represents an edge variable.
-type edgeVar struct {
-	name       model.CIStr
-	anonymous  bool
-	tables     []*model.GraphTable
-	srcVarName string
-	dstVarName string
-	// anyDirected indicates the source vertex and destination vertex can
-	// swap position when they are connected with this edge.
+type baseVertexPairConnection struct {
+	name        model.CIStr
+	srcVarName  model.CIStr
+	dstVarName  model.CIStr
 	anyDirected bool
-	group       *edgeGroup
 }
 
-func (e *edgeVar) copy() *edgeVar {
+func (b *baseVertexPairConnection) Name() model.CIStr {
+	return b.name
+}
+
+func (b *baseVertexPairConnection) SetName(name model.CIStr) {
+	b.name = name
+}
+
+func (b *baseVertexPairConnection) SrcVarName() model.CIStr {
+	return b.srcVarName
+}
+
+func (b *baseVertexPairConnection) SetSrcVarName(name model.CIStr) {
+	b.srcVarName = name
+}
+
+func (b *baseVertexPairConnection) DstVarName() model.CIStr {
+	return b.dstVarName
+}
+
+func (b *baseVertexPairConnection) SetDstVarName(name model.CIStr) {
+	b.dstVarName = name
+}
+
+func (b *baseVertexPairConnection) AnyDirected() bool {
+	return b.anyDirected
+}
+
+func (b *baseVertexPairConnection) SetAnyDirected(anyDirected bool) {
+	b.anyDirected = anyDirected
+}
+
+type Edge struct {
+	baseVertexPairConnection
+
+	Table *model.GraphTable
+}
+
+func (e *Edge) Copy() VertexPairConnection {
 	ne := *e
 	return &ne
 }
 
-func (e *edgeVar) isGroup() bool {
-	return e.group != nil
+func (e *Edge) SrcTblName() model.CIStr {
+	return e.Table.Source.Name
 }
 
-// edgeGroup holds group information for a group edge variable.
-// See https://pgql-lang.org/spec/1.4/#group-variables for more details.
-type edgeGroup struct {
-	tp        ast.PathPatternType
-	topk      uint64
-	hopSrcVar *vertexVar
-	hopDstVar *vertexVar
-	minHops   uint64
-	maxHops   uint64
-	where     ast.ExprNode
-	cost      ast.ExprNode
+func (e *Edge) SrcKeyCols() []model.CIStr {
+	return e.Table.Source.KeyCols
 }
 
-type subgraph struct {
-	graphInfo    *model.GraphInfo
+func (e *Edge) DstTblName() model.CIStr {
+	return e.Table.Destination.Name
+}
+
+func (e *Edge) DstKeyCols() []model.CIStr {
+	return e.Table.Destination.KeyCols
+}
+
+func (e *Edge) SelfConnected() bool {
+	return false
+}
+
+type CommonPathExpression struct {
+	baseVertexPairConnection
+
+	Vertices    []*Vertex
+	Connections []VertexPairConnection
+	Constraints ast.ExprNode
+}
+
+func (c *CommonPathExpression) Copy() VertexPairConnection {
+	nc := *c
+	return &nc
+}
+
+func (c *CommonPathExpression) SrcTblName() model.CIStr {
+	return c.Connections[0].SrcTblName()
+}
+
+func (c *CommonPathExpression) SrcKeyCols() []model.CIStr {
+	return c.Connections[0].SrcKeyCols()
+}
+
+func (c *CommonPathExpression) DstTblName() model.CIStr {
+	return c.Connections[len(c.Connections)-1].DstTblName()
+}
+
+func (c *CommonPathExpression) DstKeyCols() []model.CIStr {
+	return c.Connections[len(c.Connections)-1].DstKeyCols()
+}
+
+func (c *CommonPathExpression) SelfConnected() bool {
+	return false
+}
+
+type PathFindingGoal int
+
+const (
+	PathFindingAll PathFindingGoal = iota
+	PathFindingReaches
+	PathFindingShortest
+	PathFindingCheapest
+)
+
+type VariableLengthPath struct {
+	baseVertexPairConnection
+
+	srcTblName model.CIStr
+	srcKeyCols []model.CIStr
+	dstTblName model.CIStr
+	dstKeyCols []model.CIStr
+
+	Conns       []VertexPairConnection
+	Goal        PathFindingGoal
+	MinHops     int64
+	MaxHops     int64
+	TopK        int64
+	WithTies    bool
+	Constraints ast.ExprNode
+	Cost        ast.ExprNode
+	HopSrc      []*Vertex
+	HopDst      []*Vertex
+}
+
+func (v *VariableLengthPath) Copy() VertexPairConnection {
+	nv := *v
+	return &nv
+}
+
+func (v *VariableLengthPath) SrcTblName() model.CIStr {
+	return v.srcTblName
+}
+
+func (v *VariableLengthPath) SetSrcTblName(name model.CIStr) {
+	v.srcTblName = name
+}
+
+func (v *VariableLengthPath) SrcKeyCols() []model.CIStr {
+	return v.srcKeyCols
+}
+
+func (v *VariableLengthPath) SetSrcKeyCols(cols []model.CIStr) {
+	v.srcKeyCols = cols
+}
+
+func (v *VariableLengthPath) DstTblName() model.CIStr {
+	return v.dstTblName
+}
+
+func (v *VariableLengthPath) SetDstTblName(name model.CIStr) {
+	v.dstTblName = name
+}
+
+func (v *VariableLengthPath) DstKeyCols() []model.CIStr {
+	return v.dstKeyCols
+}
+
+func (v *VariableLengthPath) SetDstKeyCols(cols []model.CIStr) {
+	v.dstKeyCols = cols
+}
+
+func (v *VariableLengthPath) SelfConnected() bool {
+	return len(v.Conns) == 0
+}
+
+type Subgraph struct {
+	Vertices    map[string]*Vertex
+	Connections map[string]VertexPairConnection
+}
+
+func (s *Subgraph) Clone() *Subgraph {
+	return &Subgraph{
+		Vertices:    maps.Clone(s.Vertices),
+		Connections: maps.Clone(s.Connections),
+	}
+}
+
+type GraphVar struct {
+	Name          model.CIStr
+	Anonymous     bool
+	PropertyNames []model.CIStr
+}
+
+type Subgraphs struct {
+	Matched       []*Subgraph
+	SingletonVars []*GraphVar
+	GroupVars     []*GraphVar
+}
+
+type SubgraphBuilder struct {
+	graph        *model.GraphInfo
 	vertexLabels []model.CIStr
 	edgeLabels   []model.CIStr
-	vertexVars   map[string]*vertexVar
-	edgeVars     map[string]*edgeVar
+	macros       []*ast.PathPatternMacro
+	paths        []*ast.PathPattern
+
+	cpes          map[string][]*CommonPathExpression
+	vertices      map[string][]*Vertex
+	connections   map[string][]VertexPairConnection
+	singletonVars []*GraphVar
+	groupVars     []*GraphVar
+	subgraphs     []*Subgraph
 }
 
-func newSubgraph(graphInfo *model.GraphInfo) *subgraph {
-	return &subgraph{
-		graphInfo:    graphInfo,
-		vertexLabels: graphInfo.VertexLabels(),
-		edgeLabels:   graphInfo.EdgeLabels(),
-		vertexVars:   make(map[string]*vertexVar),
-		edgeVars:     make(map[string]*edgeVar),
+func NewSubgraphBuilder(graph *model.GraphInfo) *SubgraphBuilder {
+	return &SubgraphBuilder{
+		graph:        graph,
+		vertexLabels: graph.VertexLabels(),
+		edgeLabels:   graph.EdgeLabels(),
+		cpes:         make(map[string][]*CommonPathExpression),
+		vertices:     make(map[string][]*Vertex),
+		connections:  make(map[string][]VertexPairConnection),
 	}
 }
 
-func (s *subgraph) clone() *subgraph {
-	ns := newSubgraph(s.graphInfo)
-	ns.vertexVars = maps.Clone(s.vertexVars)
-	ns.edgeVars = maps.Clone(s.edgeVars)
-	return ns
+func (s *SubgraphBuilder) AddPathPatterns(paths ...*ast.PathPattern) *SubgraphBuilder {
+	s.paths = append(s.paths, paths...)
+	return s
 }
 
-func (s *subgraph) addVertex(astVar *ast.VariableSpec) {
-	varName := astVar.Name
-	if v, ok := s.vertexVars[varName.L]; ok {
-		if len(astVar.Labels) > 0 {
-			v.filterTables(astVar.Labels)
+func (s *SubgraphBuilder) AddPathPatternMacros(macros ...*ast.PathPatternMacro) *SubgraphBuilder {
+	s.macros = append(s.macros, macros...)
+	return s
+}
+
+func (s *SubgraphBuilder) Build() (*Subgraphs, error) {
+	s.buildVertices()
+	if err := s.buildCommonPathExpressions(); err != nil {
+		return nil, err
+	}
+	if err := s.buildConnections(); err != nil {
+		return nil, err
+	}
+	s.buildSubgraphs(&Subgraph{
+		Vertices:    make(map[string]*Vertex),
+		Connections: make(map[string]VertexPairConnection),
+	})
+	sort.Slice(s.singletonVars, func(i, j int) bool {
+		return s.singletonVars[i].Name.L < s.singletonVars[j].Name.L
+	})
+	sort.Slice(s.groupVars, func(i, j int) bool {
+		return s.groupVars[i].Name.L < s.groupVars[j].Name.L
+	})
+	sgs := &Subgraphs{
+		Matched:       s.subgraphs,
+		SingletonVars: s.singletonVars,
+		GroupVars:     s.groupVars,
+	}
+	return sgs, nil
+}
+
+func (s *SubgraphBuilder) buildSubgraphs(sg *Subgraph) {
+	stepVertex := func(name string) {
+		vertices := s.vertices[name]
+		if len(vertices) == 0 {
+			return
 		}
-	} else {
-		s.vertexVars[varName.L] = s.newVertex(astVar)
+		delete(s.vertices, name)
+		for _, v := range vertices {
+			sg.Vertices[name] = v
+			s.buildSubgraphs(sg)
+			delete(sg.Vertices, name)
+		}
+		s.vertices[name] = vertices
+	}
+
+	stepConn := func(name string) {
+		conns := s.connections[name]
+		if len(conns) == 0 {
+			return
+		}
+		srcVarName := conns[0].SrcVarName()
+		srcVertex, ok := sg.Vertices[srcVarName.L]
+		if !ok {
+			stepVertex(srcVarName.L)
+			return
+		}
+		dstVarName := conns[0].DstVarName()
+		dstVertex, ok := sg.Vertices[dstVarName.L]
+		if !ok {
+			stepVertex(dstVarName.L)
+			return
+		}
+		delete(s.connections, name)
+		for _, conn := range conns {
+			if conn.SelfConnected() && srcVertex.Table.Name.Equal(dstVertex.Table.Name) ||
+				!conn.SelfConnected() && srcVertex.Table.Name.Equal(conn.SrcTblName()) &&
+					dstVertex.Table.Name.Equal(conn.DstTblName()) {
+				sg.Connections[name] = conn
+				s.buildSubgraphs(sg)
+				delete(sg.Connections, name)
+			}
+		}
+		s.connections[name] = conns
+	}
+
+	if len(s.connections) == 0 {
+		if len(s.vertices) == 0 {
+			s.subgraphs = append(s.subgraphs, sg.Clone())
+			return
+		}
+		var name string
+		for name = range s.vertices {
+			break
+		}
+		stepVertex(name)
+		return
+	}
+	var name string
+	for name = range s.connections {
+		break
+	}
+	stepConn(name)
+}
+
+func (s *SubgraphBuilder) buildCommonPathExpressions() error {
+	cpes := make(map[string][]*CommonPathExpression, len(s.macros))
+	for _, m := range s.macros {
+		result, err := s.buildPathPatternMacro(m)
+		if err != nil {
+			return err
+		}
+		cpes[m.Name.L] = result
+	}
+	s.cpes = cpes
+	return nil
+}
+
+func (s *SubgraphBuilder) buildPathPatternMacro(macro *ast.PathPatternMacro) ([]*CommonPathExpression, error) {
+	if macro.Path.Tp != ast.PathPatternSimple {
+		return nil, ErrNotSupportedYet.GenWithStackByArgs("Non-simple Path in Path Pattern Macro")
+	}
+	subgraphs, err := NewSubgraphBuilder(s.graph).AddPathPatterns(macro.Path).Build()
+	if err != nil {
+		return nil, err
+	}
+	if len(subgraphs.Matched) == 0 {
+		return nil, nil
+	}
+
+	sg := subgraphs.Matched[0]
+	next := make(map[string]string)
+	inDegree := make(map[string]int)
+	for _, conn := range sg.Connections {
+		next[conn.SrcVarName().L] = conn.DstVarName().L
+		inDegree[conn.DstVarName().L]++
+	}
+	var leftMost string
+	for _, left := range next {
+		if inDegree[left] == 0 {
+			leftMost = left
+			break
+		}
+	}
+	vertexNames := make(map[string]int)
+	for idx, cur := 0, leftMost; cur != ""; idx, cur = idx+1, next[leftMost] {
+		vertexNames[cur] = idx
+	}
+	connNames := make(map[string]int)
+	for _, conn := range sg.Connections {
+		connNames[conn.Name().L] = vertexNames[conn.SrcVarName().L]
+	}
+
+	var cpes []*CommonPathExpression
+	for _, sg := range subgraphs.Matched {
+		cpe := &CommonPathExpression{
+			Vertices:    make([]*Vertex, len(sg.Vertices)),
+			Connections: make([]VertexPairConnection, len(sg.Connections)),
+		}
+		for _, v := range sg.Vertices {
+			cpe.Vertices[vertexNames[v.Name.L]] = v
+		}
+		for _, conn := range sg.Connections {
+			cpe.Connections[connNames[conn.Name().L]] = conn
+		}
+		cpe.Constraints = macro.Where
+	}
+	return cpes, nil
+}
+
+func (s *SubgraphBuilder) buildVertices() {
+	astVars := make(map[string]*ast.VariableSpec)
+	for _, path := range s.paths {
+		for _, astVertex := range path.Vertices {
+			astVar := astVertex.Variable
+			labels := astVar.Labels
+			if vs, ok := s.vertices[astVar.Name.L]; ok {
+				if len(labels) > 0 {
+					vs = slicesext.FilterFunc(vs, func(v *Vertex) bool {
+						return slicesext.ContainsFunc(labels, func(label model.CIStr) bool {
+							return label.Equal(v.Name)
+						})
+					})
+					s.vertices[astVar.Name.L] = vs
+				}
+			} else {
+				s.vertices[astVar.Name.L] = s.buildVertex(astVar)
+				astVars[astVar.Name.L] = astVar
+			}
+		}
+	}
+	for name, vs := range s.vertices {
+		astVar := astVars[name]
+		s.singletonVars = append(s.singletonVars, buildVertexVar(astVar, vs))
 	}
 }
 
-func (s *subgraph) addEdge(astVar *ast.VariableSpec, srcVarName, dstVarName string, anyDirected bool) {
-	varName := astVar.Name
-	if _, ok := s.edgeVars[varName.L]; ok {
-		panic(fmt.Sprintf("subgraph: duplicate edge variable %v", varName))
-	}
-	labels := astVar.Labels
-	if len(labels) == 0 {
-		labels = s.edgeLabels
-	}
-	s.edgeVars[varName.L] = &edgeVar{
-		name:        varName,
-		anonymous:   astVar.Anonymous,
-		tables:      s.graphInfo.EdgeTablesByLabels(labels...),
-		srcVarName:  srcVarName,
-		dstVarName:  dstVarName,
-		anyDirected: anyDirected,
-	}
-}
-
-func (s *subgraph) addGroupEdge(astVar *ast.VariableSpec, srcVarName, dstVarName string, anyDirected bool, group *edgeGroup) {
-	varName := astVar.Name
-	s.addEdge(astVar, srcVarName, dstVarName, anyDirected)
-	ev := s.edgeVars[varName.L]
-	ev.group = group
-}
-
-func (s *subgraph) newVertex(astVar *ast.VariableSpec) *vertexVar {
-	varName := astVar.Name
+func (s *SubgraphBuilder) buildVertex(astVar *ast.VariableSpec) []*Vertex {
 	labels := astVar.Labels
 	if len(labels) == 0 {
 		labels = s.vertexLabels
 	}
-	return &vertexVar{
-		name:      varName,
-		anonymous: astVar.Anonymous,
-		tables:    s.graphInfo.VertexTablesByLabels(labels...),
+	tables := s.graph.VertexTablesByLabels(labels...)
+	var vs []*Vertex
+	for _, table := range tables {
+		vs = append(vs, &Vertex{
+			Name:  astVar.Name,
+			Table: table,
+		})
 	}
+	return vs
 }
 
-// propagate generates multiple simple subgraphs. The union matching results of multiple subgraphs is equivalent to
-// the original subgraph matching results.
-// A simple subgraph has the following properties:
-// 1. All of its simple singleton variables holds *exactly one* graph table.
-// 2. A singleton edge variable is always directed if source key and destination key reference different vertex tables.
-func (s *subgraph) propagate() []*subgraph {
-	ctx := &propagateCtx{
-		parent: s.clone(),
-		child:  newSubgraph(s.graphInfo),
-	}
-	propagateSubgraph(ctx)
-	return ctx.children
-}
-
-type propagateCtx struct {
-	parent   *subgraph
-	child    *subgraph
-	children []*subgraph
-}
-
-func propagateSubgraph(ctx *propagateCtx) {
-	if len(ctx.parent.edgeVars) == 0 {
-		if len(ctx.parent.vertexVars) == 0 {
-			ctx.children = append(ctx.children, ctx.child.clone())
-			return
-		}
-		var vv *vertexVar
-		for _, vv = range ctx.parent.vertexVars {
-			break
-		}
-		propagateVertex(ctx, vv)
-		return
-	}
-
-	var ev *edgeVar
-	for _, ev = range ctx.parent.edgeVars {
-		break
-	}
-	propagateEdge(ctx, ev)
-}
-
-func propagateEdge(ctx *propagateCtx, ev *edgeVar) {
-	srcVar, ok := ctx.child.vertexVars[ev.srcVarName]
-	if !ok {
-		vv := ctx.parent.vertexVars[ev.srcVarName]
-		propagateVertex(ctx, vv)
-		return
-	}
-	dstVar, ok := ctx.child.vertexVars[ev.dstVarName]
-	if !ok {
-		vv := ctx.parent.vertexVars[ev.dstVarName]
-		propagateVertex(ctx, vv)
-		return
-	}
-	srcTblName := srcVar.tables[0].Name
-	dstTblName := dstVar.tables[0].Name
-
-	if ev.isGroup() {
-		propagateEdgeGroup(ctx, ev, srcTblName, dstTblName)
-		return
-	}
-
-	delete(ctx.parent.edgeVars, ev.name.L)
-	defer func() { ctx.parent.edgeVars[ev.name.L] = ev }()
-	for _, tbl := range ev.tables {
-		if tbl.Source.Name.Equal(srcTblName) && tbl.Destination.Name.Equal(dstTblName) ||
-			ev.anyDirected && tbl.Source.Name.Equal(dstTblName) && tbl.Destination.Name.Equal(srcTblName) {
-			nv := ev.copy()
-			nv.tables = []*model.GraphTable{tbl}
-			if nv.anyDirected && !srcTblName.Equal(dstTblName) {
-				if tbl.Source.Name.Equal(dstTblName) {
-					nv.srcVarName = dstVar.name.L
-					nv.dstVarName = srcVar.name.L
-				}
-				nv.anyDirected = false
+func (s *SubgraphBuilder) buildConnections() error {
+	allConns := s.connections
+	for _, path := range s.paths {
+		for i, astConn := range path.Connections {
+			var (
+				conns     []VertexPairConnection
+				direction ast.EdgeDirection
+				err       error
+			)
+			switch path.Tp {
+			case ast.PathPatternSimple:
+				conns, direction, err = s.buildSimplePath(astConn)
+			case ast.PathPatternAny, ast.PathPatternAnyShortest, ast.PathPatternAllShortest, ast.PathPatternTopKShortest,
+				ast.PathPatternAnyCheapest, ast.PathPatternAllCheapest, ast.PathPatternTopKCheapest, ast.PathPatternAll:
+				topK := int64(path.TopK & math.MaxInt64) // FIXME: use int64 in TopK
+				conns, direction, err = s.buildVariableLengthPath(path.Tp, topK, astConn)
+			default:
+				return ErrUnsupportedType.GenWithStack("Unsupported PathPatternType %d", path.Tp)
 			}
-			ctx.child.edgeVars[ev.name.L] = nv
-			propagateSubgraph(ctx)
-			delete(ctx.child.edgeVars, ev.name.L)
-		}
-	}
-}
-
-func propagateVertex(ctx *propagateCtx, vv *vertexVar) {
-	delete(ctx.parent.vertexVars, vv.name.L)
-	for _, tbl := range vv.tables {
-		nv := vv.copy()
-		nv.tables = []*model.GraphTable{tbl}
-		ctx.child.vertexVars[vv.name.L] = nv
-		propagateSubgraph(ctx)
-		delete(ctx.child.vertexVars, vv.name.L)
-	}
-	ctx.parent.vertexVars[vv.name.L] = vv
-}
-
-func propagateEdgeGroup(ctx *propagateCtx, ev *edgeVar, srcTblName, dstTblName model.CIStr) {
-	eg := ev.group
-	if eg.minHops > eg.maxHops {
-		return
-	}
-
-	queue := []model.CIStr{srcTblName}
-	visited := set.NewStringSet(srcTblName.L)
-	minHops := -1
-bfsLoop:
-	for hops := 0; len(queue) > 0; hops++ {
-		l := len(queue)
-		for i := 0; i < l; i++ {
-			curTblName := queue[0]
-			queue = queue[1:]
-			if curTblName.Equal(dstTblName) {
-				minHops = hops
-				break bfsLoop
+			leftVarName := path.Vertices[i].Variable.Name
+			rightVarName := path.Vertices[i+1].Variable.Name
+			srcVarName, dstVarName, anyDirected, err := resolveSrcDstVarName(leftVarName, rightVarName, direction)
+			if err != nil {
+				return err
 			}
-			iterRightTbl(ev, curTblName, func(nextTblName model.CIStr) {
-				if !visited.Exist(nextTblName.L) {
-					visited.Insert(nextTblName.L)
-					queue = append(queue, nextTblName)
-				}
-			})
-		}
-	}
-	if minHops == -1 || uint64(minHops) > eg.maxHops {
-		return
-	}
-
-	// If minHops < eg.minHops, we can't guarantee that we will reach the dstTbl with at least eg.minHops.
-	// So we need to check if we can reach dstTbl step by step. In case eg.minHops is too large, an upper limit
-	// will be set here.
-	if uint64(minHops) < eg.minHops {
-		const hopsLimit = 1024
-		maxHops := hopsLimit
-		if uint64(maxHops) > eg.minHops {
-			maxHops = int(eg.minHops)
-		}
-		leftVisited := visited
-		queue := []model.CIStr{dstTblName}
-		hops := 0
-		for ; hops < maxHops && len(queue) > 0; hops++ {
-			l := len(queue)
-			nextVisit := set.NewStringSet()
-			for i := 0; i < l; i++ {
-				curTblName := queue[0]
-				queue = queue[1:]
-				iterLeftTbl(ev, curTblName, func(nextTblName model.CIStr) {
-					// We need to ensure nextTbl can reach srcTbl by checking if it exists in leftVisited set.
-					if leftVisited.Exist(nextTblName.L) && !nextVisit.Exist(nextTblName.L) {
-						nextVisit.Insert(nextTblName.L)
-						queue = append(queue, nextTblName)
+			for _, conn := range conns {
+				var revConn VertexPairConnection
+				if anyDirected {
+					if conn.SelfConnected() || conn.SrcTblName().Equal(conn.DstTblName()) {
+						conn.SetAnyDirected(true)
+					} else {
+						revConn = conn.Copy()
+						revConn.SetSrcVarName(dstVarName)
+						revConn.SetDstVarName(srcVarName)
+						revConn.SetAnyDirected(false)
+						conn.SetAnyDirected(false)
+						allConns[conn.Name().L] = append(allConns[conn.Name().L], revConn)
 					}
-				})
-			}
-		}
-		// We can't reach dstTbl.
-		if hops < maxHops || len(queue) == 0 {
-			return
-		}
-		// hops == eg.maxHops == eg.minHops.
-		if uint64(hops) == eg.maxHops {
-			if _, ok := slicesext.FindFunc(queue, func(tblName model.CIStr) bool {
-				return tblName.Equal(srcTblName)
-			}); !ok {
-				return
+				}
+				conn.SetSrcVarName(srcVarName)
+				conn.SetDstVarName(dstVarName)
+				allConns[conn.Name().L] = append(allConns[conn.Name().L], conn)
 			}
 		}
 	}
-
-	nv := ev.copy()
-	delete(ctx.parent.edgeVars, ev.name.L)
-	ctx.child.edgeVars[ev.name.L] = nv
-	propagateSubgraph(ctx)
-	delete(ctx.child.edgeVars, ev.name.L)
-	ctx.parent.edgeVars[ev.name.L] = ev
+	return nil
 }
 
-func iterRightTbl(ev *edgeVar, curTblName model.CIStr, f func(nextTblName model.CIStr)) {
-	eg := ev.group
-	if eg.hopSrcVar != nil {
-		if _, ok := slicesext.FindFunc(eg.hopSrcVar.tables, func(tbl *model.GraphTable) bool {
-			return tbl.Name.Equal(curTblName)
-		}); !ok {
-			return
+func (s *SubgraphBuilder) buildSimplePath(astConn ast.VertexPairConnection) ([]VertexPairConnection, ast.EdgeDirection, error) {
+	var conns []VertexPairConnection
+	switch x := astConn.(type) {
+	case *ast.EdgePattern:
+		varName := x.Variable.Name
+		labels := x.Variable.Labels
+		if len(labels) == 0 {
+			labels = s.edgeLabels
 		}
-	}
-	for _, tbl := range ev.tables {
-		var nextTblName model.CIStr
-		if tbl.Source.Name.Equal(curTblName) {
-			nextTblName = tbl.Destination.Name
-		} else if ev.anyDirected && tbl.Destination.Name.Equal(curTblName) {
-			nextTblName = tbl.Source.Name
+		tables := s.graph.EdgeTablesByLabels(labels...)
+		for _, table := range tables {
+			edge := &Edge{Table: table}
+			edge.SetName(varName)
+			conns = append(conns, edge)
+		}
+		s.singletonVars = append(s.singletonVars, buildGraphVarWithTables(x.Variable, tables))
+		return conns, x.Direction, nil
+	case *ast.ReachabilityPathExpr:
+		vlp := s.buildBasicVariableLengthPath(x.AnonymousName, x.Labels)
+		vlp.Goal = PathFindingReaches
+		if x.Quantifier != nil {
+			vlp.MinHops = int64(x.Quantifier.N & math.MaxInt64) // FIXME: use int64 in Quantifier
+			vlp.MaxHops = int64(x.Quantifier.M & math.MaxInt64) // FIXME: use int64 in Quantifier
 		} else {
-			continue
+			vlp.MinHops = 1
+			vlp.MaxHops = 1
 		}
-		if eg.hopDstVar != nil {
-			if _, ok := slicesext.FindFunc(eg.hopDstVar.tables, func(tbl *model.GraphTable) bool {
-				return tbl.Name.Equal(nextTblName)
-			}); !ok {
-				continue
-			}
+		for _, conn := range expandVariableLengthPaths(vlp) {
+			conns = append(conns, conn)
 		}
-		f(nextTblName)
+		s.groupVars = append(s.groupVars, &GraphVar{
+			Name:      x.AnonymousName,
+			Anonymous: true,
+		})
+		return conns, x.Direction, nil
+	default:
+		return nil, 0, ErrUnsupportedType.GenWithStack(
+			"Unsupported ast.VertexPairConnection(%T) in simple path pattern", x)
 	}
 }
 
-func iterLeftTbl(ev *edgeVar, curTblName model.CIStr, f func(nextTblName model.CIStr)) {
-	eg := ev.group
-	if eg.hopDstVar != nil {
-		if _, ok := slicesext.FindFunc(eg.hopDstVar.tables, func(tbl *model.GraphTable) bool {
-			return tbl.Name.Equal(curTblName)
-		}); !ok {
-			return
+func (s *SubgraphBuilder) buildVariableLengthPath(
+	pathTp ast.PathPatternType, topK int64, astConn ast.VertexPairConnection,
+) ([]VertexPairConnection, ast.EdgeDirection, error) {
+	x, ok := astConn.(*ast.QuantifiedPathExpr)
+	if !ok {
+		return nil, 0, ErrUnsupportedType.GenWithStack(
+			"Unsupported ast.VertexPairConnection(%T) for variable-length path pattern", astConn)
+	}
+	varName := x.Edge.Variable.Name
+	labels := x.Edge.Variable.Labels
+	vlp := s.buildBasicVariableLengthPath(varName, labels)
+
+	switch pathTp {
+	case ast.PathPatternAny, ast.PathPatternAnyShortest:
+		vlp.Goal = PathFindingShortest
+		vlp.TopK = 1
+	case ast.PathPatternAllShortest:
+		vlp.Goal = PathFindingShortest
+		vlp.WithTies = true
+	case ast.PathPatternTopKShortest:
+		vlp.Goal = PathFindingShortest
+		vlp.TopK = topK
+	case ast.PathPatternAnyCheapest:
+		vlp.Goal = PathFindingCheapest
+		vlp.TopK = 1
+	case ast.PathPatternAllCheapest:
+		vlp.Goal = PathFindingCheapest
+		vlp.WithTies = true
+	case ast.PathPatternTopKCheapest:
+		vlp.Goal = PathFindingCheapest
+		vlp.TopK = topK
+	case ast.PathPatternAll:
+		vlp.Goal = PathFindingAll
+	}
+	if x.Quantifier != nil {
+		vlp.MinHops = int64(x.Quantifier.N & math.MaxInt64) // FIXME: use int64 in Quantifier
+		vlp.MaxHops = int64(x.Quantifier.M & math.MaxInt64) // FIXME: use int64 in Quantifier
+	} else {
+		vlp.MinHops = 1
+		vlp.MaxHops = 1
+	}
+	if x.Quantifier != nil {
+		vlp.MinHops = int64(x.Quantifier.N & math.MaxInt64) // FIXME: use int64 in Quantifier
+		vlp.MaxHops = int64(x.Quantifier.M & math.MaxInt64) // FIXME: use int64 in Quantifier
+	} else {
+		vlp.MinHops = 1
+		vlp.MaxHops = 1
+	}
+	vlp.Constraints = x.Where
+	vlp.Cost = x.Cost
+
+	var hopSrcVar, hopDstVar *ast.VariableSpec
+	if x.Source != nil {
+		hopSrcVar = x.Source.Variable
+	}
+	if x.Destination != nil {
+		hopDstVar = x.Destination.Variable
+	}
+	if x.Edge.Direction == ast.EdgeDirectionIncoming {
+		hopSrcVar, hopDstVar = hopDstVar, hopSrcVar
+	}
+	if hopSrcVar != nil {
+		vlp.HopSrc = s.buildVertex(hopSrcVar)
+		s.groupVars = append(s.groupVars, buildVertexVar(hopSrcVar, vlp.HopSrc))
+	}
+	if hopDstVar != nil {
+		vlp.HopDst = s.buildVertex(hopDstVar)
+		s.groupVars = append(s.groupVars, buildVertexVar(hopDstVar, vlp.HopDst))
+	}
+	var tables []*model.GraphTable
+	for _, conn := range vlp.Conns {
+		if e, ok := conn.(*Edge); ok {
+			tables = append(tables, e.Table)
 		}
 	}
-	for _, tbl := range ev.tables {
-		var nextTblName model.CIStr
-		if tbl.Destination.Name.Equal(curTblName) {
-			nextTblName = tbl.Source.Name
-		} else if ev.anyDirected && tbl.Source.Name.Equal(curTblName) {
-			nextTblName = tbl.Destination.Name
-		} else {
-			continue
-		}
-		if eg.hopSrcVar != nil {
-			if _, ok := slicesext.FindFunc(eg.hopSrcVar.tables, func(tbl *model.GraphTable) bool {
-				return tbl.Name.Equal(nextTblName)
-			}); !ok {
-				continue
+	s.groupVars = append(s.groupVars, buildGraphVarWithTables(x.Edge.Variable, tables))
+
+	var conns []VertexPairConnection
+	for _, conn := range expandVariableLengthPaths(vlp) {
+		conns = append(conns, conn)
+	}
+	return conns, x.Edge.Direction, nil
+}
+
+func (s *SubgraphBuilder) buildBasicVariableLengthPath(varName model.CIStr, labels []model.CIStr) *VariableLengthPath {
+	var conns []VertexPairConnection
+	if len(labels) == 0 {
+		labels = s.edgeLabels
+	} else {
+		var newLabels []model.CIStr
+		for _, label := range labels {
+			if matchedCpes, ok := s.cpes[label.L]; ok {
+				for _, cpe := range matchedCpes {
+					newCpe := cpe.Copy().(*CommonPathExpression)
+					newCpe.SetName(varName)
+					conns = append(conns, newCpe)
+				}
+			} else {
+				newLabels = append(labels, label)
 			}
 		}
-		f(nextTblName)
+		labels = newLabels
+	}
+	if len(labels) > 0 {
+		tables := s.graph.EdgeTablesByLabels(labels...)
+		for _, table := range tables {
+			edge := &Edge{Table: table}
+			edge.SetName(varName)
+			conns = append(conns, edge)
+		}
+	}
+	vlp := &VariableLengthPath{Conns: conns}
+	vlp.SetName(varName)
+	return vlp
+}
+
+func expandVariableLengthPaths(vlp *VariableLengthPath) []*VariableLengthPath {
+	if len(vlp.Conns) == 0 {
+		return []*VariableLengthPath{vlp}
+	}
+
+	var vlps []*VariableLengthPath
+	if vlp.MinHops == 0 {
+		selfConnected := vlp.Copy().(*VariableLengthPath)
+		selfConnected.Conns = nil
+		vlps = append(vlps, selfConnected)
+	}
+
+	if len(vlp.Conns) == 1 {
+		vlp.SetSrcTblName(vlp.Conns[0].SrcTblName())
+		vlp.SetSrcKeyCols(vlp.Conns[0].SrcKeyCols())
+		vlp.SetDstTblName(vlp.Conns[0].DstTblName())
+		vlp.SetDstKeyCols(vlp.Conns[0].DstKeyCols())
+		return append(vlps, vlp)
+	}
+
+	leftMostConns := make(map[string]VertexPairConnection)
+	rightMostConns := make(map[string]VertexPairConnection)
+	for _, conn := range vlp.Conns {
+		leftMostConns[conn.SrcTblName().L] = conn
+		rightMostConns[conn.DstTblName().L] = conn
+	}
+	for _, leftMostConn := range leftMostConns {
+		for _, rightMostConn := range rightMostConns {
+			newVlp := vlp.Copy().(*VariableLengthPath)
+			newVlp.SetSrcTblName(leftMostConn.SrcTblName())
+			newVlp.SetSrcKeyCols(leftMostConn.SrcKeyCols())
+			newVlp.SetDstTblName(rightMostConn.DstTblName())
+			newVlp.SetDstKeyCols(rightMostConn.DstKeyCols())
+			vlps = append(vlps, newVlp)
+		}
+	}
+	return vlps
+}
+
+func buildVertexVar(astVar *ast.VariableSpec, vs []*Vertex) *GraphVar {
+	var tables []*model.GraphTable
+	for _, v := range vs {
+		tables = append(tables, v.Table)
+	}
+	return buildGraphVarWithTables(astVar, tables)
+}
+
+func buildGraphVarWithTables(astVar *ast.VariableSpec, tables []*model.GraphTable) *GraphVar {
+	if astVar.Anonymous {
+		return &GraphVar{
+			Name:      astVar.Name,
+			Anonymous: true,
+		}
+	} else {
+		ss := set.NewStringSet()
+		var propertyNames []model.CIStr
+		for _, table := range tables {
+			for _, p := range table.Properties {
+				if !ss.Exist(p.Name.L) {
+					propertyNames = append(propertyNames, p.Name)
+					ss.Insert(p.Name.L)
+				}
+			}
+		}
+		sort.Slice(propertyNames, func(i, j int) bool {
+			return propertyNames[i].L < propertyNames[j].L
+		})
+		return &GraphVar{
+			Name:          astVar.Name,
+			PropertyNames: propertyNames,
+		}
 	}
 }
 
-// tableAsNameForVar combines variable name and table name.
-// It guarantees the two result strings are equal if and only if both varName and tblName are equal.
-//
-// This is achieved by encoding the varName first and then concat it with tblName.
-// The encoding rule is similar to codec.EncodeBytes, but with group 4 and padding char '0':
-//  [group1][marker1]...[groupN][markerN]
-//  group is 4 bytes slice which is padding with '0'.
-//  marker is `'0' + char count`
-// For example:
-//   "" -> "00000"
-//   "a" -> "a0001"
-//   "ab" -> "ab002"
-//   "abc" -> "abc03"
-//   "abcd" -> "abcd400000"
-//   "abcde" -> "abcd4e0001"
-func tableAsNameForVar(varName model.CIStr, tblName model.CIStr) model.CIStr {
-	const (
-		encGroupSize = 4
-		paddingChar  = '0'
-	)
-	sb := strings.Builder{}
-	for i := 0; i <= len(varName.O); i += encGroupSize {
-		s := varName.O[i:]
-		if len(s) > encGroupSize {
-			s = s[:encGroupSize]
-		}
-		sb.WriteString(s)
-		for j := 0; j < encGroupSize-len(s); j++ {
-			sb.WriteByte(paddingChar)
-		}
-		sb.WriteByte(paddingChar + byte(len(s)))
+func resolveSrcDstVarName(
+	leftVarName, rightVarName model.CIStr, direction ast.EdgeDirection,
+) (srcVarName, dstVarName model.CIStr, anyDirected bool, err error) {
+	switch direction {
+	case ast.EdgeDirectionOutgoing:
+		srcVarName = leftVarName
+		dstVarName = rightVarName
+	case ast.EdgeDirectionIncoming:
+		srcVarName = rightVarName
+		dstVarName = leftVarName
+	case ast.EdgeDirectionAnyDirected:
+		srcVarName = leftVarName
+		dstVarName = rightVarName
+		anyDirected = true
+	default:
+		err = ErrUnsupportedType.GenWithStack("Unsupported EdgeDirection %d", direction)
 	}
-	sb.WriteByte('_')
-	sb.WriteString(tblName.O)
-	return model.NewCIStr(sb.String())
+	return
 }
