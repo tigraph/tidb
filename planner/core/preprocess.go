@@ -1761,8 +1761,17 @@ func (p *preprocessor) handleGraphName(gn *ast.GraphName) {
 func (p *preprocessor) checkMatch(m *ast.MatchClause) {
 	graph := m.Graph
 	if graph == nil || graph.Name.L == "" {
-		p.err = errors.Trace(ErrNoGraph)
-		return
+		if currentGraph := p.ctx.GetSessionVars().CurrentGraph; currentGraph != "" {
+			graph = &ast.GraphName{Name: model.NewCIStr(currentGraph)}
+			p.handleGraphName(graph)
+			if p.err != nil {
+				return
+			}
+			m.Graph = graph
+		} else {
+			p.err = errors.Trace(ErrNoGraph)
+			return
+		}
 	}
 	if err := p.checkGraph(graph); err != nil {
 		p.err = err

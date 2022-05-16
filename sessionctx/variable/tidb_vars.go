@@ -217,6 +217,9 @@ const (
 
 	// TiDBSysdateIsNow is the name of the `tidb_sysdate_is_now` system variable
 	TiDBSysdateIsNow = "tidb_sysdate_is_now"
+
+	// TiDBDefaultGraph is used to set default graph.
+	TiDBDefaultGraph = "tidb_default_graph"
 )
 
 // TiDB system variable names that both in session and global scope.

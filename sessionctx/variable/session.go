@@ -555,6 +555,9 @@ type SessionVars struct {
 	// the slow log to make it be compatible with MySQL, https://github.com/pingcap/tidb/issues/17846.
 	CurrentDBChanged bool
 
+	// CurrentGraph is the default graph of this session.
+	CurrentGraph string
+
 	// StrictSQLMode indicates if the session is in strict mode.
 	StrictSQLMode bool
 

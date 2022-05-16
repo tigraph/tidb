@@ -407,6 +407,10 @@ var defaultSysVars = []*SysVar{
 		}
 		return string(info), nil
 	}},
+	{Scope: ScopeSession, Name: TiDBDefaultGraph, Value: "", skipInit: true, SetSession: func(s *SessionVars, val string) error {
+		s.CurrentGraph = val
+		return nil
+	}},
 
 	/* The system variables below have INSTANCE scope  */
 	{Scope: ScopeInstance, Name: TiDBGeneralLog, Value: BoolToOnOff(DefTiDBGeneralLog), Type: TypeBool, skipInit: true, SetGlobal: func(s *SessionVars, val string) error {
