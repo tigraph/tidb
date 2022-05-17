@@ -3784,7 +3784,11 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p L
 		}
 	}
 	if len(sel.PathPatternMacros) > 0 {
-		return nil, ErrNotSupportedYet.GenWithStackByArgs("Path Pattern Macros")
+		outerLen := len(b.pathPatternMacros)
+		b.pathPatternMacros = append(b.pathPatternMacros, sel.PathPatternMacros...)
+		defer func() {
+			b.pathPatternMacros = b.pathPatternMacros[:outerLen]
+		}()
 	}
 	noopFuncsMode := b.ctx.GetSessionVars().NoopFuncsMode
 	if sel.SelectStmtOpts != nil {
@@ -7060,7 +7064,9 @@ func (b *PlanBuilder) buildMatch(ctx context.Context, match *ast.MatchClause) (L
 		return nil, infoschema.ErrGraphNotExists.GenWithStackByArgs(dbName, graphName)
 	}
 
-	sgs, err := NewSubgraphBuilder(graphInfo).AddPathPatterns(match.Paths...).Build()
+	sgs, err := NewSubgraphBuilder(graphInfo).
+		AddPathPatternMacros(b.pathPatternMacros...).
+		AddPathPatterns(match.Paths...).Build()
 	if err != nil {
 		return nil, err
 	}

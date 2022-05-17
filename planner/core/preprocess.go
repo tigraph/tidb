@@ -152,12 +152,16 @@ const (
 	// inSequenceFunction is set when visiting a sequence function.
 	// This flag indicates the tableName in these function should be checked as sequence object.
 	inSequenceFunction
-	// initTxnContextProvider is set when we should init txn context in preprocess
+	// initTxnContextProvider is set when we should init txn context in preprocess.
 	initTxnContextProvider
 	// inVertexVariable is set when visiting a vertex variable.
 	inVertexVariable
 	// inEdgeVariable is set when visiting an edge variable.
 	inEdgeVariable
+	// inQuantifiedPathExpr is set when visiting a QuantifiedPathExpr.
+	inQuantifiedPathExpr
+	// inPathPatternMacro is set when visiting a PathPatternMacro.
+	inPathPatternMacro
 )
 
 // Make linter happy.
@@ -196,10 +200,25 @@ type preprocessor struct {
 
 	staleReadProcessor staleread.Processor
 
-	// vertexLabels is a stacks that keep all the vertex labels in a match clause.
-	vertexLabels map[string]model.CIStr
-	// edgeLabels is a stacks that keep all the edge labels in a match clause.
-	edgeLabels map[string]model.CIStr
+	// nonRepeatableVars collects non-repeatable graph variables. All the edge variables
+	// or vertex variables in ParenthesizedPathPatternExpression are non-repeatable.
+	nonRepeatableVars set.StringSet
+	// Vertex variables in simple path pattern or endpoint vertex patterns of variable-length
+	// paths are repeatable. But they are not allowed to repeat among different graphs.
+	// For example:
+	//     MATCH ANY (n) ((n1) -[e1]-> (m1)) (m)
+	// n and m can be repeatable, n1, e1 and m1 are non-repeatable.
+	repeatableVertexVars map[string]*ast.GraphName
+	// anonymousVarNames is list of pointers to anonymous variables.
+	anonymousVarNames []*model.CIStr
+	// pathPatternMacros is a stacks that keep all the path pattern macros in a select statement.
+	pathPatternMacros map[string][]*ast.PathPatternMacro
+	// currentGraph is the current graph that match clause is matching on.
+	currentGraph *ast.GraphName
+	// vertexLabels is the set of vertex labels for current graph.
+	vertexLabels set.StringSet
+	// edgeLabels is the set of edge labels for current graph.
+	edgeLabels set.StringSet
 
 	// values that may be returned
 	*PreprocessorReturn
@@ -215,6 +234,13 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		p.stmtTp = TypeDelete
 	case *ast.SelectStmt:
 		p.stmtTp = TypeSelect
+		if len(node.PathPatternMacros) > 0 && p.pathPatternMacros == nil {
+			p.pathPatternMacros = make(map[string][]*ast.PathPatternMacro)
+		}
+		for _, macro := range node.PathPatternMacros {
+			macros := p.pathPatternMacros[macro.Name.L]
+			p.pathPatternMacros[macro.Name.L] = append(macros, macro)
+		}
 	case *ast.UpdateStmt:
 		p.stmtTp = TypeUpdate
 	case *ast.InsertStmt:
@@ -349,15 +375,35 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		p.stmtTp = TypeCreate
 	case *ast.DropPropertyGraphStmt:
 		p.stmtTp = TypeDrop
+	case *ast.PathPatternMacro:
+		p.flag |= inPathPatternMacro
+		p.nonRepeatableVars = set.NewStringSet()
+		p.repeatableVertexVars = make(map[string]*ast.GraphName)
+		p.anonymousVarNames = nil
 	case *ast.VertexTableRef:
 		return in, true
+	case *ast.MatchClauseList:
+		p.nonRepeatableVars = set.NewStringSet()
+		p.repeatableVertexVars = make(map[string]*ast.GraphName)
+		p.anonymousVarNames = nil
 	case *ast.MatchClause:
-		p.vertexLabels = make(map[string]model.CIStr)
-		p.edgeLabels = make(map[string]model.CIStr)
+		if node.Graph == nil {
+			node.Graph = &ast.GraphName{}
+		}
+		p.err = p.resolveGraph(node.Graph)
+		if p.err != nil {
+			return in, true
+		}
+		p.currentGraph = node.Graph
+	case *ast.QuantifiedPathExpr:
+		p.flag |= inQuantifiedPathExpr
 	case *ast.VertexPattern:
 		p.flag |= inVertexVariable
 	case *ast.EdgePattern:
 		p.flag |= inEdgeVariable
+		if node.Variable == nil {
+			node.Variable = &ast.VariableSpec{}
+		}
 	default:
 		p.flag &= ^parentIsJoin
 	}
@@ -514,6 +560,18 @@ func (p *preprocessor) checkBindGrammar(originNode, hintedNode ast.StmtNode, def
 
 func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 	switch x := in.(type) {
+	case *ast.SelectStmt:
+		for _, macro := range x.PathPatternMacros {
+			macros := p.pathPatternMacros[macro.Name.L]
+			if len(macros) <= 1 {
+				delete(p.pathPatternMacros, macro.Name.L)
+			} else {
+				p.pathPatternMacros[macro.Name.L] = macros[:len(macros)-1]
+			}
+		}
+		if len(x.PathPatternMacros) == 0 {
+			x.PathPatternMacros = nil
+		}
 	case *ast.CreateTableStmt:
 		p.flag &= ^inCreateOrDropTable
 		p.checkAutoIncrement(x)
@@ -584,31 +642,64 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 		if x.Kind == ast.BRIEKindRestore {
 			p.flag &= ^inCreateOrDropTable
 		}
-	case *ast.GraphName:
-		p.handleGraphName(x)
+	case *ast.VariableSpec:
+		// Don't check label in a path pattern macro.
+		if p.flag&inPathPatternMacro == 0 {
+			for _, label := range x.Labels {
+				if p.flag&inVertexVariable > 0 && !p.vertexLabels.Exist(label.L) {
+					p.err = ErrLabelNotExists.GenWithStackByArgs(label)
+					return in, false
+				}
+				if p.flag&inEdgeVariable > 0 && !p.edgeLabels.Exist(label.L) {
+					p.err = ErrLabelNotExists.GenWithStackByArgs(label)
+					return in, false
+				}
+			}
+		}
+		if !p.checkAnonymousVar(x) {
+			if p.flag&inVertexVariable > 0 {
+				if p.flag&inQuantifiedPathExpr > 0 {
+					p.err = p.addNonRepeatableVar(x)
+				} else {
+					p.err = p.addRepeatableVertexVar(x)
+				}
+			} else if p.flag&inEdgeVariable > 0 {
+				p.err = p.addNonRepeatableVar(x)
+			}
+		}
 	case *ast.VertexPattern:
 		p.flag &= ^inVertexVariable
 	case *ast.EdgePattern:
 		p.flag &= ^inEdgeVariable
+	case *ast.QuantifiedPathExpr:
+		p.flag &= ^inQuantifiedPathExpr
 	case *ast.ReachabilityPathExpr:
-		for _, label := range x.Labels {
-			p.edgeLabels[label.L] = label
-		}
-	case *ast.VariableSpec:
-		for _, label := range x.Labels {
-			if p.flag&inVertexVariable > 0 {
-				p.vertexLabels[label.L] = label
-			}
-			if p.flag&inEdgeVariable > 0 {
-				p.edgeLabels[label.L] = label
+		// Don't check label in a path pattern macro.
+		if p.flag&inPathPatternMacro == 0 {
+			for _, label := range x.Labels {
+				_, matchMacro := p.pathPatternMacros[label.L]
+				if !matchMacro && !p.edgeLabels.Exist(label.L) {
+					p.err = ErrLabelNotExists.GenWithStackByArgs(label)
+					return in, false
+				}
 			}
 		}
+		p.anonymousVarNames = append(p.anonymousVarNames, &x.AnonymousName)
+	case *ast.PathPatternMacro:
+		p.flag &= ^inPathPatternMacro
+		p.generateNames4AnonymousVars()
+		p.nonRepeatableVars = nil
+		p.repeatableVertexVars = nil
+		p.anonymousVarNames = nil
 	case *ast.MatchClause:
-		p.checkMatch(x)
 		p.vertexLabels = nil
 		p.edgeLabels = nil
+		p.currentGraph = nil
 	case *ast.MatchClauseList:
-		p.checkMatchList(x)
+		p.generateNames4AnonymousVars()
+		p.nonRepeatableVars = nil
+		p.repeatableVertexVars = nil
+		p.anonymousVarNames = nil
 	}
 
 	return in, p.err == nil
@@ -1747,39 +1838,22 @@ func (p *preprocessor) hasAutoConvertWarning(colDef *ast.ColumnDef) bool {
 	return false
 }
 
-func (p *preprocessor) handleGraphName(gn *ast.GraphName) {
-	if gn.Schema.L == "" {
+func (p *preprocessor) resolveGraph(graph *ast.GraphName) error {
+	if graph.Schema.L == "" {
 		currentDB := p.ctx.GetSessionVars().CurrentDB
 		if currentDB == "" {
-			p.err = errors.Trace(ErrNoDB)
-			return
+			return errors.Trace(ErrNoDB)
 		}
-		gn.Schema = model.NewCIStr(currentDB)
+		graph.Schema = model.NewCIStr(currentDB)
 	}
-}
-
-func (p *preprocessor) checkMatch(m *ast.MatchClause) {
-	graph := m.Graph
-	if graph == nil || graph.Name.L == "" {
-		if currentGraph := p.ctx.GetSessionVars().CurrentGraph; currentGraph != "" {
-			graph = &ast.GraphName{Name: model.NewCIStr(currentGraph)}
-			p.handleGraphName(graph)
-			if p.err != nil {
-				return
-			}
-			m.Graph = graph
-		} else {
-			p.err = errors.Trace(ErrNoGraph)
-			return
+	if graph.Name.L == "" {
+		currentGraph := p.ctx.GetSessionVars().CurrentGraph
+		if currentGraph == "" {
+			return errors.Trace(ErrNoGraph)
 		}
+		graph.Name = model.NewCIStr(currentGraph)
 	}
-	if err := p.checkGraph(graph); err != nil {
-		p.err = err
-		return
-	}
-}
 
-func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 	is := p.ensureInfoSchema()
 	graphInfo, ok := is.GraphByName(graph.Schema, graph.Name)
 	if !ok {
@@ -1804,7 +1878,6 @@ func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema, graphInfo.Name)
 			}
 		}
-		delete(p.vertexLabels, vTbl.Label.L)
 	}
 	for _, eTbl := range graphInfo.EdgeTables {
 		tn := &ast.TableName{Schema: graph.Schema, Name: eTbl.RefTable}
@@ -1831,119 +1904,66 @@ func (p *preprocessor) checkGraph(graph *ast.GraphName) error {
 				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
 			}
 		}
-		delete(p.edgeLabels, eTbl.Label.L)
 	}
-	for _, arbitraryLabel := range p.vertexLabels {
-		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel)
+
+	p.vertexLabels = set.NewStringSet()
+	for _, label := range graphInfo.VertexLabels() {
+		p.vertexLabels.Insert(label.L)
 	}
-	for _, arbitraryLabel := range p.edgeLabels {
-		return ErrLabelNotExists.GenWithStackByArgs(arbitraryLabel)
+	p.edgeLabels = set.NewStringSet()
+	for _, label := range graphInfo.EdgeLabels() {
+		p.edgeLabels.Insert(label.L)
 	}
 	return nil
 }
 
-func (p *preprocessor) checkMatchList(matchList *ast.MatchClauseList) {
-	// Edge variables or vertex variables in ParenthesizedPathPatternExpression are non-repeatable.
-	nonRepeatableVars := set.NewStringSet()
-	// Vertex variables in simple path pattern or endpoint vertex patterns of variable-length
-	// paths are repeatable. But they are not allowed to repeat among different graphs.
-	// For example:
-	//     MATCH ANY (n) ((n1) -[e1]-> (m1)) (m)
-	// n and m can be repeatable, n1, e1 and m1 are non-repeatable.
-	repeatableVertexVars := make(map[string]*ast.GraphName)
+func (p *preprocessor) addRepeatableVertexVar(v *ast.VariableSpec) error {
+	varName := v.Name.L
+	if p.nonRepeatableVars.Exist(varName) {
+		return ErrDupVariable.GenWithStackByArgs(varName)
+	}
 
-	addNonRepeatableVars := func(v *ast.VariableSpec) error {
-		varName := v.Name.L
-		if nonRepeatableVars.Exist(varName) {
+	if g, ok := p.repeatableVertexVars[varName]; ok {
+		// Match on different graphs is not allowed to have the same variable.
+		if !(p.currentGraph == nil && g == nil || p.currentGraph != nil && g != nil &&
+			p.currentGraph.Schema.Equal(g.Schema) && p.currentGraph.Name.Equal(g.Name)) {
 			return ErrDupVariable.GenWithStackByArgs(varName)
 		}
-		if _, ok := repeatableVertexVars[varName]; ok {
-			return ErrDupVariable.GenWithStackByArgs(varName)
-		}
-		nonRepeatableVars.Insert(varName)
-		return nil
+	} else {
+		p.repeatableVertexVars[varName] = p.currentGraph
 	}
+	return nil
+}
 
-	var anonymousNames []*model.CIStr
-	checkAnonymousVar := func(pv **ast.VariableSpec) bool {
-		if *pv == nil {
-			*pv = &ast.VariableSpec{}
-		}
-		v := *pv
-		if v.Name.L == "" || v.Anonymous {
-			v.Anonymous = true
-			anonymousNames = append(anonymousNames, &v.Name)
-			return true
-		}
-		return false
+func (p *preprocessor) addNonRepeatableVar(v *ast.VariableSpec) error {
+	varName := v.Name.L
+	if p.nonRepeatableVars.Exist(varName) {
+		return ErrDupVariable.GenWithStackByArgs(varName)
 	}
-
-	for _, m := range matchList.Matches {
-		for _, path := range m.Paths {
-			for _, v := range path.Vertices {
-				if checkAnonymousVar(&v.Variable) {
-					continue
-				}
-
-				varName := v.Variable.Name.L
-				if nonRepeatableVars.Exist(varName) {
-					p.err = ErrDupVariable.GenWithStackByArgs(varName)
-					return
-				}
-
-				if g, ok := repeatableVertexVars[varName]; ok {
-					// Match on different graphs is not allowed to have the same variable.
-					if m.Graph.Schema.L != g.Schema.L || m.Graph.Name.L != g.Name.L {
-						p.err = ErrDupVariable.GenWithStackByArgs(varName)
-						return
-					}
-				} else {
-					repeatableVertexVars[varName] = m.Graph
-				}
-			}
-
-			for _, c := range path.Connections {
-				switch x := c.(type) {
-				case *ast.EdgePattern:
-					if !checkAnonymousVar(&x.Variable) {
-						if err := addNonRepeatableVars(x.Variable); err != nil {
-							p.err = err
-							return
-						}
-					}
-				case *ast.QuantifiedPathExpr:
-					if x.Source != nil && !checkAnonymousVar(&x.Source.Variable) {
-						if err := addNonRepeatableVars(x.Source.Variable); err != nil {
-							p.err = err
-							return
-						}
-					}
-					if x.Destination != nil && !checkAnonymousVar(&x.Destination.Variable) {
-						if err := addNonRepeatableVars(x.Destination.Variable); err != nil {
-							p.err = err
-							return
-						}
-					}
-					if !checkAnonymousVar(&x.Edge.Variable) {
-						if err := addNonRepeatableVars(x.Edge.Variable); err != nil {
-							p.err = err
-							return
-						}
-					}
-				case *ast.ReachabilityPathExpr:
-					anonymousNames = append(anonymousNames, &x.AnonymousName)
-				}
-			}
-		}
+	if _, ok := p.repeatableVertexVars[varName]; ok {
+		return ErrDupVariable.GenWithStackByArgs(varName)
 	}
+	p.nonRepeatableVars.Insert(varName)
+	return nil
+}
 
+func (p *preprocessor) checkAnonymousVar(v *ast.VariableSpec) bool {
+	if v.Name.L == "" || v.Anonymous {
+		v.Anonymous = true
+		p.anonymousVarNames = append(p.anonymousVarNames, &v.Name)
+		return true
+	}
+	return false
+}
+
+func (p *preprocessor) generateNames4AnonymousVars() {
 	// Generate name for all anonymous variables.
-	namedVars := nonRepeatableVars
-	for v := range repeatableVertexVars {
+	namedVars := p.nonRepeatableVars
+	for v := range p.repeatableVertexVars {
 		namedVars.Insert(v)
 	}
 	dedup := -1
-	for _, v := range anonymousNames {
+	for _, v := range p.anonymousVarNames {
 		for dedup = dedup + 1; ; dedup++ {
 			name := fmt.Sprintf("_anonymous%d", dedup)
 			if !namedVars.Exist(name) {

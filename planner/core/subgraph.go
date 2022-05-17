@@ -15,13 +15,14 @@
 package core
 
 import (
+	"math"
+	"sort"
+
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/util/set"
 	"github.com/pingcap/tidb/util/slicesext"
 	"golang.org/x/exp/maps"
-	"math"
-	"sort"
 )
 
 type Vertex struct {

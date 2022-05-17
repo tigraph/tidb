@@ -501,8 +501,8 @@ type PlanBuilder struct {
 	buildingRecursivePartForCTE bool
 	buildingCTE                 bool
 
-	// isGraphQuery indicates whether the query is graph query.
-	isGraphQuery bool
+	isGraphQuery      bool
+	pathPatternMacros []*ast.PathPatternMacro
 }
 
 type handleColHelper struct {
