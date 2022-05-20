@@ -7164,7 +7164,7 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 		srcVertex, ok := joinedVertices[conn.SrcVarName().L]
 		if !ok {
 			srcVertex = sg.Vertices[conn.SrcVarName().L]
-			np, err := b.buildAndJoinVertex(ctx, dbName, srcVertex, p)
+			np, err := b.expandVertex(ctx, dbName, srcVertex, p)
 			if err != nil {
 				return nil, err
 			}
@@ -7175,7 +7175,7 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 		dstVertex, ok := joinedVertices[conn.DstVarName().L]
 		if !ok {
 			dstVertex = sg.Vertices[conn.DstVarName().L]
-			np, err := b.buildAndJoinVertex(ctx, dbName, dstVertex, p)
+			np, err := b.expandVertex(ctx, dbName, dstVertex, p)
 			if err != nil {
 				return nil, err
 			}
@@ -7183,23 +7183,7 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 			joinedVertices[dstVertex.Name.L] = dstVertex
 		}
 
-		connPlan, err := b.buildVertexPairConnection(ctx, dbName, conn)
-		if err != nil {
-			return nil, err
-		}
-
-		var onCond ast.ExprNode
-		if conn.SelfConnected() {
-			onCond = buildOnCond4SelfConnected(srcVertex, dstVertex)
-		} else {
-			onCond = buildOnCond4JoinConn(conn, srcVertex, dstVertex)
-			if conn.AnyDirected() {
-				revOnCond := buildOnCond4JoinConn(conn, dstVertex, srcVertex)
-				onCond = &ast.BinaryOperationExpr{Op: opcode.LogicOr, L: onCond, R: revOnCond}
-			}
-		}
-		join := &ast.Join{Tp: ast.CrossJoin, On: &ast.OnCondition{Expr: onCond}}
-		np, err := b.buildJoinWithPlan(ctx, p, connPlan, join)
+		np, err := b.expandVertexPairConnection(ctx, dbName, conn, srcVertex, dstVertex, p)
 		if err != nil {
 			return nil, err
 		}
@@ -7208,7 +7192,7 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 
 	for _, v := range sg.Vertices {
 		if _, ok := joinedVertices[v.Name.L]; !ok {
-			np, err := b.buildAndJoinVertex(ctx, dbName, v, p)
+			np, err := b.expandVertex(ctx, dbName, v, p)
 			if err != nil {
 				return nil, err
 			}
@@ -7219,70 +7203,6 @@ func (b *PlanBuilder) buildSubgraph(ctx context.Context, dbName model.CIStr, sg 
 
 	p = b.buildProjection4Subgraph(p, outputNames)
 	return p, nil
-}
-
-func buildOnCond4JoinConn(conn VertexPairConnection, srcVertex, dstVertex *Vertex) ast.ExprNode {
-	var onConds []*ast.BinaryOperationExpr
-	for i, col := range conn.SrcKeyCols() {
-		onConds = append(onConds, &ast.BinaryOperationExpr{
-			Op: opcode.EQ,
-			L: &ast.ColumnNameExpr{Name: &ast.ColumnName{
-				Table: srcVertex.Name,
-				Name:  model.PGQLKeyColName(srcVertex.Table.KeyCols[i]),
-			}},
-			R: &ast.ColumnNameExpr{Name: &ast.ColumnName{
-				Table: conn.Name(),
-				Name:  model.PGQLSrcKeyColName(col),
-			}},
-		})
-
-	}
-	for i, col := range conn.DstKeyCols() {
-		onConds = append(onConds, &ast.BinaryOperationExpr{
-			Op: opcode.EQ,
-			L: &ast.ColumnNameExpr{Name: &ast.ColumnName{
-				Table: dstVertex.Name,
-				Name:  model.PGQLKeyColName(dstVertex.Table.KeyCols[i]),
-			}},
-			R: &ast.ColumnNameExpr{Name: &ast.ColumnName{
-				Table: conn.Name(),
-				Name:  model.PGQLDstKeyColName(col),
-			}},
-		})
-	}
-	onCond := onConds[0]
-	for i := 1; i < len(onConds); i++ {
-		onCond = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: onCond, R: onConds[i]}
-	}
-	return onCond
-}
-
-func buildOnCond4SelfConnected(srcVertex, dstVertex *Vertex) ast.ExprNode {
-	if srcVertex.Name.Equal(dstVertex.Name) {
-		return nil
-	}
-	if !srcVertex.Table.Name.Equal(dstVertex.Table.Name) {
-		return ast.NewValueExpr(false, mysql.DefaultCharset, mysql.DefaultCollationName)
-	}
-	var onConds []*ast.BinaryOperationExpr
-	for _, col := range srcVertex.Table.KeyCols {
-		onConds = append(onConds, &ast.BinaryOperationExpr{
-			Op: opcode.EQ,
-			L: &ast.ColumnNameExpr{Name: &ast.ColumnName{
-				Table: srcVertex.Name,
-				Name:  model.PGQLKeyColName(col),
-			}},
-			R: &ast.ColumnNameExpr{Name: &ast.ColumnName{
-				Table: dstVertex.Name,
-				Name:  model.PGQLKeyColName(col),
-			}},
-		})
-	}
-	onCond := onConds[0]
-	for i := 1; i < len(onConds); i++ {
-		onCond = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: onCond, R: onConds[i]}
-	}
-	return onCond
 }
 
 func (b *PlanBuilder) buildProjection4Subgraph(p LogicalPlan, outputNames types.NameSlice) LogicalPlan {
@@ -7316,7 +7236,7 @@ func (b *PlanBuilder) buildProjection4Subgraph(p LogicalPlan, outputNames types.
 	return proj
 }
 
-func (b *PlanBuilder) buildAndJoinVertex(ctx context.Context, dbName model.CIStr, v *Vertex, p LogicalPlan) (LogicalPlan, error) {
+func (b *PlanBuilder) expandVertex(ctx context.Context, dbName model.CIStr, v *Vertex, p LogicalPlan) (LogicalPlan, error) {
 	vp, err := b.buildGraphTable(ctx, dbName, v.Table)
 	if err != nil {
 		return nil, err
@@ -7334,27 +7254,113 @@ func (b *PlanBuilder) buildAndJoinVertex(ctx context.Context, dbName model.CIStr
 	return b.buildJoinWithPlan(ctx, p, vp, &ast.Join{Tp: ast.CrossJoin})
 }
 
-func (b *PlanBuilder) buildVertexPairConnection(ctx context.Context, dbName model.CIStr, conn VertexPairConnection) (LogicalPlan, error) {
+func (b *PlanBuilder) expandVertexPairConnection(
+	ctx context.Context, dbName model.CIStr, conn VertexPairConnection,
+	srcVertex, dstVertex *Vertex, p LogicalPlan,
+) (LogicalPlan, error) {
 	switch x := conn.(type) {
 	case *Edge:
-		p, err := b.buildGraphTable(ctx, dbName, x.Table)
-		if err != nil {
-			return nil, err
-		}
-		for _, name := range p.OutputNames() {
-			if name.Hidden {
-				continue
-			}
-			name.DBName = dbName
-			name.TblName = conn.Name()
-		}
-		return p, nil
+		return b.expandEdge(ctx, dbName, x, srcVertex, dstVertex, p)
 	case *CommonPathExpression:
-		return nil, ErrNotSupportedYet.GenWithStackByArgs("CommonPathExpression")
+		return b.expandCommonPathExpression(ctx, dbName, x, srcVertex, dstVertex, p)
 	case *VariableLengthPath:
-		return nil, ErrNotSupportedYet.GenWithStackByArgs("ReachabilityPathExpr or Variable-Length Paths")
+		return b.expandVariableLengthPath(ctx, dbName, x, srcVertex, dstVertex, p)
 	default:
 		return nil, ErrUnsupportedType.GenWithStack("Unsupported VertexPairConnection(%T)", x)
+	}
+}
+
+func (b *PlanBuilder) expandEdge(
+	ctx context.Context, dbName model.CIStr, edge *Edge,
+	srcVertex, dstVertex *Vertex, p LogicalPlan,
+) (LogicalPlan, error) {
+	edgePlan, err := b.buildGraphTable(ctx, dbName, edge.Table)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range edgePlan.OutputNames() {
+		if name.Hidden {
+			continue
+		}
+		name.DBName = dbName
+		name.TblName = edge.Name()
+	}
+	onCond := buildOnCond4JoinEdge(edge, srcVertex, dstVertex)
+	if edge.AnyDirected() {
+		revOnCond := buildOnCond4JoinEdge(edge, dstVertex, srcVertex)
+		onCond = &ast.BinaryOperationExpr{Op: opcode.LogicOr, L: onCond, R: revOnCond}
+	}
+
+	join := &ast.Join{Tp: ast.CrossJoin, On: &ast.OnCondition{Expr: onCond}}
+	return b.buildJoinWithPlan(ctx, p, edgePlan, join)
+}
+
+func buildOnCond4JoinEdge(edge *Edge, srcVertex, dstVertex *Vertex) ast.ExprNode {
+	var onConds []*ast.BinaryOperationExpr
+	for i, col := range edge.Table.Source.KeyCols {
+		onConds = append(onConds, &ast.BinaryOperationExpr{
+			Op: opcode.EQ,
+			L: &ast.ColumnNameExpr{Name: &ast.ColumnName{
+				Table: srcVertex.Name,
+				Name:  model.PGQLKeyColName(srcVertex.Table.KeyCols[i]),
+			}},
+			R: &ast.ColumnNameExpr{Name: &ast.ColumnName{
+				Table: edge.Name(),
+				Name:  model.PGQLSrcKeyColName(col),
+			}},
+		})
+
+	}
+	for i, col := range edge.Table.Destination.KeyCols {
+		onConds = append(onConds, &ast.BinaryOperationExpr{
+			Op: opcode.EQ,
+			L: &ast.ColumnNameExpr{Name: &ast.ColumnName{
+				Table: dstVertex.Name,
+				Name:  model.PGQLKeyColName(dstVertex.Table.KeyCols[i]),
+			}},
+			R: &ast.ColumnNameExpr{Name: &ast.ColumnName{
+				Table: edge.Name(),
+				Name:  model.PGQLDstKeyColName(col),
+			}},
+		})
+	}
+	onCond := onConds[0]
+	for i := 1; i < len(onConds); i++ {
+		onCond = &ast.BinaryOperationExpr{Op: opcode.LogicAnd, L: onCond, R: onConds[i]}
+	}
+	return onCond
+}
+
+func (b *PlanBuilder) expandCommonPathExpression(
+	ctx context.Context, dbName model.CIStr, cpe *CommonPathExpression,
+	srcVertex, dstVertex *Vertex, p LogicalPlan,
+) (LogicalPlan, error) {
+	return nil, ErrNotSupportedYet.GenWithStackByArgs("CommonPathExpression")
+}
+
+func (b *PlanBuilder) expandVariableLengthPath(
+	ctx context.Context, dbName model.CIStr, vlp *VariableLengthPath,
+	srcVertex, dstVertex *Vertex, p LogicalPlan,
+) (LogicalPlan, error) {
+	switch vlp.Goal {
+	case PathFindingAll:
+		return nil, ErrNotSupportedYet.GenWithStackByArgs("All Path")
+	case PathFindingReaches, PathFindingShortest:
+		if vlp.TopK > 1 {
+			return nil, ErrNotSupportedYet.GenWithStackByArgs("TOP k SHORTEST")
+		}
+		shortestPath := &LogicalShortestPath{
+			SrcVertex: srcVertex,
+			DstVertex: dstVertex,
+			Path:      vlp,
+		}
+		shortestPath.SetChildren(p)
+		// TODO: schema cols and expressions.
+		return shortestPath, nil
+	case PathFindingCheapest:
+		return nil, ErrNotSupportedYet.GenWithStackByArgs("Cheapest Path")
+	default:
+		return nil, ErrUnsupportedType.GenWithStack("Unsupported PathFindingGoal %d", vlp.Goal)
 	}
 }
 

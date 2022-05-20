@@ -33,9 +33,7 @@ type Vertex struct {
 type VertexPairConnection interface {
 	Name() model.CIStr
 	SrcTblName() model.CIStr
-	SrcKeyCols() []model.CIStr
 	DstTblName() model.CIStr
-	DstKeyCols() []model.CIStr
 	AnyDirected() bool
 	SetAnyDirected(anyDirected bool)
 	SelfConnected() bool
@@ -106,16 +104,8 @@ func (e *Edge) SrcTblName() model.CIStr {
 	return e.Table.Source.Name
 }
 
-func (e *Edge) SrcKeyCols() []model.CIStr {
-	return e.Table.Source.KeyCols
-}
-
 func (e *Edge) DstTblName() model.CIStr {
 	return e.Table.Destination.Name
-}
-
-func (e *Edge) DstKeyCols() []model.CIStr {
-	return e.Table.Destination.KeyCols
 }
 
 func (e *Edge) SelfConnected() bool {
@@ -125,8 +115,10 @@ func (e *Edge) SelfConnected() bool {
 type CommonPathExpression struct {
 	baseVertexPairConnection
 
-	Vertices    []*Vertex
-	Connections []VertexPairConnection
+	Leftmost    *Vertex
+	Rightmost   *Vertex
+	Vertices    map[string]*Vertex
+	Connections map[string]VertexPairConnection
 	Constraints ast.ExprNode
 }
 
@@ -136,19 +128,11 @@ func (c *CommonPathExpression) Copy() VertexPairConnection {
 }
 
 func (c *CommonPathExpression) SrcTblName() model.CIStr {
-	return c.Connections[0].SrcTblName()
-}
-
-func (c *CommonPathExpression) SrcKeyCols() []model.CIStr {
-	return c.Connections[0].SrcKeyCols()
+	return c.Leftmost.Table.Name
 }
 
 func (c *CommonPathExpression) DstTblName() model.CIStr {
-	return c.Connections[len(c.Connections)-1].DstTblName()
-}
-
-func (c *CommonPathExpression) DstKeyCols() []model.CIStr {
-	return c.Connections[len(c.Connections)-1].DstKeyCols()
+	return c.Rightmost.Table.Name
 }
 
 func (c *CommonPathExpression) SelfConnected() bool {
@@ -168,9 +152,7 @@ type VariableLengthPath struct {
 	baseVertexPairConnection
 
 	srcTblName model.CIStr
-	srcKeyCols []model.CIStr
 	dstTblName model.CIStr
-	dstKeyCols []model.CIStr
 
 	Conns       []VertexPairConnection
 	Goal        PathFindingGoal
@@ -197,28 +179,12 @@ func (v *VariableLengthPath) SetSrcTblName(name model.CIStr) {
 	v.srcTblName = name
 }
 
-func (v *VariableLengthPath) SrcKeyCols() []model.CIStr {
-	return v.srcKeyCols
-}
-
-func (v *VariableLengthPath) SetSrcKeyCols(cols []model.CIStr) {
-	v.srcKeyCols = cols
-}
-
 func (v *VariableLengthPath) DstTblName() model.CIStr {
 	return v.dstTblName
 }
 
 func (v *VariableLengthPath) SetDstTblName(name model.CIStr) {
 	v.dstTblName = name
-}
-
-func (v *VariableLengthPath) DstKeyCols() []model.CIStr {
-	return v.dstKeyCols
-}
-
-func (v *VariableLengthPath) SetDstKeyCols(cols []model.CIStr) {
-	v.dstKeyCols = cols
 }
 
 func (v *VariableLengthPath) SelfConnected() bool {
@@ -345,9 +311,8 @@ func (s *SubgraphBuilder) buildSubgraphs(sg *Subgraph) {
 		}
 		delete(s.connections, name)
 		for _, conn := range conns {
-			if conn.SelfConnected() && srcVertex.Table.Name.Equal(dstVertex.Table.Name) ||
-				!conn.SelfConnected() && srcVertex.Table.Name.Equal(conn.SrcTblName()) &&
-					dstVertex.Table.Name.Equal(conn.DstTblName()) {
+			if srcVertex.Table.Name.Equal(conn.SrcTblName()) &&
+				dstVertex.Table.Name.Equal(conn.DstTblName()) {
 				sg.Connections[name] = conn
 				s.buildSubgraphs(sg)
 				delete(sg.Connections, name)
@@ -376,15 +341,13 @@ func (s *SubgraphBuilder) buildSubgraphs(sg *Subgraph) {
 }
 
 func (s *SubgraphBuilder) buildCommonPathExpressions() error {
-	cpes := make(map[string][]*CommonPathExpression, len(s.macros))
 	for _, m := range s.macros {
 		result, err := s.buildPathPatternMacro(m)
 		if err != nil {
 			return err
 		}
-		cpes[m.Name.L] = result
+		s.cpes[m.Name.L] = result
 	}
-	s.cpes = cpes
 	return nil
 }
 
@@ -400,42 +363,18 @@ func (s *SubgraphBuilder) buildPathPatternMacro(macro *ast.PathPatternMacro) ([]
 		return nil, nil
 	}
 
-	sg := subgraphs.Matched[0]
-	next := make(map[string]string)
-	inDegree := make(map[string]int)
-	for _, conn := range sg.Connections {
-		next[conn.SrcVarName().L] = conn.DstVarName().L
-		inDegree[conn.DstVarName().L]++
-	}
-	var leftMost string
-	for _, left := range next {
-		if inDegree[left] == 0 {
-			leftMost = left
-			break
-		}
-	}
-	vertexNames := make(map[string]int)
-	for idx, cur := 0, leftMost; cur != ""; idx, cur = idx+1, next[leftMost] {
-		vertexNames[cur] = idx
-	}
-	connNames := make(map[string]int)
-	for _, conn := range sg.Connections {
-		connNames[conn.Name().L] = vertexNames[conn.SrcVarName().L]
-	}
+	leftmostVarName := macro.Path.Vertices[0].Variable.Name.L
+	rightmostVarName := macro.Path.Vertices[len(macro.Path.Vertices)-1].Variable.Name.L
 
 	var cpes []*CommonPathExpression
 	for _, sg := range subgraphs.Matched {
-		cpe := &CommonPathExpression{
-			Vertices:    make([]*Vertex, len(sg.Vertices)),
-			Connections: make([]VertexPairConnection, len(sg.Connections)),
-		}
-		for _, v := range sg.Vertices {
-			cpe.Vertices[vertexNames[v.Name.L]] = v
-		}
-		for _, conn := range sg.Connections {
-			cpe.Connections[connNames[conn.Name().L]] = conn
-		}
-		cpe.Constraints = macro.Where
+		cpes = append(cpes, &CommonPathExpression{
+			Leftmost:    sg.Vertices[leftmostVarName],
+			Rightmost:   sg.Vertices[rightmostVarName],
+			Vertices:    sg.Vertices,
+			Connections: sg.Connections,
+			Constraints: macro.Where,
+		})
 	}
 	return cpes, nil
 }
@@ -488,19 +427,23 @@ func (s *SubgraphBuilder) buildConnections() error {
 	for _, path := range s.paths {
 		for i, astConn := range path.Connections {
 			var (
-				conns     []VertexPairConnection
-				direction ast.EdgeDirection
-				err       error
+				conns []VertexPairConnection
+				err   error
 			)
 			switch path.Tp {
 			case ast.PathPatternSimple:
-				conns, direction, err = s.buildSimplePath(astConn)
+				conns, err = s.buildSimplePath(astConn)
 			case ast.PathPatternAny, ast.PathPatternAnyShortest, ast.PathPatternAllShortest, ast.PathPatternTopKShortest,
 				ast.PathPatternAnyCheapest, ast.PathPatternAllCheapest, ast.PathPatternTopKCheapest, ast.PathPatternAll:
 				topK := int64(path.TopK & math.MaxInt64) // FIXME: use int64 in TopK
-				conns, direction, err = s.buildVariableLengthPath(path.Tp, topK, astConn)
+				conns, err = s.buildVariableLengthPath(path.Tp, topK, astConn)
 			default:
 				return ErrUnsupportedType.GenWithStack("Unsupported PathPatternType %d", path.Tp)
+			}
+
+			connName, direction, err := extractConnNameAndDirection(astConn)
+			if err != nil {
+				return err
 			}
 			leftVarName := path.Vertices[i].Variable.Name
 			rightVarName := path.Vertices[i+1].Variable.Name
@@ -508,10 +451,13 @@ func (s *SubgraphBuilder) buildConnections() error {
 			if err != nil {
 				return err
 			}
+
+			// Try to set or eliminate any directed connection.
+			var newConns []VertexPairConnection
 			for _, conn := range conns {
 				var revConn VertexPairConnection
 				if anyDirected {
-					if conn.SelfConnected() || conn.SrcTblName().Equal(conn.DstTblName()) {
+					if conn.SrcTblName().Equal(conn.DstTblName()) {
 						conn.SetAnyDirected(true)
 					} else {
 						revConn = conn.Copy()
@@ -519,19 +465,20 @@ func (s *SubgraphBuilder) buildConnections() error {
 						revConn.SetDstVarName(srcVarName)
 						revConn.SetAnyDirected(false)
 						conn.SetAnyDirected(false)
-						allConns[conn.Name().L] = append(allConns[conn.Name().L], revConn)
+						newConns = append(newConns, revConn)
 					}
 				}
 				conn.SetSrcVarName(srcVarName)
 				conn.SetDstVarName(dstVarName)
-				allConns[conn.Name().L] = append(allConns[conn.Name().L], conn)
+				newConns = append(newConns, conn)
 			}
+			allConns[connName.L] = newConns
 		}
 	}
 	return nil
 }
 
-func (s *SubgraphBuilder) buildSimplePath(astConn ast.VertexPairConnection) ([]VertexPairConnection, ast.EdgeDirection, error) {
+func (s *SubgraphBuilder) buildSimplePath(astConn ast.VertexPairConnection) ([]VertexPairConnection, error) {
 	var conns []VertexPairConnection
 	switch x := astConn.(type) {
 	case *ast.EdgePattern:
@@ -547,7 +494,7 @@ func (s *SubgraphBuilder) buildSimplePath(astConn ast.VertexPairConnection) ([]V
 			conns = append(conns, edge)
 		}
 		s.singletonVars = append(s.singletonVars, buildGraphVarWithTables(x.Variable, tables))
-		return conns, x.Direction, nil
+		return conns, nil
 	case *ast.ReachabilityPathExpr:
 		vlp := s.buildBasicVariableLengthPath(x.AnonymousName, x.Labels)
 		vlp.Goal = PathFindingReaches
@@ -558,26 +505,25 @@ func (s *SubgraphBuilder) buildSimplePath(astConn ast.VertexPairConnection) ([]V
 			vlp.MinHops = 1
 			vlp.MaxHops = 1
 		}
-		for _, conn := range expandVariableLengthPaths(vlp) {
+		for _, conn := range s.expandVariableLengthPaths(vlp) {
 			conns = append(conns, conn)
 		}
 		s.groupVars = append(s.groupVars, &GraphVar{
 			Name:      x.AnonymousName,
 			Anonymous: true,
 		})
-		return conns, x.Direction, nil
+		return conns, nil
 	default:
-		return nil, 0, ErrUnsupportedType.GenWithStack(
-			"Unsupported ast.VertexPairConnection(%T) in simple path pattern", x)
+		return nil, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T) in simple path pattern", x)
 	}
 }
 
 func (s *SubgraphBuilder) buildVariableLengthPath(
 	pathTp ast.PathPatternType, topK int64, astConn ast.VertexPairConnection,
-) ([]VertexPairConnection, ast.EdgeDirection, error) {
+) ([]VertexPairConnection, error) {
 	x, ok := astConn.(*ast.QuantifiedPathExpr)
 	if !ok {
-		return nil, 0, ErrUnsupportedType.GenWithStack(
+		return nil, ErrUnsupportedType.GenWithStack(
 			"Unsupported ast.VertexPairConnection(%T) for variable-length path pattern", astConn)
 	}
 	varName := x.Edge.Variable.Name
@@ -635,10 +581,16 @@ func (s *SubgraphBuilder) buildVariableLengthPath(
 	}
 	if hopSrcVar != nil {
 		vlp.HopSrc = s.buildVertex(hopSrcVar)
+		if len(vlp.HopSrc) == 0 {
+			vlp.Conns = nil
+		}
 		s.groupVars = append(s.groupVars, buildVertexVar(hopSrcVar, vlp.HopSrc))
 	}
 	if hopDstVar != nil {
 		vlp.HopDst = s.buildVertex(hopDstVar)
+		if len(vlp.HopDst) == 0 {
+			vlp.Conns = nil
+		}
 		s.groupVars = append(s.groupVars, buildVertexVar(hopDstVar, vlp.HopDst))
 	}
 	var tables []*model.GraphTable
@@ -650,10 +602,10 @@ func (s *SubgraphBuilder) buildVariableLengthPath(
 	s.groupVars = append(s.groupVars, buildGraphVarWithTables(x.Edge.Variable, tables))
 
 	var conns []VertexPairConnection
-	for _, conn := range expandVariableLengthPaths(vlp) {
+	for _, conn := range s.expandVariableLengthPaths(vlp) {
 		conns = append(conns, conn)
 	}
-	return conns, x.Edge.Direction, nil
+	return conns, nil
 }
 
 func (s *SubgraphBuilder) buildBasicVariableLengthPath(varName model.CIStr, labels []model.CIStr) *VariableLengthPath {
@@ -688,24 +640,20 @@ func (s *SubgraphBuilder) buildBasicVariableLengthPath(varName model.CIStr, labe
 	return vlp
 }
 
-func expandVariableLengthPaths(vlp *VariableLengthPath) []*VariableLengthPath {
-	if len(vlp.Conns) == 0 {
-		return []*VariableLengthPath{vlp}
-	}
-
+func (s *SubgraphBuilder) expandVariableLengthPaths(vlp *VariableLengthPath) []*VariableLengthPath {
 	var vlps []*VariableLengthPath
+	selfConnectable := set.NewStringSet()
 	if vlp.MinHops == 0 {
-		selfConnected := vlp.Copy().(*VariableLengthPath)
-		selfConnected.Conns = nil
-		vlps = append(vlps, selfConnected)
+		for _, tbl := range s.graph.VertexTables {
+			newVlp := vlp.Copy().(*VariableLengthPath)
+			newVlp.SetSrcTblName(tbl.Name)
+			newVlp.SetDstTblName(tbl.Name)
+			vlps = append(vlps, newVlp)
+			selfConnectable.Insert(tbl.Name.L)
+		}
 	}
-
-	if len(vlp.Conns) == 1 {
-		vlp.SetSrcTblName(vlp.Conns[0].SrcTblName())
-		vlp.SetSrcKeyCols(vlp.Conns[0].SrcKeyCols())
-		vlp.SetDstTblName(vlp.Conns[0].DstTblName())
-		vlp.SetDstKeyCols(vlp.Conns[0].DstKeyCols())
-		return append(vlps, vlp)
+	if len(vlp.Conns) == 0 {
+		return vlps
 	}
 
 	leftMostConns := make(map[string]VertexPairConnection)
@@ -714,13 +662,35 @@ func expandVariableLengthPaths(vlp *VariableLengthPath) []*VariableLengthPath {
 		leftMostConns[conn.SrcTblName().L] = conn
 		rightMostConns[conn.DstTblName().L] = conn
 	}
+	var hopSrcTblNames, hopDstTblNames set.StringSet
+	if len(vlp.HopSrc) > 0 {
+		hopSrcTblNames = set.NewStringSet()
+		for _, v := range vlp.HopSrc {
+			hopSrcTblNames.Insert(v.Name.L)
+		}
+	}
+	if len(vlp.HopDst) > 0 {
+		hopDstTblNames = set.NewStringSet()
+		for _, v := range vlp.HopDst {
+			hopDstTblNames.Insert(v.Name.L)
+		}
+	}
+
 	for _, leftMostConn := range leftMostConns {
 		for _, rightMostConn := range rightMostConns {
+			if leftMostConn.SrcTblName().Equal(rightMostConn.DstTblName()) &&
+				selfConnectable.Exist(leftMostConn.SrcTblName().L) {
+				continue
+			}
+			if hopSrcTblNames != nil && !hopSrcTblNames.Exist(leftMostConn.SrcTblName().L) {
+				continue
+			}
+			if hopDstTblNames != nil && !hopDstTblNames.Exist(rightMostConn.DstTblName().L) {
+				continue
+			}
 			newVlp := vlp.Copy().(*VariableLengthPath)
 			newVlp.SetSrcTblName(leftMostConn.SrcTblName())
-			newVlp.SetSrcKeyCols(leftMostConn.SrcKeyCols())
 			newVlp.SetDstTblName(rightMostConn.DstTblName())
-			newVlp.SetDstKeyCols(rightMostConn.DstKeyCols())
 			vlps = append(vlps, newVlp)
 		}
 	}
@@ -780,4 +750,17 @@ func resolveSrcDstVarName(
 		err = ErrUnsupportedType.GenWithStack("Unsupported EdgeDirection %d", direction)
 	}
 	return
+}
+
+func extractConnNameAndDirection(conn ast.VertexPairConnection) (model.CIStr, ast.EdgeDirection, error) {
+	switch x := conn.(type) {
+	case *ast.EdgePattern:
+		return x.Variable.Name, x.Direction, nil
+	case *ast.ReachabilityPathExpr:
+		return x.AnonymousName, x.Direction, nil
+	case *ast.QuantifiedPathExpr:
+		return x.Edge.Variable.Name, x.Edge.Direction, nil
+	default:
+		return model.CIStr{}, 0, ErrUnsupportedType.GenWithStack("Unsupported ast.VertexPairConnection(%T)", x)
+	}
 }

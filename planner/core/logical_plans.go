@@ -1813,3 +1813,12 @@ func (p *LogicalCTE) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
 	}
 	return corCols
 }
+
+type LogicalShortestPath struct {
+	logicalSchemaProducer
+
+	SrcVertex *Vertex
+	DstVertex *Vertex
+
+	Path *VariableLengthPath
+}
