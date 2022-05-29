@@ -7355,7 +7355,36 @@ func (b *PlanBuilder) expandVariableLengthPath(
 			Path:      vlp,
 		}
 		shortestPath.SetChildren(p)
-		// TODO: schema cols and expressions.
+		var (
+			cols        []*expression.Column
+			outputNames types.NameSlice
+		)
+		if len(vlp.HopSrc) > 0 {
+			tmpCols, tmpNames, err := b.buildProperties4GroupVertex(ctx, dbName, vlp.HopSrc)
+			if err != nil {
+				return nil, err
+			}
+			cols = append(cols, tmpCols...)
+			outputNames = append(outputNames, tmpNames...)
+		}
+		if len(vlp.Conns) > 0 {
+			tmpCols, tmpNames, err := b.buildProperties4GroupConnection(ctx, dbName, vlp.Conns)
+			if err != nil {
+				return nil, err
+			}
+			cols = append(cols, tmpCols...)
+			outputNames = append(outputNames, tmpNames...)
+		}
+		if len(vlp.HopDst) > 0 {
+			tmpCols, tmpNames, err := b.buildProperties4GroupVertex(ctx, dbName, vlp.HopDst)
+			if err != nil {
+				return nil, err
+			}
+			cols = append(cols, tmpCols...)
+			outputNames = append(outputNames, tmpNames...)
+		}
+		shortestPath.SetSchema(expression.NewSchema(cols...))
+		shortestPath.SetOutputNames(outputNames)
 		return shortestPath, nil
 	case PathFindingCheapest:
 		return nil, ErrNotSupportedYet.GenWithStackByArgs("Cheapest Path")
@@ -7482,4 +7511,91 @@ func (b *PlanBuilder) buildGraphDescription(graphTable *model.GraphTable, p Logi
 		RetType: retType,
 	})
 	return expression.NewFunction(b.ctx, ast.Concat, retType, exprs...)
+}
+
+func (b *PlanBuilder) buildProperties4GroupVertex(ctx context.Context, dbName model.CIStr, vs []*Vertex) ([]*expression.Column, types.NameSlice, error) {
+	var graphTables []*model.GraphTable
+	for _, v := range vs {
+		graphTables = append(graphTables, v.Table)
+	}
+	cols, outputNames, err := b.buildProperties4UnionTables(ctx, dbName, graphTables)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, name := range outputNames {
+		name.DBName = dbName
+		name.TblName = vs[0].Name
+	}
+	return cols, outputNames, nil
+}
+
+func (b *PlanBuilder) buildProperties4GroupConnection(ctx context.Context, dbName model.CIStr, conns []VertexPairConnection) ([]*expression.Column, types.NameSlice, error) {
+	var graphTables []*model.GraphTable
+	for _, conn := range conns {
+		if edge, ok := conn.(*Edge); ok {
+			graphTables = append(graphTables, edge.Table)
+		}
+	}
+	cols, outputNames, err := b.buildProperties4UnionTables(ctx, dbName, graphTables)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, name := range outputNames {
+		name.DBName = dbName
+		name.TblName = conns[0].Name()
+	}
+	return cols, outputNames, nil
+}
+
+func (b *PlanBuilder) buildProperties4UnionTables(ctx context.Context, dbName model.CIStr, graphTables []*model.GraphTable) ([]*expression.Column, types.NameSlice, error) {
+	var (
+		cols        []*expression.Column
+		outputNames types.NameSlice
+	)
+	cols = append(cols, &expression.Column{
+		UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+		RetType:  types.NewFieldType(mysql.TypeVarchar),
+	})
+	outputNames = append(outputNames, &types.FieldName{ColName: model.PGQLLabelPropName})
+	cols = append(cols, &expression.Column{
+		UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+		RetType:  types.NewFieldType(mysql.TypeVarchar),
+	})
+	outputNames = append(outputNames, &types.FieldName{ColName: model.PGQLDescPropName})
+
+	propNames := make(map[string]model.CIStr)
+	propTypes := make(map[string]*types.FieldType)
+	for _, graphTable := range graphTables {
+		tn := &ast.TableName{Schema: dbName, Name: graphTable.RefTable}
+		p, err := b.buildDataSource(ctx, tn, &model.CIStr{})
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for _, prop := range graphTable.Properties {
+			astExpr, err := generatedexpr.ParseExpression(prop.Expr)
+			if err != nil {
+				return nil, nil, err
+			}
+			expr, err := rewriteAstExpr(b.ctx, astExpr, p.Schema(), p.OutputNames())
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, ok := propNames[prop.Name.L]; !ok {
+				propNames[prop.Name.L] = prop.Name
+				propTypes[prop.Name.L] = expr.GetType()
+			} else {
+				propTypes[prop.Name.L] = unionJoinFieldType(propTypes[prop.Name.L], expr.GetType())
+			}
+		}
+	}
+
+	for name, propType := range propTypes {
+		cols = append(cols, &expression.Column{
+			UniqueID: b.ctx.GetSessionVars().AllocPlanColumnID(),
+			RetType:  propType,
+		})
+		outputNames = append(outputNames, &types.FieldName{ColName: propNames[name]})
+	}
+	return cols, outputNames, nil
 }

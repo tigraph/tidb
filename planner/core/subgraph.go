@@ -453,7 +453,7 @@ func (s *SubgraphBuilder) buildConnections() error {
 			}
 
 			// Try to set or eliminate any directed connection.
-			var newConns []VertexPairConnection
+			var tmpConns []VertexPairConnection
 			for _, conn := range conns {
 				var revConn VertexPairConnection
 				if anyDirected {
@@ -465,14 +465,14 @@ func (s *SubgraphBuilder) buildConnections() error {
 						revConn.SetDstVarName(srcVarName)
 						revConn.SetAnyDirected(false)
 						conn.SetAnyDirected(false)
-						newConns = append(newConns, revConn)
+						tmpConns = append(tmpConns, revConn)
 					}
 				}
 				conn.SetSrcVarName(srcVarName)
 				conn.SetDstVarName(dstVarName)
-				newConns = append(newConns, conn)
+				tmpConns = append(tmpConns, conn)
 			}
-			allConns[connName.L] = newConns
+			allConns[connName.L] = tmpConns
 		}
 	}
 	return nil
@@ -613,7 +613,7 @@ func (s *SubgraphBuilder) buildBasicVariableLengthPath(varName model.CIStr, labe
 	if len(labels) == 0 {
 		labels = s.edgeLabels
 	} else {
-		var newLabels []model.CIStr
+		var realLabels []model.CIStr
 		for _, label := range labels {
 			if matchedCpes, ok := s.cpes[label.L]; ok {
 				for _, cpe := range matchedCpes {
@@ -622,10 +622,10 @@ func (s *SubgraphBuilder) buildBasicVariableLengthPath(varName model.CIStr, labe
 					conns = append(conns, newCpe)
 				}
 			} else {
-				newLabels = append(labels, label)
+				realLabels = append(labels, label)
 			}
 		}
-		labels = newLabels
+		labels = realLabels
 	}
 	if len(labels) > 0 {
 		tables := s.graph.EdgeTablesByLabels(labels...)
