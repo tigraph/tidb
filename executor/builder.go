@@ -295,6 +295,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildCTE(v)
 	case *plannercore.PhysicalCTETable:
 		return b.buildCTETableReader(v)
+	case *plannercore.PhysicalShortestPath:
+		return b.buildShortestPath(v)
 	default:
 		if mp, ok := p.(MockPhysicalPlan); ok {
 			return mp.GetExecutor()
@@ -4901,4 +4903,17 @@ func (b *executorBuilder) getCacheTable(tblInfo *model.TableInfo, startTS uint64
 		tbl.(table.CachedTable).UpdateLockForRead(context.Background(), b.ctx.GetStore(), startTS, leaseDuration)
 	}
 	return nil
+}
+
+func (b *executorBuilder) buildShortestPath(v *plannercore.PhysicalShortestPath) Executor {
+	childExec := b.build(v.Children()[0])
+	if b.err != nil {
+		return nil
+	}
+	return &ShortestPathExec{
+		baseExecutor: newBaseExecutor(b.ctx, v.Schema(), v.ID(), childExec),
+		SrcVertex:    v.SrcVertex,
+		DstVertex:    v.DstVertex,
+		Path:         v.Path,
+	}
 }
