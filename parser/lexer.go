@@ -437,6 +437,16 @@ func startWithDash(s *Scanner) (tok int, pos Pos, lit string) {
 		s.r.incN(2)
 		return
 	}
+	if strings.HasPrefix(s.r.s[pos.Offset:], "-/") {
+		tok = dashSlash
+		s.r.incN(2)
+		return
+	}
+	if strings.HasPrefix(s.r.s[pos.Offset:], "-[") {
+		tok = dashBracket
+		s.r.incN(2)
+		return
+	}
 	tok = int('-')
 	lit = "-"
 	s.r.inc()
@@ -446,9 +456,19 @@ func startWithDash(s *Scanner) (tok int, pos Pos, lit string) {
 func startWithSlash(s *Scanner) (tok int, pos Pos, lit string) {
 	pos = s.r.pos()
 	s.r.inc()
-	if s.r.peek() != '*' {
-		tok = int('/')
-		lit = "/"
+	if ch := s.r.peek(); ch != '*' {
+		if ch != '-' {
+			tok = int('/')
+			lit = "/"
+			return
+		}
+		s.r.inc()
+		if ch = s.r.peek(); ch == '>' {
+			tok = sRightArrow
+			s.r.inc()
+		} else {
+			tok = slashDash
+		}
 		return
 	}
 

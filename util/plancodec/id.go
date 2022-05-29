@@ -127,6 +127,8 @@ const (
 	TypeCTE = "CTEFullScan"
 	// TypeCTEDefinition is the type of CTE definition
 	TypeCTEDefinition = "CTE"
+	// TypeShortestPath is the type of TypeShortestPath.
+	TypeShortestPath = "ShortestPath"
 )
 
 // plan id.

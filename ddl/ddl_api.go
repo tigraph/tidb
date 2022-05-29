@@ -62,6 +62,7 @@ import (
 	"github.com/pingcap/tidb/util/set"
 	"github.com/pingcap/tidb/util/sqlexec"
 	"go.uber.org/zap"
+	"golang.org/x/exp/slices"
 )
 
 const (
@@ -759,7 +760,7 @@ func buildColumnAndConstraint(
 	tblCharset string,
 	tblCollate string,
 ) (*table.Column, []*ast.Constraint, error) {
-	if colName := colDef.Name.Name.L; colName == model.ExtraHandleName.L {
+	if colName := colDef.Name.Name; !isCorrectColName(colName) {
 		return nil, nil, dbterror.ErrWrongColumnName.GenWithStackByArgs(colName)
 	}
 
@@ -785,6 +786,11 @@ func buildColumnAndConstraint(
 		return nil, nil, errors.Trace(err)
 	}
 	return col, cts, nil
+}
+
+func isCorrectColName(name model.CIStr) bool {
+	return !name.Equal(model.ExtraHandleName) &&
+		isCorrectPropertyName(name)
 }
 
 // checkColumnDefaultValue checks the default value of the column.
@@ -4339,8 +4345,8 @@ func (d *ddl) getModifiableColumnJob(ctx context.Context, sctx sessionctx.Contex
 		return nil, infoschema.ErrColumnNotExists.GenWithStackByArgs(originalColName, ident.Name)
 	}
 	newColName := specNewColumn.Name.Name
-	if newColName.L == model.ExtraHandleName.L {
-		return nil, dbterror.ErrWrongColumnName.GenWithStackByArgs(newColName.L)
+	if !isCorrectColName(newColName) {
+		return nil, dbterror.ErrWrongColumnName.GenWithStackByArgs(newColName)
 	}
 	// If we want to rename the column name, we need to check whether it already exists.
 	if newColName.L != originalColName.L {
@@ -4677,8 +4683,8 @@ func (d *ddl) RenameColumn(ctx sessionctx.Context, ident ast.Ident, spec *ast.Al
 	if oldColName.L == newColName.L {
 		return nil
 	}
-	if newColName.L == model.ExtraHandleName.L {
-		return dbterror.ErrWrongColumnName.GenWithStackByArgs(newColName.L)
+	if !isCorrectColName(newColName) {
+		return dbterror.ErrWrongColumnName.GenWithStackByArgs(newColName)
 	}
 
 	schema, tbl, err := d.getSchemaAndTableByIdent(ctx, ident)
@@ -5777,7 +5783,7 @@ func (d *ddl) CreateIndex(ctx sessionctx.Context, ti ast.Ident, keyType ast.Inde
 
 func buildFKInfo(fkName model.CIStr, keys []*ast.IndexPartSpecification, refer *ast.ReferenceDef, cols []*table.Column, tbInfo *model.TableInfo) (*model.FKInfo, error) {
 	if len(keys) != len(refer.IndexPartSpecifications) {
-		return nil, infoschema.ErrForeignKeyNotMatch.GenWithStackByArgs("foreign key without name")
+		return nil, infoschema.ErrForeignKeyNotMatch.GenWithStackByArgs("foreign key without name", "reference and table don't match")
 	}
 
 	// all base columns of stored generated columns
@@ -7048,4 +7054,361 @@ func checkTooBigFieldLengthAndTryAutoConvert(tp *types.FieldType, colName string
 		}
 	}
 	return nil
+}
+
+func (d *ddl) CreatePropertyGraph(ctx sessionctx.Context, stmt *ast.CreatePropertyGraphStmt) error {
+	is := d.GetInfoSchemaWithInterceptor(ctx)
+	schema, ok := is.SchemaByName(stmt.Graph.Schema)
+	if !ok {
+		return infoschema.ErrDatabaseNotExists.GenWithStackByArgs(stmt.Graph.Schema)
+	}
+	if _, ok := is.GraphByName(stmt.Graph.Schema, stmt.Graph.Name); ok {
+		return infoschema.ErrGraphExists.GenWithStackByArgs(stmt.Graph.Schema, stmt.Graph.Name)
+	}
+
+	vertexTables, err := buildGraphTables(stmt.VertexTables, schema.Name, is)
+	if err != nil {
+		return err
+	}
+	edgeTables, err := buildGraphTables(stmt.EdgeTables, schema.Name, is)
+	if err != nil {
+		return err
+	}
+	// Build source and destination vertex table references for edge tables.
+	for i, astETbl := range stmt.EdgeTables {
+		tbl, err := is.TableByName(schema.Name, astETbl.Table.Name)
+		if err != nil {
+			return err
+		}
+		tblInfo := tbl.Meta()
+		edgeTables[i].Source, err = buildVertexTableRef(edgeTables[i].Name, astETbl.Source, vertexTables, tblInfo)
+		if err != nil {
+			return err
+		}
+		edgeTables[i].Destination, err = buildVertexTableRef(edgeTables[i].Name, astETbl.Destination, vertexTables, tblInfo)
+		if err != nil {
+			return err
+		}
+	}
+
+	graphInfo := &model.GraphInfo{
+		Name:         stmt.Graph.Name,
+		VertexTables: vertexTables,
+		EdgeTables:   edgeTables,
+	}
+	if err := checkGraphInfoValid(graphInfo); err != nil {
+		return err
+	}
+	if err := d.assignGraphID(graphInfo); err != nil {
+		return err
+	}
+
+	job := &model.Job{
+		SchemaID:   schema.ID,
+		SchemaName: schema.Name.L,
+		Type:       model.ActionCreateGraph,
+		BinlogInfo: &model.HistoryInfo{},
+		Args:       []interface{}{graphInfo},
+	}
+	return d.callHookOnChanged(d.doDDLJob(ctx, job))
+}
+
+func (d *ddl) assignGraphID(graphInfo *model.GraphInfo) error {
+	genIDs, err := d.genGlobalIDs(1)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	graphInfo.ID = genIDs[0]
+	return nil
+}
+
+func buildGraphTables(astGraphTables []*ast.GraphTable, schema model.CIStr, is infoschema.InfoSchema) ([]*model.GraphTable, error) {
+	var graphTables []*model.GraphTable
+	for _, astGraphTable := range astGraphTables {
+		tbl, err := is.TableByName(schema, astGraphTable.Table.Name)
+		if err != nil {
+			return nil, err
+		}
+		tblInfo := tbl.Meta()
+		if tblInfo.IsView() || tblInfo.IsSequence() {
+			return nil, dbterror.ErrWrongObject.GenWithStackByArgs(schema, tblInfo.Name, "BASE TABLE")
+		}
+		if tblInfo.TempTableType != model.TempTableNone {
+			return nil, dbterror.ErrOptOnTemporaryTable.GenWithStackByArgs("graph")
+		}
+		graphTable := &model.GraphTable{
+			Name:     tblInfo.Name,
+			RefTable: tblInfo.Name,
+			Label:    tblInfo.Name,
+		}
+		if astGraphTable.AsName.String() != "" {
+			graphTable.Name = astGraphTable.AsName
+			graphTable.Label = astGraphTable.AsName
+		}
+		if astGraphTable.Label != nil && astGraphTable.Label.Name.String() != "" {
+			graphTable.Label = astGraphTable.Label.Name
+		}
+		graphTable.KeyCols, err = buildKeyCols(astGraphTable.Key, tblInfo)
+		if err != nil {
+			return nil, err
+		}
+		graphTable.Properties, err = buildProperties(astGraphTable.Properties, schema, tbl)
+		if err != nil {
+			return nil, err
+		}
+		graphTables = append(graphTables, graphTable)
+	}
+	return graphTables, nil
+}
+
+func buildVertexTableRef(eTblName model.CIStr, tableRef *ast.VertexTableRef, vertexTables []*model.GraphTable, tblInfo *model.TableInfo) (*model.VertexTableRef, error) {
+	idx := slices.IndexFunc(vertexTables, func(tbl *model.GraphTable) bool {
+		return tableRef.Table.Name.Equal(tbl.Name)
+	})
+	if idx < 0 {
+		return nil, dbterror.ErrVertexTableNotExists.GenWithStackByArgs(tableRef.Table.Name)
+	}
+	vTbl := vertexTables[idx]
+	var keyCols []model.CIStr
+	if tableRef.Key == nil || len(tableRef.Key.Cols) == 0 {
+		var target *model.FKInfo
+		for _, fkInfo := range tblInfo.ForeignKeys {
+			if fkInfo.RefTable.Equal(vTbl.RefTable) &&
+				slices.EqualFunc(fkInfo.RefCols, vTbl.KeyCols,
+					func(a, b model.CIStr) bool { return a.Equal(b) }) {
+				if target != nil {
+					return nil, dbterror.ErrAmbiguousForeignKeyForEdgeTable.GenWithStackByArgs(tblInfo.Name)
+				}
+				target = fkInfo
+			}
+		}
+		if target == nil {
+			return nil, dbterror.ErrForeignKeyRequired.GenWithStackByArgs(tblInfo.Name)
+		}
+		keyCols = target.Cols
+	} else {
+		if len(tableRef.Key.Cols) != len(vTbl.KeyCols) {
+			return nil, dbterror.ErrVertexTableRefNotMatch.GenWithStackByArgs(eTblName)
+		}
+		for _, col := range tableRef.Key.Cols {
+			keyCols = append(keyCols, col.Name)
+		}
+	}
+	return &model.VertexTableRef{KeyCols: keyCols, Name: tableRef.Table.Name}, nil
+}
+
+func buildKeyCols(key *ast.KeyClause, tblInfo *model.TableInfo) ([]model.CIStr, error) {
+	colNames := set.NewStringSet()
+	var keyCols []model.CIStr
+	if key != nil && len(key.Cols) > 0 {
+		for _, col := range key.Cols {
+			colInfo := findColumnByName(col.Name.L, tblInfo)
+			if colInfo == nil {
+				return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStackByArgs(col.Name)
+			}
+			if colNames.Exist(col.Name.L) {
+				return nil, infoschema.ErrColumnExists.GenWithStackByArgs(col.Name)
+			}
+			colNames.Insert(col.Name.L)
+			keyCols = append(keyCols, col.Name)
+		}
+	} else {
+		keyCols = findPkColumns(tblInfo)
+		if len(keyCols) == 0 {
+			return nil, dbterror.ErrPrimaryKeyRequired.GenWithStackByArgs(tblInfo.Name)
+		}
+	}
+	return keyCols, nil
+}
+
+func findPkColumns(tblInfo *model.TableInfo) []model.CIStr {
+	if tblInfo.PKIsHandle {
+		return []model.CIStr{tblInfo.GetPkColInfo().Name}
+	}
+	var cols []model.CIStr
+	for _, idxInfo := range tblInfo.Indices {
+		if idxInfo.Primary {
+			for _, idxCol := range idxInfo.Columns {
+				cols = append(cols, idxCol.Name)
+			}
+		}
+	}
+	return cols
+}
+
+func buildProperties(pc *ast.PropertiesClause, schema model.CIStr, tbl table.Table) ([]*model.PropertyInfo, error) {
+	if pc == nil {
+		return buildPropertiesWithAllCols(tbl, nil)
+	}
+	if pc.AllCols {
+		return buildPropertiesWithAllCols(tbl, pc.ExceptCols)
+	}
+	return buildPropertiesWithExpr(pc.Properties, schema, tbl)
+}
+
+func buildPropertiesWithAllCols(tbl table.Table, exceptCols []*ast.ColumnName) ([]*model.PropertyInfo, error) {
+	exceptColNames := set.NewStringSet()
+	for _, col := range exceptCols {
+		exceptColNames.Insert(col.Name.L)
+	}
+	var properties []*model.PropertyInfo
+	for _, col := range tbl.VisibleCols() {
+		if exceptColNames.Exist(col.Name.L) {
+			continue
+		}
+		if !isCorrectPropertyName(col.Name) {
+			return nil, dbterror.ErrWrongPropertyName.GenWithStackByArgs(col.Name)
+		}
+		colExpr := ast.ColumnNameExpr{Name: &ast.ColumnName{Name: col.Name}}
+		restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
+		var sb strings.Builder
+		if err := colExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+			return nil, err
+		}
+		properties = append(properties, &model.PropertyInfo{
+			Name: col.Name,
+			Expr: sb.String(),
+		})
+	}
+	return properties, nil
+}
+
+func buildPropertiesWithExpr(astProperties []*ast.Property, schema model.CIStr, tbl table.Table) ([]*model.PropertyInfo, error) {
+	var properties []*model.PropertyInfo
+	propertyNames := set.NewStringSet()
+	for _, p := range astProperties {
+		dependedColNames := findColumnNamesInExpr(p.Expr)
+		dependCols := make(map[string]struct{}, len(dependedColNames))
+		for _, col := range dependedColNames {
+			if col.Schema.L != "" && col.Schema.L != schema.L {
+				return nil, dbterror.ErrBadField.GenWithStackByArgs(col.String(), "property expression")
+			}
+			if col.Table.L != "" && col.Table.L != tbl.Meta().Name.L {
+				return nil, dbterror.ErrBadField.GenWithStackByArgs(col.String(), "property expression")
+			}
+			dependCols[col.Name.L] = struct{}{}
+		}
+		if err := checkDependedColExist(dependCols, tbl.VisibleCols()); err != nil {
+			return nil, err
+		}
+
+		propertyInfo := &model.PropertyInfo{
+			Name: p.AsName,
+		}
+		propertyExpr := rewritePropertyExpr(p.Expr)
+		if propertyInfo.Name.L == "" {
+			if colNameExpr, ok := propertyExpr.(*ast.ColumnNameExpr); ok {
+				propertyInfo.Name = colNameExpr.Name.Name
+			}
+		}
+		if !isCorrectPropertyName(propertyInfo.Name) {
+			return nil, dbterror.ErrWrongPropertyName.GenWithStackByArgs(propertyInfo.Name)
+		}
+
+		restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
+		var sb strings.Builder
+		if err := propertyExpr.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+			return nil, err
+		}
+		propertyInfo.Expr = sb.String()
+		if propertyInfo.Name.L == "" {
+			propertyInfo.Name = model.NewCIStr(propertyInfo.Expr)
+		}
+
+		if propertyNames.Exist(propertyInfo.Name.L) {
+			return nil, dbterror.ErrNonUniqProperty.GenWithStackByArgs(propertyInfo.Name)
+		}
+		propertyNames.Insert(propertyInfo.Name.L)
+
+		if err := checkIllegalFn4Generated(propertyInfo.Name.L, typeProperty, propertyExpr); err != nil {
+			return nil, err
+		}
+		properties = append(properties, propertyInfo)
+	}
+
+	return properties, nil
+}
+
+func isCorrectPropertyName(name model.CIStr) bool {
+	return !strings.HasPrefix(name.L, model.PGQLHiddenColPrefix)
+}
+
+type propertyExprRewriter struct{}
+
+func (c *propertyExprRewriter) Enter(node ast.Node) (ast.Node, bool) {
+	return node, false
+}
+
+func (c *propertyExprRewriter) Leave(node ast.Node) (ast.Node, bool) {
+	switch x := node.(type) {
+	case *ast.ColumnName:
+		*x = ast.ColumnName{Name: x.Name}
+	}
+	return node, true
+}
+
+func rewritePropertyExpr(expr ast.ExprNode) ast.ExprNode {
+	var c propertyExprRewriter
+	newExpr, _ := expr.Accept(&c)
+	return newExpr.(ast.ExprNode)
+}
+
+func checkGraphInfoValid(graphInfo *model.GraphInfo) error {
+	if err := checkGraphTablesValid(graphInfo.VertexTables); err != nil {
+		return err
+	}
+	if err := checkGraphTablesValid(graphInfo.EdgeTables); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkGraphTablesValid(graphTables []*model.GraphTable) error {
+	tblNames := set.NewStringSet()
+	label2Properties := make(map[string]set.StringSet)
+	for _, v := range graphTables {
+		if tblNames.Exist(v.Name.L) {
+			if v.IsVertex() {
+				return dbterror.ErrNonUniqVertexTable.GenWithStackByArgs(v.Name)
+			} else if v.IsEdge() {
+				return dbterror.ErrNonUniqEdgeTable.GenWithStackByArgs(v.Name)
+			} else {
+				return dbterror.ErrInvalidEdgeTable.GenWithStackByArgs(v.Name)
+			}
+		}
+		tblNames.Insert(v.Name.L)
+		properties := set.NewStringSet()
+		for _, p := range v.Properties {
+			properties.Insert(p.Name.L)
+		}
+		if firstProperties, ok := label2Properties[v.Label.L]; ok {
+			if !properties.Equal(firstProperties) {
+				return dbterror.ErrWrongLabelDefinition.GenWithStackByArgs(v.Label)
+			}
+		}
+	}
+	return nil
+}
+
+func (d *ddl) DropPropertyGraph(ctx sessionctx.Context, stmt *ast.DropPropertyGraphStmt) error {
+	is := d.GetInfoSchemaWithInterceptor(ctx)
+	schema, ok := is.SchemaByName(stmt.Graph.Schema)
+	if !ok {
+		return infoschema.ErrDatabaseNotExists.GenWithStackByArgs(stmt.Graph.Schema)
+	}
+	graphInfo, ok := is.GraphByName(stmt.Graph.Schema, stmt.Graph.Name)
+	if !ok {
+		return infoschema.ErrGraphNotExists.GenWithStackByArgs(stmt.Graph.Schema, stmt.Graph.Name)
+	}
+
+	job := &model.Job{
+		SchemaID:   schema.ID,
+		SchemaName: schema.Name.L,
+		Type:       model.ActionDropGraph,
+		BinlogInfo: &model.HistoryInfo{},
+		Args:       []interface{}{graphInfo.ID},
+	}
+
+	err := d.doDDLJob(ctx, job)
+	return d.callHookOnChanged(err)
 }

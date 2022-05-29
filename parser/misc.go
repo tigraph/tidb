@@ -110,6 +110,11 @@ func init() {
 	initTokenString("<<", lsh)
 	initTokenString(">>", rsh)
 	initTokenString("\\N", null)
+	initTokenString("<-", leftArrow)
+	initTokenString("<-[", bLeftArrow)
+	initTokenString("]-", bracketDash)
+	initTokenString("]->", bRightArrow)
+	initTokenString("<-/", sLeftArrow)
 
 	initTokenFunc("@", startWithAt)
 	initTokenFunc("/", startWithSlash)
@@ -137,6 +142,7 @@ func isInTokenMap(target string) bool {
 var tokenMap = map[string]int{
 	"ACCOUNT":                  account,
 	"ACTION":                   action,
+	"ARE":                      are,
 	"ADD":                      add,
 	"ADDDATE":                  addDate,
 	"ADMIN":                    admin,
@@ -210,6 +216,7 @@ var tokenMap = map[string]int{
 	"CHAR":                     charType,
 	"CHARACTER":                character,
 	"CHARSET":                  charsetKwd,
+	"CHEAPEST":                 cheapest,
 	"CHECK":                    check,
 	"CHECKPOINT":               checkpoint,
 	"CHECKSUM":                 checksum,
@@ -243,6 +250,7 @@ var tokenMap = map[string]int{
 	"CONVERT":                  convert,
 	"COPY":                     copyKwd,
 	"CORRELATION":              correlation,
+	"COST":                     cost,
 	"CPU":                      cpu,
 	"CREATE":                   create,
 	"CROSS":                    cross,
@@ -286,6 +294,7 @@ var tokenMap = map[string]int{
 	"DEPTH":                    depth,
 	"DESC":                     desc,
 	"DESCRIBE":                 describe,
+	"DESTINATION":              destination,
 	"DIRECTORY":                directory,
 	"DISABLE":                  disable,
 	"DISABLED":                 disabled,
@@ -303,6 +312,7 @@ var tokenMap = map[string]int{
 	"DUMP":                     dump,
 	"DUPLICATE":                duplicate,
 	"DYNAMIC":                  dynamic,
+	"EDGE":                     edge,
 	"ELSE":                     elseKwd,
 	"ENABLE":                   enable,
 	"ENABLED":                  enabled,
@@ -360,9 +370,12 @@ var tokenMap = map[string]int{
 	"GLOBAL":                   global,
 	"GRANT":                    grant,
 	"GRANTS":                   grants,
+	"GRAPH":                    graph,
+	"GRAPHS":                   graphs,
 	"GROUP_CONCAT":             groupConcat,
 	"GROUP":                    group,
 	"HASH":                     hash,
+	"HAS_LABEL":                hasLabel,
 	"HAVING":                   having,
 	"HELP":                     help,
 	"HIGH_PRIORITY":            highPriority,
@@ -418,6 +431,7 @@ var tokenMap = map[string]int{
 	"KEY":                      key,
 	"KEYS":                     keys,
 	"KILL":                     kill,
+	"LABEL":                    label,
 	"LABELS":                   labels,
 	"LANGUAGE":                 language,
 	"LAST_BACKUP":              lastBackup,
@@ -529,6 +543,7 @@ var tokenMap = map[string]int{
 	"PARTITIONING":             partitioning,
 	"PARTITIONS":               partitions,
 	"PASSWORD":                 password,
+	"PATH":                     pathKwd,
 	"PERCENT":                  percent,
 	"PER_DB":                   per_db,
 	"PER_TABLE":                per_table,
@@ -553,6 +568,8 @@ var tokenMap = map[string]int{
 	"PROCESSLIST":              processlist,
 	"PROFILE":                  profile,
 	"PROFILES":                 profiles,
+	"PROPERTY":                 property,
+	"PROPERTIES":               properties,
 	"PROXY":                    proxy,
 	"PUMP":                     pump,
 	"PURGE":                    purge,
@@ -633,6 +650,7 @@ var tokenMap = map[string]int{
 	"SHARD_ROW_ID_BITS":        shardRowIDBits,
 	"SHARE":                    share,
 	"SHARED":                   shared,
+	"SHORTEST":                 shorest,
 	"SHOW":                     show,
 	"SHUTDOWN":                 shutdown,
 	"SIGNED":                   signed,
@@ -777,6 +795,7 @@ var tokenMap = map[string]int{
 	"VARIANCE":                 varPop,
 	"VARYING":                  varying,
 	"VERBOSE":                  verboseType,
+	"VERTEX":                   vertex,
 	"VOTER":                    voter,
 	"VOTER_CONSTRAINTS":        voterConstraints,
 	"VOTERS":                   voters,

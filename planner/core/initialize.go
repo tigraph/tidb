@@ -566,3 +566,17 @@ func (p PhysicalCTETable) Init(ctx sessionctx.Context, stats *property.StatsInfo
 	p.stats = stats
 	return &p
 }
+
+// Init initializes LogicalShortestPath.
+func (p LogicalShortestPath) Init(ctx sessionctx.Context, offset int) *LogicalShortestPath {
+	p.baseLogicalPlan = newBaseLogicalPlan(ctx, plancodec.TypeShortestPath, &p, offset)
+	return &p
+}
+
+// Init initializes PhysicalShortestPath.
+func (p PhysicalShortestPath) Init(ctx sessionctx.Context, stats *property.StatsInfo, offset int, props ...*property.PhysicalProperty) *PhysicalShortestPath {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeShortestPath, &p, offset)
+	p.childrenReqProps = props
+	p.stats = stats
+	return &p
+}

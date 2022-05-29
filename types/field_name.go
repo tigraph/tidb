@@ -67,6 +67,16 @@ func (s NameSlice) Shallow() NameSlice {
 	return ret
 }
 
+// Clone clones each *FieldName in this slice.
+func (s NameSlice) Clone() NameSlice {
+	ret := make(NameSlice, len(s))
+	for i, v := range s {
+		nv := *v
+		ret[i] = &nv
+	}
+	return ret
+}
+
 // EmptyName is to occupy the position in the name slice. If it's set, that column's name is hidden.
 var EmptyName = &FieldName{Hidden: true}
 

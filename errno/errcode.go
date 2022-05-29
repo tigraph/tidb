@@ -1018,6 +1018,19 @@ const (
 	ErrAssertionFailed                     = 8141
 	ErrInstanceScope                       = 8142
 
+	ErrGraphExists                            = 8143
+	ErrGraphNotExists                         = 8144
+	ErrFunctionalPropertyFunctionIsNotAllowed = 8145
+	ErrGraphAccessDenied                      = 8146
+	ErrNoGraph                                = 8147
+	ErrGraphInvalid                           = 8148
+	ErrDupVariable                            = 8149
+	ErrUnresolvedVariable                     = 8150
+	ErrLabelNotExists                         = 8151
+	ErrPropertyNotExists                      = 8152
+	ErrNoVariables                            = 8153
+	ErrNoProperties                           = 8154
+
 	// Error codes used by TiDB ddl package
 	ErrUnsupportedDDLOperation            = 8200
 	ErrNotOwner                           = 8201
@@ -1062,6 +1075,19 @@ const (
 	ErrPlacementPolicyInUse               = 8241
 	ErrOptOnCacheTable                    = 8242
 	ErrHTTPServiceError                   = 8243
+	ErrPrimaryKeyRequired                 = 8244
+	ErrForeignKeyRequired                 = 8245
+	ErrAmbiguousForeignKeyForEdgeTable    = 8246
+	ErrVertexTableRefNotMatch             = 8247
+	ErrInvalidEdgeTable                   = 8248
+	ErrVertexTableNotExists               = 8249
+	ErrNonUniqVertexTable                 = 8250
+	ErrNonUniqEdgeTable                   = 8251
+	ErrNonUniqProperty                    = 8252
+	ErrWrongLabelDefinition               = 8253
+	ErrWrongPropertyName                  = 8254
+	ErrInvalidGraphSubquery               = 8255
+
 	// TiKV/PD/TiFlash errors.
 	ErrPDServerTimeout           = 9001
 	ErrTiKVServerTimeout         = 9002

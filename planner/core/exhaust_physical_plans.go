@@ -2766,3 +2766,13 @@ func (p *LogicalMaxOneRow) exhaustPhysicalPlans(prop *property.PhysicalProperty)
 	mor := PhysicalMaxOneRow{}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: 2})
 	return []PhysicalPlan{mor}, true, nil
 }
+
+func (p *LogicalShortestPath) exhaustPhysicalPlans(prop *property.PhysicalProperty) ([]PhysicalPlan, bool, error) {
+	shortestPath := PhysicalShortestPath{
+		SrcVertex: p.SrcVertex,
+		DstVertex: p.DstVertex,
+		Path:      p.Path,
+	}.Init(p.ctx, p.stats, p.blockOffset, &property.PhysicalProperty{ExpectedCnt: math.MaxFloat64})
+	shortestPath.SetSchema(p.Schema())
+	return []PhysicalPlan{shortestPath}, true, nil
+}

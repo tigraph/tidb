@@ -54,6 +54,7 @@ var (
 	_ LogicalPlan = &LogicalLock{}
 	_ LogicalPlan = &LogicalLimit{}
 	_ LogicalPlan = &LogicalWindow{}
+	_ LogicalPlan = &LogicalShortestPath{}
 )
 
 // JoinType contains CrossJoin, InnerJoin, LeftOuterJoin, RightOuterJoin, FullOuterJoin, SemiJoin.
@@ -1736,6 +1737,7 @@ type ShowContents struct {
 	Flag      int                  // Some flag parsed from sql, such as FULL.
 	User      *auth.UserIdentity   // Used for show grants.
 	Roles     []*auth.RoleIdentity // Used for show grants.
+	Graph     *ast.GraphName       // Used for showing create graph.
 
 	Full        bool
 	IfNotExists bool // Used for `show create database if not exists`.
@@ -1811,4 +1813,13 @@ func (p *LogicalCTE) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
 		corCols = append(corCols, ExtractCorrelatedCols4LogicalPlan(p.cte.recursivePartLogicalPlan)...)
 	}
 	return corCols
+}
+
+type LogicalShortestPath struct {
+	logicalSchemaProducer
+
+	SrcVertex *Vertex
+	DstVertex *Vertex
+
+	Path *VariableLengthPath
 }

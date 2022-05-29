@@ -74,11 +74,15 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 	case model.ActionTruncateTablePartition, model.ActionTruncateTable:
 		return b.applyTruncateTableOrPartition(m, diff)
 	case model.ActionDropTable, model.ActionDropTablePartition:
-		return b.applyDropTableOrParition(m, diff)
+		return b.applyDropTableOrPartition(m, diff)
 	case model.ActionRecoverTable:
 		return b.applyRecoverTable(m, diff)
 	case model.ActionCreateTables:
 		return b.applyCreateTables(m, diff)
+	case model.ActionCreateGraph:
+		return nil, b.applyCreateGraph(m, diff)
+	case model.ActionDropGraph:
+		return nil, b.applyDropGraph(diff)
 	default:
 		return b.applyDefaultAction(m, diff)
 	}
@@ -128,7 +132,7 @@ func (b *Builder) applyTruncateTableOrPartition(m *meta.Meta, diff *model.Schema
 	return tblIDs, nil
 }
 
-func (b *Builder) applyDropTableOrParition(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
+func (b *Builder) applyDropTableOrPartition(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
 	tblIDs, err := b.applyTableUpdate(m, diff)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -358,7 +362,7 @@ func (b *Builder) applyCreateSchema(m *meta.Meta, diff *model.SchemaDiff) error 
 			fmt.Sprintf("(Schema ID %d)", diff.SchemaID),
 		)
 	}
-	b.is.schemaMap[di.Name.L] = &schemaTables{dbInfo: di, tables: make(map[string]table.Table)}
+	b.is.schemaMap[di.Name.L] = newSchemaMetas(di)
 	return nil
 }
 
@@ -513,8 +517,8 @@ func (b *Builder) applyCreateTable(m *meta.Meta, dbInfo *model.DBInfo, tableID i
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	tableNames := b.is.schemaMap[dbInfo.Name.L]
-	tableNames.tables[tblInfo.Name.L] = tbl
+	metas := b.is.schemaMap[dbInfo.Name.L]
+	metas.tables[tblInfo.Name.L] = tbl
 	bucketIdx := tableBucketIdx(tableID)
 	sortedTbls := b.is.sortedTablesBuckets[bucketIdx]
 	sortedTbls = append(sortedTbls, tbl)
@@ -566,9 +570,9 @@ func (b *Builder) applyDropTable(dbInfo *model.DBInfo, tableID int64, affected [
 	if idx == -1 {
 		return affected
 	}
-	if tableNames, ok := b.is.schemaMap[dbInfo.Name.L]; ok {
+	if metas, ok := b.is.schemaMap[dbInfo.Name.L]; ok {
 		tblInfo := sortedTbls[idx].Meta()
-		delete(tableNames.tables, tblInfo.Name.L)
+		delete(metas.tables, tblInfo.Name.L)
 		affected = appendAffectedIDs(affected, tblInfo)
 	}
 	// Remove the table in sorted table slice.
@@ -606,6 +610,69 @@ func (b *Builder) applyPlacementUpdate(id string) error {
 	return nil
 }
 
+func (b *Builder) applyCreateGraph(m *meta.Meta, diff *model.SchemaDiff) error {
+	roDBInfo, ok := b.is.SchemaByID(diff.SchemaID)
+	if !ok {
+		return ErrDatabaseNotExists.GenWithStackByArgs(fmt.Sprintf("(Schema ID %d)", diff.SchemaID))
+	}
+
+	graphInfo, err := m.GetGraph(roDBInfo.ID, diff.GraphID)
+	if err != nil {
+		if ErrTableNotExists.Equal(err) {
+			err = ErrGraphNotExists.GenWithStackByArgs(
+				fmt.Sprintf("(Schema ID %d)", diff.SchemaID),
+				fmt.Sprintf("(Graph ID %d)", diff.GraphID),
+			)
+		}
+		return err
+	}
+
+	metas := b.is.schemaMap[roDBInfo.Name.L]
+	metas.graphs[graphInfo.Name.L] = graphInfo
+	b.is.sortedGraphs = append(b.is.sortedGraphs, graphInfo)
+	sort.SliceStable(b.is.sortedGraphs, func(i, j int) bool {
+		return b.is.sortedGraphs[i].ID < b.is.sortedGraphs[j].ID
+	})
+
+	dbInfo := b.getSchemaAndCopyIfNecessary(roDBInfo.Name.L)
+	dbInfo.Graphs = append(dbInfo.Graphs, graphInfo)
+
+	return nil
+}
+
+func (b *Builder) applyDropGraph(diff *model.SchemaDiff) error {
+	roDBInfo, ok := b.is.SchemaByID(diff.SchemaID)
+	if !ok {
+		return ErrDatabaseNotExists.GenWithStackByArgs(fmt.Sprintf("(Schema ID %d)", diff.SchemaID))
+	}
+
+	idx := sort.Search(len(b.is.sortedGraphs), func(i int) bool {
+		return b.is.sortedGraphs[i].ID >= diff.GraphID
+	})
+	if idx >= len(b.is.sortedGraphs) || b.is.sortedGraphs[idx].ID != diff.GraphID {
+		return ErrGraphNotExists.GenWithStackByArgs(
+			fmt.Sprintf("(Schema ID %d)", diff.SchemaID),
+			fmt.Sprintf("(Graph ID %d)", diff.GraphID),
+		)
+	}
+
+	if metas, ok := b.is.schemaMap[roDBInfo.Name.L]; ok {
+		delete(metas.graphs, b.is.sortedGraphs[idx].Name.L)
+	}
+	b.is.sortedGraphs = append(b.is.sortedGraphs[:idx], b.is.sortedGraphs[idx+1:]...)
+
+	dbInfo := b.getSchemaAndCopyIfNecessary(roDBInfo.Name.L)
+	// The old DBInfo still holds a reference to old graph info, we need to remove it.
+	for i, graph := range dbInfo.Graphs {
+		if graph.ID == diff.GraphID {
+			dbInfo.Graphs = append(dbInfo.Graphs[:i], dbInfo.Graphs[i+1:]...)
+			break
+		}
+	}
+
+	return nil
+}
+
 // Build builds and returns the built infoschema.
 func (b *Builder) Build() InfoSchema {
 	return b.is
@@ -620,6 +687,10 @@ func (b *Builder) InitWithOldInfoSchema(oldSchema InfoSchema) *Builder {
 	b.copyPoliciesMap(oldIS)
 
 	copy(b.is.sortedTablesBuckets, oldIS.sortedTablesBuckets)
+
+	b.is.sortedGraphs = make([]*model.GraphInfo, len(oldIS.sortedGraphs))
+	copy(b.is.sortedGraphs, oldIS.sortedGraphs)
+
 	return b
 }
 
@@ -643,23 +714,23 @@ func (b *Builder) copyPoliciesMap(oldIS *infoSchema) {
 	}
 }
 
-// getSchemaAndCopyIfNecessary creates a new schemaTables instance when a table in the database has changed.
-// It also does modifications on the new one because old schemaTables must be read-only.
+// getSchemaAndCopyIfNecessary creates a new schemaMetas instance when a table in the database has changed.
+// It also does modifications on the new one because old schemaMetas must be read-only.
 // And it will only copy the changed database once in the lifespan of the Builder.
 // NOTE: please make sure the dbName is in lowercase.
 func (b *Builder) getSchemaAndCopyIfNecessary(dbName string) *model.DBInfo {
 	if !b.dirtyDB[dbName] {
 		b.dirtyDB[dbName] = true
-		oldSchemaTables := b.is.schemaMap[dbName]
-		newSchemaTables := &schemaTables{
-			dbInfo: oldSchemaTables.dbInfo.Copy(),
-			tables: make(map[string]table.Table, len(oldSchemaTables.tables)),
+		oldMetas := b.is.schemaMap[dbName]
+		newMetas := newSchemaMetas(oldMetas.dbInfo.Copy())
+		for k, v := range oldMetas.tables {
+			newMetas.tables[k] = v
 		}
-		for k, v := range oldSchemaTables.tables {
-			newSchemaTables.tables[k] = v
+		for k, v := range oldMetas.graphs {
+			newMetas.graphs[k] = v
 		}
-		b.is.schemaMap[dbName] = newSchemaTables
-		return newSchemaTables.dbInfo
+		b.is.schemaMap[dbName] = newMetas
+		return newMetas.dbInfo
 	}
 	return b.is.schemaMap[dbName].dbInfo
 }
@@ -677,7 +748,7 @@ func (b *Builder) InitWithDBInfos(dbInfos []*model.DBInfo, bundles []*placement.
 	}
 
 	for _, di := range dbInfos {
-		err := b.createSchemaTablesForDB(di, b.tableFromMeta)
+		err := b.createSchemaMetasForDB(di, b.tableFromMeta)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -685,7 +756,7 @@ func (b *Builder) InitWithDBInfos(dbInfos []*model.DBInfo, bundles []*placement.
 
 	// Initialize virtual tables.
 	for _, driver := range drivers {
-		err := b.createSchemaTablesForDB(driver.DBInfo, driver.TableFromMeta)
+		err := b.createSchemaMetasForDB(driver.DBInfo, driver.TableFromMeta)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -720,12 +791,9 @@ func (b *Builder) tableFromMeta(alloc autoid.Allocators, tblInfo *model.TableInf
 
 type tableFromMetaFunc func(alloc autoid.Allocators, tblInfo *model.TableInfo) (table.Table, error)
 
-func (b *Builder) createSchemaTablesForDB(di *model.DBInfo, tableFromMeta tableFromMetaFunc) error {
-	schTbls := &schemaTables{
-		dbInfo: di,
-		tables: make(map[string]table.Table, len(di.Tables)),
-	}
-	b.is.schemaMap[di.Name.L] = schTbls
+func (b *Builder) createSchemaMetasForDB(di *model.DBInfo, tableFromMeta tableFromMetaFunc) error {
+	schMetas := newSchemaMetas(di)
+	b.is.schemaMap[di.Name.L] = schMetas
 
 	for _, t := range di.Tables {
 		allocs := autoid.NewAllocatorsFromTblInfo(b.store, di.ID, t)
@@ -734,10 +802,19 @@ func (b *Builder) createSchemaTablesForDB(di *model.DBInfo, tableFromMeta tableF
 		if err != nil {
 			return errors.Wrap(err, fmt.Sprintf("Build table `%s`.`%s` schema failed", di.Name.O, t.Name.O))
 		}
-		schTbls.tables[t.Name.L] = tbl
+		schMetas.tables[t.Name.L] = tbl
 		sortedTbls := b.is.sortedTablesBuckets[tableBucketIdx(t.ID)]
 		b.is.sortedTablesBuckets[tableBucketIdx(t.ID)] = append(sortedTbls, tbl)
 	}
+
+	for _, g := range di.Graphs {
+		schMetas.graphs[g.Name.L] = g
+		b.is.sortedGraphs = append(b.is.sortedGraphs, g)
+	}
+	sort.SliceStable(b.is.sortedGraphs, func(i, j int) bool {
+		return b.is.sortedGraphs[i].ID < b.is.sortedGraphs[j].ID
+	})
+
 	return nil
 }
 
@@ -758,7 +835,7 @@ func NewBuilder(store kv.Storage, factory func() (pools.Resource, error)) *Build
 	return &Builder{
 		store: store,
 		is: &infoSchema{
-			schemaMap:           map[string]*schemaTables{},
+			schemaMap:           map[string]*schemaMetas{},
 			policyMap:           map[string]*model.PolicyInfo{},
 			ruleBundleMap:       map[string]*placement.Bundle{},
 			sortedTablesBuckets: make([]sortedTables, bucketCount),

@@ -25,6 +25,7 @@ import (
 	"github.com/pingcap/tidb/parser/charset"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
+	"golang.org/x/exp/slices"
 )
 
 // SchemaState is the state for schema elements.
@@ -1117,6 +1118,7 @@ type DBInfo struct {
 	Charset            string         `json:"charset"`
 	Collate            string         `json:"collate"`
 	Tables             []*TableInfo   `json:"-"` // Tables in the DB.
+	Graphs             []*GraphInfo   `json:"-"` // Graphs in the DB
 	State              SchemaState    `json:"state"`
 	PlacementPolicyRef *PolicyRefInfo `json:"policy_ref_info"`
 }
@@ -1127,6 +1129,9 @@ func (db *DBInfo) Clone() *DBInfo {
 	newInfo.Tables = make([]*TableInfo, len(db.Tables))
 	for i := range db.Tables {
 		newInfo.Tables[i] = db.Tables[i].Clone()
+	}
+	for i := range db.Graphs {
+		newInfo.Graphs[i] = db.Graphs[i].Clone()
 	}
 	return &newInfo
 }
@@ -1139,7 +1144,7 @@ func (db *DBInfo) Copy() *DBInfo {
 	return &newInfo
 }
 
-// CIStr is case insensitive string.
+// CIStr is case-insensitive string.
 type CIStr struct {
 	O string `json:"O"` // Original string.
 	L string `json:"L"` // Lower case string.
@@ -1148,6 +1153,11 @@ type CIStr struct {
 // String implements fmt.Stringer interface.
 func (cis CIStr) String() string {
 	return cis.O
+}
+
+// Equal reports whether `cis` is equal to `other` in a case-insensitive way.
+func (cis CIStr) Equal(other CIStr) bool {
+	return cis.L == other.L
 }
 
 // NewCIStr creates a new CIStr.
@@ -1356,4 +1366,157 @@ func (s WindowRepeatType) String() string {
 	default:
 		return ""
 	}
+}
+
+// GraphInfo provides meta data describing a graph.
+type GraphInfo struct {
+	ID           int64         `json:"id"`
+	Name         CIStr         `json:"name"`
+	State        SchemaState   `json:"state"`
+	VertexTables []*GraphTable `json:"vertex_tables"`
+	EdgeTables   []*GraphTable `json:"edge_tables"`
+}
+
+func (g *GraphInfo) VertexLabels() []CIStr {
+	var labels []CIStr
+	m := make(map[string]struct{})
+	for _, vTbl := range g.VertexTables {
+		if _, ok := m[vTbl.Label.L]; !ok {
+			labels = append(labels, vTbl.Label)
+			m[vTbl.Label.L] = struct{}{}
+		}
+	}
+	return labels
+}
+
+func (g *GraphInfo) EdgeLabels() []CIStr {
+	var labels []CIStr
+	m := make(map[string]struct{})
+	for _, eTbl := range g.EdgeTables {
+		if _, ok := m[eTbl.Label.L]; !ok {
+			labels = append(labels, eTbl.Label)
+			m[eTbl.Label.L] = struct{}{}
+		}
+	}
+	return labels
+}
+
+func (g *GraphInfo) VertexTablesByLabels(labels ...CIStr) []*GraphTable {
+	var tables []*GraphTable
+	for _, vTbl := range g.VertexTables {
+		if slices.IndexFunc(labels, func(label CIStr) bool {
+			return vTbl.Label.L == label.L
+		}) >= 0 {
+			tables = append(tables, vTbl)
+		}
+	}
+	return tables
+}
+
+func (g *GraphInfo) EdgeTablesByLabels(labels ...CIStr) []*GraphTable {
+	var tables []*GraphTable
+	for _, eTbl := range g.EdgeTables {
+		if slices.IndexFunc(labels, func(label CIStr) bool {
+			return eTbl.Label.L == label.L
+		}) >= 0 {
+			tables = append(tables, eTbl)
+		}
+	}
+	return tables
+}
+
+func (g *GraphInfo) Clone() *GraphInfo {
+	ng := *g
+	ng.VertexTables = make([]*GraphTable, len(g.VertexTables))
+	ng.EdgeTables = make([]*GraphTable, len(g.EdgeTables))
+
+	for i := 0; i < len(g.VertexTables); i++ {
+		ng.VertexTables[i] = g.VertexTables[i].Clone()
+	}
+	for i := 0; i < len(g.EdgeTables); i++ {
+		ng.EdgeTables[i] = g.EdgeTables[i].Clone()
+	}
+	return &ng
+}
+
+var (
+	PGQLHiddenColPrefix = "_pgql_"
+	// PGQLLabelPropName is the name of PGQLLabel property. PGQLLabel is a hidden property
+	// that is used to implement label related functions, such as label(n) and has_label(n, 'name').
+	PGQLLabelPropName = NewCIStr(PGQLHiddenColPrefix + "label")
+	// PGQLDescPropName is the name of PGQLDesc property. PGQLDesc is a hidden property
+	// that is used to show the description of vertex or edge variables.
+	PGQLDescPropName = NewCIStr(PGQLHiddenColPrefix + "desc")
+)
+
+func PGQLKeyColName(colName CIStr) CIStr {
+	return NewCIStr(fmt.Sprintf("%skeycol_%s", PGQLHiddenColPrefix, colName.O))
+}
+
+func PGQLSrcKeyColName(colName CIStr) CIStr {
+	return NewCIStr(fmt.Sprintf("%ssrckeycol_%s", PGQLHiddenColPrefix, colName.O))
+}
+
+func PGQLDstKeyColName(colName CIStr) CIStr {
+	return NewCIStr(fmt.Sprintf("%sdstkeycol_%s", PGQLHiddenColPrefix, colName.O))
+}
+
+// PropertyInfo provides graph property info.
+type PropertyInfo struct {
+	Name CIStr  `json:"name"`
+	Expr string `json:"expr"`
+}
+
+func (p *PropertyInfo) Clone() *PropertyInfo {
+	np := *p
+	return &np
+}
+
+// GraphTable provides meta data describing a vertex table or edge table.
+type GraphTable struct {
+	Name       CIStr           `json:"name"`
+	KeyCols    []CIStr         `json:"key_cols"`
+	RefTable   CIStr           `json:"ref_table"`
+	Label      CIStr           `json:"label"`
+	Properties []*PropertyInfo `json:"properties"`
+	// Source and Destination must be both non-nil or both nil.
+	Source      *VertexTableRef `json:"source"`
+	Destination *VertexTableRef `json:"destination"`
+}
+
+func (e *GraphTable) Clone() *GraphTable {
+	ne := *e
+	ne.KeyCols = slices.Clone(e.KeyCols)
+	ne.Properties = make([]*PropertyInfo, len(e.Properties))
+
+	for i := 0; i < len(e.Properties); i++ {
+		ne.Properties[i] = e.Properties[i].Clone()
+	}
+	if e.Source != nil {
+		ne.Source = e.Source.Clone()
+	}
+	if e.Destination != nil {
+		ne.Destination = e.Destination.Clone()
+	}
+	return &ne
+}
+
+func (e *GraphTable) IsVertex() bool {
+	return e.Source == nil && e.Destination == nil
+}
+
+func (e *GraphTable) IsEdge() bool {
+	return e.Source != nil && e.Destination != nil
+}
+
+// VertexTableRef describes the source or destination vertex table reference for a edge table.
+type VertexTableRef struct {
+	Name    CIStr   `json:"name"`
+	KeyCols []CIStr `json:"key_cols"`
+}
+
+func (v *VertexTableRef) Clone() *VertexTableRef {
+	nv := *v
+	nv.KeyCols = slices.Clone(v.KeyCols)
+	return &nv
 }

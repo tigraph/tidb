@@ -95,6 +95,8 @@ const (
 	ActionAlterTableStatsOptions        ActionType = 58
 	ActionAlterNoCacheTable             ActionType = 59
 	ActionCreateTables                  ActionType = 60
+	ActionCreateGraph                   ActionType = 61
+	ActionDropGraph                     ActionType = 62
 )
 
 var actionMap = map[ActionType]string{
@@ -157,6 +159,8 @@ var actionMap = map[ActionType]string{
 	ActionAlterCacheTable:               "alter table cache",
 	ActionAlterNoCacheTable:             "alter table nocache",
 	ActionAlterTableStatsOptions:        "alter table statistics options",
+	ActionCreateGraph:                   "create graph",
+	ActionDropGraph:                     "drop graph",
 
 	// `ActionAlterTableAlterPartition` is removed and will never be used.
 	// Just left a tombstone here for compatibility.
@@ -553,6 +557,7 @@ type SchemaDiff struct {
 	Type     ActionType `json:"type"`
 	SchemaID int64      `json:"schema_id"`
 	TableID  int64      `json:"table_id"`
+	GraphID  int64      `json:"graph_id"`
 
 	// OldTableID is the table ID before truncate, only used by truncate table DDL.
 	OldTableID int64 `json:"old_table_id"`

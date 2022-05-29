@@ -46,6 +46,7 @@ import (
 	"github.com/pingcap/tidb/util/dbterror"
 	"github.com/pingcap/tidb/util/domainutil"
 	utilparser "github.com/pingcap/tidb/util/parser"
+	"github.com/pingcap/tidb/util/set"
 )
 
 // PreprocessOpt presents optional parameters to `Preprocess` method.
@@ -135,7 +136,7 @@ func Preprocess(ctx sessionctx.Context, node ast.Node, preprocessOpt ...Preproce
 	return errors.Trace(v.err)
 }
 
-type preprocessorFlag uint8
+type preprocessorFlag uint16
 
 const (
 	// inPrepare is set when visiting in prepare statement.
@@ -151,8 +152,16 @@ const (
 	// inSequenceFunction is set when visiting a sequence function.
 	// This flag indicates the tableName in these function should be checked as sequence object.
 	inSequenceFunction
-	// initTxnContextProvider is set when we should init txn context in preprocess
+	// initTxnContextProvider is set when we should init txn context in preprocess.
 	initTxnContextProvider
+	// inVertexVariable is set when visiting a vertex variable.
+	inVertexVariable
+	// inEdgeVariable is set when visiting an edge variable.
+	inEdgeVariable
+	// inQuantifiedPathExpr is set when visiting a QuantifiedPathExpr.
+	inQuantifiedPathExpr
+	// inPathPatternMacro is set when visiting a PathPatternMacro.
+	inPathPatternMacro
 )
 
 // Make linter happy.
@@ -191,6 +200,26 @@ type preprocessor struct {
 
 	staleReadProcessor staleread.Processor
 
+	// nonRepeatableVars collects non-repeatable graph variables. All the edge variables
+	// or vertex variables in ParenthesizedPathPatternExpression are non-repeatable.
+	nonRepeatableVars set.StringSet
+	// Vertex variables in simple path pattern or endpoint vertex patterns of variable-length
+	// paths are repeatable. But they are not allowed to repeat among different graphs.
+	// For example:
+	//     MATCH ANY (n) ((n1) -[e1]-> (m1)) (m)
+	// n and m can be repeatable, n1, e1 and m1 are non-repeatable.
+	repeatableVertexVars map[string]*ast.GraphName
+	// anonymousVarNames is list of pointers to anonymous variables.
+	anonymousVarNames []*model.CIStr
+	// pathPatternMacros is a stacks that keep all the path pattern macros in a select statement.
+	pathPatternMacros map[string][]*ast.PathPatternMacro
+	// currentGraph is the current graph that match clause is matching on.
+	currentGraph *ast.GraphName
+	// vertexLabels is the set of vertex labels for current graph.
+	vertexLabels set.StringSet
+	// edgeLabels is the set of edge labels for current graph.
+	edgeLabels set.StringSet
+
 	// values that may be returned
 	*PreprocessorReturn
 	*PreprocessExecuteISUpdate
@@ -205,6 +234,13 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		p.stmtTp = TypeDelete
 	case *ast.SelectStmt:
 		p.stmtTp = TypeSelect
+		if len(node.PathPatternMacros) > 0 && p.pathPatternMacros == nil {
+			p.pathPatternMacros = make(map[string][]*ast.PathPatternMacro)
+		}
+		for _, macro := range node.PathPatternMacros {
+			macros := p.pathPatternMacros[macro.Name.L]
+			p.pathPatternMacros[macro.Name.L] = append(macros, macro)
+		}
 	case *ast.UpdateStmt:
 		p.stmtTp = TypeUpdate
 	case *ast.InsertStmt:
@@ -298,7 +334,6 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		if node.FnName.L == ast.NextVal || node.FnName.L == ast.LastVal || node.FnName.L == ast.SetVal {
 			p.flag |= inSequenceFunction
 		}
-
 	case *ast.BRIEStmt:
 		if node.Kind == ast.BRIEKindRestore {
 			p.flag |= inCreateOrDropTable
@@ -335,6 +370,39 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 			// then we need set StmtCtx.IsStaleness as true in order to avoid take tso in PrepareTSFuture.
 			p.ctx.GetSessionVars().StmtCtx.IsStaleness = true
 			p.IsStaleness = true
+		}
+	case *ast.CreatePropertyGraphStmt:
+		p.stmtTp = TypeCreate
+	case *ast.DropPropertyGraphStmt:
+		p.stmtTp = TypeDrop
+	case *ast.PathPatternMacro:
+		p.flag |= inPathPatternMacro
+		p.nonRepeatableVars = set.NewStringSet()
+		p.repeatableVertexVars = make(map[string]*ast.GraphName)
+		p.anonymousVarNames = nil
+	case *ast.VertexTableRef:
+		return in, true
+	case *ast.MatchClauseList:
+		p.nonRepeatableVars = set.NewStringSet()
+		p.repeatableVertexVars = make(map[string]*ast.GraphName)
+		p.anonymousVarNames = nil
+	case *ast.MatchClause:
+		if node.Graph == nil {
+			node.Graph = &ast.GraphName{}
+		}
+		p.err = p.resolveGraph(node.Graph)
+		if p.err != nil {
+			return in, true
+		}
+		p.currentGraph = node.Graph
+	case *ast.QuantifiedPathExpr:
+		p.flag |= inQuantifiedPathExpr
+	case *ast.VertexPattern:
+		p.flag |= inVertexVariable
+	case *ast.EdgePattern:
+		p.flag |= inEdgeVariable
+		if node.Variable == nil {
+			node.Variable = &ast.VariableSpec{}
 		}
 	default:
 		p.flag &= ^parentIsJoin
@@ -492,6 +560,18 @@ func (p *preprocessor) checkBindGrammar(originNode, hintedNode ast.StmtNode, def
 
 func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 	switch x := in.(type) {
+	case *ast.SelectStmt:
+		for _, macro := range x.PathPatternMacros {
+			macros := p.pathPatternMacros[macro.Name.L]
+			if len(macros) <= 1 {
+				delete(p.pathPatternMacros, macro.Name.L)
+			} else {
+				p.pathPatternMacros[macro.Name.L] = macros[:len(macros)-1]
+			}
+		}
+		if len(x.PathPatternMacros) == 0 {
+			x.PathPatternMacros = nil
+		}
 	case *ast.CreateTableStmt:
 		p.flag &= ^inCreateOrDropTable
 		p.checkAutoIncrement(x)
@@ -526,9 +606,10 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 			p.tableAliasInJoin = p.tableAliasInJoin[:len(p.tableAliasInJoin)-1]
 		}
 	case *ast.FuncCallExpr:
-		// The arguments for builtin NAME_CONST should be constants
-		// See https://dev.mysql.com/doc/refman/5.7/en/miscellaneous-functions.html#function_name-const for details
-		if x.FnName.L == ast.NameConst {
+		switch x.FnName.L {
+		case ast.NameConst:
+			// The arguments for builtin NAME_CONST should be constants
+			// See https://dev.mysql.com/doc/refman/5.7/en/miscellaneous-functions.html#function_name-const for details.
 			if len(x.Args) != 2 {
 				p.err = expression.ErrIncorrectParameterCount.GenWithStackByArgs(x.FnName.L)
 			} else {
@@ -543,17 +624,14 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 					p.err = ErrWrongArguments.GenWithStackByArgs("NAME_CONST")
 				}
 			}
-			break
-		}
-
-		// no need sleep when retry transaction and avoid unexpect sleep caused by retry.
-		if p.flag&inTxnRetry > 0 && x.FnName.L == ast.Sleep {
-			if len(x.Args) == 1 {
-				x.Args[0] = ast.NewValueExpr(0, "", "")
+		case ast.Sleep:
+			// no need sleep when retry transaction and avoid unexpect sleep caused by retry.
+			if p.flag&inTxnRetry > 0 {
+				if len(x.Args) == 1 {
+					x.Args[0] = ast.NewValueExpr(0, "", "")
+				}
 			}
-		}
-
-		if x.FnName.L == ast.NextVal || x.FnName.L == ast.LastVal || x.FnName.L == ast.SetVal {
+		case ast.NextVal, ast.LastVal, ast.SetVal:
 			p.flag &= ^inSequenceFunction
 		}
 	case *ast.RepairTableStmt:
@@ -564,6 +642,64 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 		if x.Kind == ast.BRIEKindRestore {
 			p.flag &= ^inCreateOrDropTable
 		}
+	case *ast.VariableSpec:
+		// Don't check label in a path pattern macro.
+		if p.flag&inPathPatternMacro == 0 {
+			for _, label := range x.Labels {
+				if p.flag&inVertexVariable > 0 && !p.vertexLabels.Exist(label.L) {
+					p.err = ErrLabelNotExists.GenWithStackByArgs(label)
+					return in, false
+				}
+				if p.flag&inEdgeVariable > 0 && !p.edgeLabels.Exist(label.L) {
+					p.err = ErrLabelNotExists.GenWithStackByArgs(label)
+					return in, false
+				}
+			}
+		}
+		if !p.checkAnonymousVar(x) {
+			if p.flag&inVertexVariable > 0 {
+				if p.flag&inQuantifiedPathExpr > 0 {
+					p.err = p.addNonRepeatableVar(x)
+				} else {
+					p.err = p.addRepeatableVertexVar(x)
+				}
+			} else if p.flag&inEdgeVariable > 0 {
+				p.err = p.addNonRepeatableVar(x)
+			}
+		}
+	case *ast.VertexPattern:
+		p.flag &= ^inVertexVariable
+	case *ast.EdgePattern:
+		p.flag &= ^inEdgeVariable
+	case *ast.QuantifiedPathExpr:
+		p.flag &= ^inQuantifiedPathExpr
+	case *ast.ReachabilityPathExpr:
+		// Don't check label in a path pattern macro.
+		if p.flag&inPathPatternMacro == 0 {
+			for _, label := range x.Labels {
+				_, matchMacro := p.pathPatternMacros[label.L]
+				if !matchMacro && !p.edgeLabels.Exist(label.L) {
+					p.err = ErrLabelNotExists.GenWithStackByArgs(label)
+					return in, false
+				}
+			}
+		}
+		p.anonymousVarNames = append(p.anonymousVarNames, &x.AnonymousName)
+	case *ast.PathPatternMacro:
+		p.flag &= ^inPathPatternMacro
+		p.generateNames4AnonymousVars()
+		p.nonRepeatableVars = nil
+		p.repeatableVertexVars = nil
+		p.anonymousVarNames = nil
+	case *ast.MatchClause:
+		p.vertexLabels = nil
+		p.edgeLabels = nil
+		p.currentGraph = nil
+	case *ast.MatchClauseList:
+		p.generateNames4AnonymousVars()
+		p.nonRepeatableVars = nil
+		p.repeatableVertexVars = nil
+		p.anonymousVarNames = nil
 	}
 
 	return in, p.err == nil
@@ -1511,6 +1647,8 @@ func (p *preprocessor) resolveShowStmt(node *ast.ShowStmt) {
 	if node.DBName == "" {
 		if node.Table != nil && node.Table.Schema.L != "" {
 			node.DBName = node.Table.Schema.O
+		} else if node.Graph != nil && node.Graph.Schema.L != "" {
+			node.DBName = node.Graph.Schema.O
 		} else {
 			node.DBName = p.ctx.GetSessionVars().CurrentDB
 		}
@@ -1698,4 +1836,140 @@ func (p *preprocessor) hasAutoConvertWarning(colDef *ast.ColumnDef) bool {
 		return true
 	}
 	return false
+}
+
+func (p *preprocessor) resolveGraph(graph *ast.GraphName) error {
+	if graph.Schema.L == "" {
+		currentDB := p.ctx.GetSessionVars().CurrentDB
+		if currentDB == "" {
+			return errors.Trace(ErrNoDB)
+		}
+		graph.Schema = model.NewCIStr(currentDB)
+	}
+	if graph.Name.L == "" {
+		currentGraph := p.ctx.GetSessionVars().CurrentGraph
+		if currentGraph == "" {
+			return errors.Trace(ErrNoGraph)
+		}
+		graph.Name = model.NewCIStr(currentGraph)
+	}
+
+	is := p.ensureInfoSchema()
+	graphInfo, ok := is.GraphByName(graph.Schema, graph.Name)
+	if !ok {
+		return infoschema.ErrGraphNotExists.GenWithStackByArgs(graph.Schema, graph.Name)
+	}
+
+	for _, vTbl := range graphInfo.VertexTables {
+		tn := &ast.TableName{Schema: graph.Schema, Name: vTbl.RefTable}
+		tbl, err := p.tableByName(tn)
+		if err != nil {
+			if ErrTableaccessDenied.Equal(err) || infoschema.ErrTableNotExists.Equal(err) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema, graphInfo.Name)
+			}
+			return err
+		}
+		colNames := set.NewStringSet()
+		for _, col := range tbl.VisibleCols() {
+			colNames.Insert(col.Name.L)
+		}
+		for _, col := range vTbl.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema, graphInfo.Name)
+			}
+		}
+	}
+	for _, eTbl := range graphInfo.EdgeTables {
+		tn := &ast.TableName{Schema: graph.Schema, Name: eTbl.RefTable}
+		tbl, err := p.tableByName(tn)
+		if err != nil {
+			return err
+		}
+		colNames := set.NewStringSet()
+		for _, col := range tbl.VisibleCols() {
+			colNames.Insert(col.Name.L)
+		}
+		for _, col := range eTbl.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
+			}
+		}
+		for _, col := range eTbl.Source.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
+			}
+		}
+		for _, col := range eTbl.Destination.KeyCols {
+			if !colNames.Exist(col.L) {
+				return ErrGraphInvalid.GenWithStackByArgs(graph.Schema.String(), graphInfo.Name)
+			}
+		}
+	}
+
+	p.vertexLabels = set.NewStringSet()
+	for _, label := range graphInfo.VertexLabels() {
+		p.vertexLabels.Insert(label.L)
+	}
+	p.edgeLabels = set.NewStringSet()
+	for _, label := range graphInfo.EdgeLabels() {
+		p.edgeLabels.Insert(label.L)
+	}
+	return nil
+}
+
+func (p *preprocessor) addRepeatableVertexVar(v *ast.VariableSpec) error {
+	varName := v.Name.L
+	if p.nonRepeatableVars.Exist(varName) {
+		return ErrDupVariable.GenWithStackByArgs(varName)
+	}
+
+	if g, ok := p.repeatableVertexVars[varName]; ok {
+		// Match on different graphs is not allowed to have the same variable.
+		if !(p.currentGraph == nil && g == nil || p.currentGraph != nil && g != nil &&
+			p.currentGraph.Schema.Equal(g.Schema) && p.currentGraph.Name.Equal(g.Name)) {
+			return ErrDupVariable.GenWithStackByArgs(varName)
+		}
+	} else {
+		p.repeatableVertexVars[varName] = p.currentGraph
+	}
+	return nil
+}
+
+func (p *preprocessor) addNonRepeatableVar(v *ast.VariableSpec) error {
+	varName := v.Name.L
+	if p.nonRepeatableVars.Exist(varName) {
+		return ErrDupVariable.GenWithStackByArgs(varName)
+	}
+	if _, ok := p.repeatableVertexVars[varName]; ok {
+		return ErrDupVariable.GenWithStackByArgs(varName)
+	}
+	p.nonRepeatableVars.Insert(varName)
+	return nil
+}
+
+func (p *preprocessor) checkAnonymousVar(v *ast.VariableSpec) bool {
+	if v.Name.L == "" || v.Anonymous {
+		v.Anonymous = true
+		p.anonymousVarNames = append(p.anonymousVarNames, &v.Name)
+		return true
+	}
+	return false
+}
+
+func (p *preprocessor) generateNames4AnonymousVars() {
+	// Generate name for all anonymous variables.
+	namedVars := p.nonRepeatableVars
+	for v := range p.repeatableVertexVars {
+		namedVars.Insert(v)
+	}
+	dedup := -1
+	for _, v := range p.anonymousVarNames {
+		for dedup = dedup + 1; ; dedup++ {
+			name := fmt.Sprintf("_anonymous%d", dedup)
+			if !namedVars.Exist(name) {
+				*v = model.NewCIStr(name)
+				break
+			}
+		}
+	}
 }

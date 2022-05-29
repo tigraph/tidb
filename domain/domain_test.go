@@ -181,7 +181,7 @@ func TestDomain(t *testing.T) {
 	err = dd.CreateSchema(ctx, model.NewCIStr("aaa"), cs, nil)
 	require.NoError(t, err)
 
-	// Test for fetchSchemasWithTables when "tables" isn't nil.
+	// Test for fetchSchemasWithTablesAndGraphs when "tables" isn't nil.
 	ctx.SetValue(sessionctx.QueryString, "skip")
 	err = dd.CreateTable(ctx, &ast.CreateTableStmt{Table: &ast.TableName{
 		Schema: model.NewCIStr("aaa"),

@@ -362,4 +362,29 @@ var (
 
 	// ErrAutoConvert when auto convert happens
 	ErrAutoConvert = ClassDDL.NewStd(mysql.ErrAutoConvert)
+
+	// ErrPrimaryKeyRequired returns when graph underlying table doesn't define primary key.
+	ErrPrimaryKeyRequired = ClassDDL.NewStd(mysql.ErrPrimaryKeyRequired)
+	// ErrForeignKeyRequired returns when graph underlying table doesn't define foreign key.
+	ErrForeignKeyRequired = ClassDDL.NewStd(mysql.ErrForeignKeyRequired)
+	// ErrAmbiguousForeignKeyForEdgeTable returns when graph underlying table contains ambiguous foreign keys.
+	ErrAmbiguousForeignKeyForEdgeTable = ClassDDL.NewStd(mysql.ErrAmbiguousForeignKeyForEdgeTable)
+	// ErrVertexTableRefNotMatch returns when edge table's source/destination key cols doesn't match vertex table's key cols.
+	ErrVertexTableRefNotMatch = ClassDDL.NewStd(mysql.ErrVertexTableRefNotMatch)
+	// ErrInvalidEdgeTable returns when edge table is invalid.
+	ErrInvalidEdgeTable = ClassDDL.NewStd(mysql.ErrInvalidEdgeTable)
+	// ErrVertexTableNotExists returns when vertex table doesn't exist.
+	ErrVertexTableNotExists = ClassDDL.NewStd(mysql.ErrVertexTableNotExists)
+	// ErrFunctionalPropertyFunctionIsNotAllowed returns for unsupported functions for functional property.
+	ErrFunctionalPropertyFunctionIsNotAllowed = ClassDDL.NewStd(mysql.ErrFunctionalPropertyFunctionIsNotAllowed)
+	// ErrNonUniqVertexTable returns when duplicate vertex table exists.
+	ErrNonUniqVertexTable = ClassDDL.NewStd(mysql.ErrNonUniqVertexTable)
+	// ErrNonUniqEdgeTable returns when duplicate edge table exists.
+	ErrNonUniqEdgeTable = ClassDDL.NewStd(mysql.ErrNonUniqEdgeTable)
+	// ErrNonUniqProperty returns when duplicate property exists.
+	ErrNonUniqProperty = ClassDDL.NewStd(mysql.ErrNonUniqProperty)
+	// ErrWrongLabelDefinition returns when graph has tables with the same labels but different properties.
+	ErrWrongLabelDefinition = ClassDDL.NewStd(mysql.ErrWrongLabelDefinition)
+	// ErrWrongPropertyName returns for wrong property name.
+	ErrWrongPropertyName = ClassDDL.NewStd(mysql.ErrWrongPropertyName)
 )
