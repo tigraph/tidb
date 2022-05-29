@@ -7349,42 +7349,41 @@ func (b *PlanBuilder) expandVariableLengthPath(
 		if vlp.TopK > 1 {
 			return nil, ErrNotSupportedYet.GenWithStackByArgs("TOP k SHORTEST")
 		}
-		shortestPath := &LogicalShortestPath{
+		shortestPath := LogicalShortestPath{
 			SrcVertex: srcVertex,
 			DstVertex: dstVertex,
 			Path:      vlp,
-		}
+		}.Init(b.ctx, b.getSelectOffset())
 		shortestPath.SetChildren(p)
-		var (
-			cols        []*expression.Column
-			outputNames types.NameSlice
-		)
+
+		newSchema := p.Schema().Clone()
+		newNames := p.OutputNames().Clone()
 		if len(vlp.HopSrc) > 0 {
 			tmpCols, tmpNames, err := b.buildProperties4GroupVertex(ctx, dbName, vlp.HopSrc)
 			if err != nil {
 				return nil, err
 			}
-			cols = append(cols, tmpCols...)
-			outputNames = append(outputNames, tmpNames...)
+			newSchema.Append(tmpCols...)
+			newNames = append(newNames, tmpNames...)
 		}
 		if len(vlp.Conns) > 0 {
 			tmpCols, tmpNames, err := b.buildProperties4GroupConnection(ctx, dbName, vlp.Conns)
 			if err != nil {
 				return nil, err
 			}
-			cols = append(cols, tmpCols...)
-			outputNames = append(outputNames, tmpNames...)
+			newSchema.Append(tmpCols...)
+			newNames = append(newNames, tmpNames...)
 		}
 		if len(vlp.HopDst) > 0 {
 			tmpCols, tmpNames, err := b.buildProperties4GroupVertex(ctx, dbName, vlp.HopDst)
 			if err != nil {
 				return nil, err
 			}
-			cols = append(cols, tmpCols...)
-			outputNames = append(outputNames, tmpNames...)
+			newSchema.Append(tmpCols...)
+			newNames = append(newNames, tmpNames...)
 		}
-		shortestPath.SetSchema(expression.NewSchema(cols...))
-		shortestPath.SetOutputNames(outputNames)
+		shortestPath.SetSchema(newSchema)
+		shortestPath.SetOutputNames(newNames)
 		return shortestPath, nil
 	case PathFindingCheapest:
 		return nil, ErrNotSupportedYet.GenWithStackByArgs("Cheapest Path")

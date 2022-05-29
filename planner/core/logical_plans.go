@@ -54,6 +54,7 @@ var (
 	_ LogicalPlan = &LogicalLock{}
 	_ LogicalPlan = &LogicalLimit{}
 	_ LogicalPlan = &LogicalWindow{}
+	_ LogicalPlan = &LogicalShortestPath{}
 )
 
 // JoinType contains CrossJoin, InnerJoin, LeftOuterJoin, RightOuterJoin, FullOuterJoin, SemiJoin.

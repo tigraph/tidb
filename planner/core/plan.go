@@ -272,7 +272,7 @@ type LogicalPlan interface {
 	// cascades planner, where LogicalPlan might not record its children or schema.
 	DeriveStats(childStats []*property.StatsInfo, selfSchema *expression.Schema, childSchema []*expression.Schema, colGroups [][]*expression.Column) (*property.StatsInfo, error)
 
-	// ExtractColGroups extracts column groups from child operator whose DNVs are required by the current operator.
+	// ExtractColGroups extracts column groups from child operator whose NDVs are required by the current operator.
 	// For example, if current operator is LogicalAggregation of `Group By a, b`, we indicate the child operators to maintain
 	// and propagate the NDV info of column group (a, b), to improve the row count estimation of current LogicalAggregation.
 	// The parameter colGroups are column groups required by upper operators, besides from the column groups derived from

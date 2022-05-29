@@ -1135,3 +1135,11 @@ func (p *PhysicalMemTable) OperatorInfo(_ bool) string {
 	}
 	return ""
 }
+
+func (p *LogicalShortestPath) ExplainInfo() string {
+	return fmt.Sprintf("source:%v, destination:%v, topk:%d", p.SrcVertex.Name, p.DstVertex.Name, p.Path.TopK)
+}
+
+func (p *PhysicalShortestPath) ExplainInfo() string {
+	return fmt.Sprintf("source:%v, destination:%v, topk:%d", p.SrcVertex.Name, p.DstVertex.Name, p.Path.TopK)
+}

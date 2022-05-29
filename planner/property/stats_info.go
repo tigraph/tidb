@@ -24,7 +24,8 @@ import (
 type GroupNDV struct {
 	// Cols are the UniqueIDs of columns.
 	Cols []int64
-	NDV  float64
+	// NDV is the number of distinct values.
+	NDV float64
 }
 
 // ToString prints GroupNDV slice. It is only used for test.

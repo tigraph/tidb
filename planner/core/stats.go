@@ -1308,3 +1308,19 @@ func (p *LogicalCTETable) DeriveStats(childStats []*property.StatsInfo, selfSche
 	p.stats = p.seedStat
 	return p.stats, nil
 }
+
+// DeriveStats implement LogicalPlan DeriveStats interface.
+func (p *LogicalShortestPath) DeriveStats(childStats []*property.StatsInfo, selfSchema *expression.Schema, childSchema []*expression.Schema, columns [][]*expression.Column) (*property.StatsInfo, error) {
+	if p.stats != nil {
+		return p.stats, nil
+	}
+	profile := &property.StatsInfo{
+		RowCount: float64(1),
+		ColNDVs:  make(map[int64]float64, selfSchema.Len()),
+	}
+	for _, col := range selfSchema.Columns {
+		profile.ColNDVs[col.UniqueID] = 1
+	}
+	p.stats = profile
+	return profile, nil
+}

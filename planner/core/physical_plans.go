@@ -66,6 +66,7 @@ var (
 	_ PhysicalPlan = &PhysicalShuffleReceiverStub{}
 	_ PhysicalPlan = &BatchPointGetPlan{}
 	_ PhysicalPlan = &PhysicalTableSample{}
+	_ PhysicalPlan = &PhysicalShortestPath{}
 )
 
 type tableScanAndPartitionInfo struct {
@@ -1514,4 +1515,13 @@ func (p *CTEDefinition) ExplainID() fmt.Stringer {
 	return stringutil.MemoizeStr(func() string {
 		return "CTE_" + strconv.Itoa(p.CTE.IDForStorage)
 	})
+}
+
+type PhysicalShortestPath struct {
+	physicalSchemaProducer
+
+	SrcVertex *Vertex
+	DstVertex *Vertex
+
+	Path *VariableLengthPath
 }
